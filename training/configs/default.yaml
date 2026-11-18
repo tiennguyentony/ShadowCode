@@ -1,0 +1,48 @@
+# Full training run. Paths are relative to the directory you launch from.
+
+data:
+  train_dir: data/train        # any folder of images, searched recursively
+  image_size: 256              # encoder tile size; must be a multiple of 16
+  min_crop_scale: 0.35         # RandomResizedCrop lower bound
+  num_workers: 8
+
+model:
+  message_bits: 64
+  encoder:
+    base_channels: 32
+    message_grid: 16           # dense layer output is message_channels x grid x grid
+    message_upsample: 1        # nearest upsampling of that map before it is tiled to the image size
+    message_channels: 16
+    message_init: gratings     # gratings (each bit switches one grating on/off) | dense (plain init)
+    max_residual: 0.3          # residual is max_residual * tanh(.)
+  decoder:
+    input_size: 224
+    widths: [32, 64, 128, 192]
+    stem_filters: 48           # second-order branch: products of all pairs of these filters are pooled
+    stem_kernel: 8
+    stem_stride: 2
+    head_dim: 0                # 0 = linear from pooled features to logits; >0 adds a hidden layer
+
+train:
+  device: auto                 # auto | cuda | mps | cpu
+  seed: 0
+  batch_size: 32
+  total_steps: 140000
+  lr: 1.0e-4
+  grad_clip: 1.0
+
+loss:
+  bit_weight: 1.0
+  l2_weight: 2.0
+  image_ramp:
+    acc_threshold: 0.95        # image loss stays at 0 until bit accuracy passes this
+    acc_ema: 0.98              # smoothing of the bit accuracy used for the trigger
+    steps: 15000               # linear ramp length once triggered
+
+distortion:
+  enabled: true
+  tile: 3                      # encoded image is tiled tile x tile before the camera
+  ramp_steps: 5000             # distortion strength ramps 0 -> 1 over these steps
+
+log:
+  print_every: 50

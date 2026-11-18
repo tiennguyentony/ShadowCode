@@ -1,0 +1,25 @@
+# Smoke test: 300 steps, tiny generated dataset, distortions off.
+# Same models and training step as the full run.
+base: default.yaml
+
+data:
+  num_workers: 0
+
+model:
+  encoder:
+    base_channels: 16          # half width, to keep CPU time reasonable
+
+train:
+  batch_size: 4
+  total_steps: 300
+  lr: 1.0e-3
+
+loss:
+  image_ramp:
+    acc_ema: 0.9
+
+distortion:
+  enabled: false
+
+log:
+  print_every: 25
