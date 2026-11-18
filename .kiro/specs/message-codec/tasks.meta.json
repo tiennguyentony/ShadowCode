@@ -1,0 +1,234 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Implement `crc7(id)` in `/web/src/codec/crc.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909704491
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909736844
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794910250420
+      }
+    ],
+    "1.2 Implement GF(2^6) tables and `bchParity(m)` in `/web/src/codec/bch.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909706842
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794917074791
+      }
+    ],
+    "1.3 Implement `bchCorrect(r)` in `/web/src/codec/bch.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909710635
+      }
+    ],
+    "2.1 Implement `encodeMessage(id)` with `DecodeOptions` and `DecodeResult` types": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909711893
+      }
+    ],
+    "2.2 Implement `decodeMessage(bits, options)`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909712500
+      }
+    ],
+    "2.3 Create shared test helpers in `/web/src/codec/__tests__/message.helpers.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909713282
+      }
+    ],
+    "2.4 Write edge-case tests in `/web/src/codec/__tests__/message.edge.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909713836
+      }
+    ],
+    "3. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909714471
+      }
+    ],
+    "4.1 Create `/docs/message-format.md` with all sections except measured values": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909714986
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909739062
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794910252391
+      }
+    ],
+    "4.2 Implement the generator computation core in `/web/scripts/gen-message-vectors.mjs`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909715580
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909740006
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794910252954
+      }
+    ],
+    "4.3 Implement generator output, write mode, `--check` mode, and error exits in `/web/scripts/gen-message-vectors.mjs`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909717575
+      },
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794917075321
+      }
+    ],
+    "4.4 Populate the Vector_Block by running the generator": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909718375
+      }
+    ],
+    "5.1 Write vector tests in `/web/src/codec/__tests__/message.vectors.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909718957
+      }
+    ],
+    "5.2 Write the generator check test in `/web/src/codec/__tests__/message.generator.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909719542
+      }
+    ],
+    "6.3 Write property test for round trip": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909720052
+      }
+    ],
+    "6.4 Write property test for errors within the limit": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909721331
+      }
+    ],
+    "6.5 Write property test for errors beyond the option limit": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909721924
+      }
+    ],
+    "7.1 Write heavy-corruption measurement tests in `/web/src/codec/__tests__/message.measure.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909722374
+      }
+    ],
+    "7.2 Write random-input measurement tests in `/web/src/codec/__tests__/message.measure.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909722871
+      }
+    ],
+    "7.3 Write the spare-bit analysis test in `/web/src/codec/__tests__/message.spare.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909723380
+      }
+    ],
+    "7.4 Write Genuine_Read tests in `/web/src/codec/__tests__/message.spare.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909723883
+      }
+    ],
+    "7.5 Write performance tests in `/web/src/codec/__tests__/message.perf.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909724408
+      }
+    ],
+    "7.6 Write module isolation tests in `/web/src/codec/__tests__/message.isolation.test.ts`": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909725019
+      }
+    ],
+    "8. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909725480
+      }
+    ],
+    "9.1 Update `.kiro/specs/message-codec/design.md` with measured values from the test output": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909725907
+      }
+    ],
+    "9.2 Update the \"Residual risk\" section of `/docs/message-format.md` and report the numbers": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909726508
+      }
+    ],
+    "10. Final checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "0c738180-7522-4d9e-bfe5-f1a720e1e481",
+        "chatSessionId": "sess_5d6a540e-3f22-4007-ab56-bee306a7d1c8",
+        "timestamp": 1794909726944
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Run codec tests on save",
+      "trigger": "PostFileSave",
+      "description": "Runs the Vitest codec test suite whenever a file under /web/src/codec is saved and reports how many property tests pass.",
+      "matcher": "web[\\\\/]src[\\\\/]codec[\\\\/].*\\.(ts|tsx)$",
+      "action": {
+        "type": "agent",
+        "prompt": "A file under /web/src/codec was just saved. Run the codec test suite with: cd web && npx vitest run src/codec --reporter=verbose 2>&1. Then report: (1) overall pass/fail, (2) which of the six property tests (PT-1 through PT-6) passed and which failed, (3) any type errors or import violations (codec importing from UI or camera APIs). Keep the report short — one line per property test, then a brief summary."
+      }
+    }
+  ]
+}
