@@ -77,3 +77,20 @@ Entries before this log are not backfilled.
 - The `*.pt` rule also ignores any `.pt` file inside `web/public/models/`. A bundle containing a `.pt` file would not be committed.
 **Went wrong or had to redo:**
 - Nothing recorded.
+
+**Feature:** chat
+
+**Output:**
+- Pushed `master` (`7a3caa9..4cf1f04`). Run `44887433874`: build passed, deploy failed with 404 "Ensure GitHub Pages has been enabled". The repo is private and `has_pages` is false.
+- In `D:\Coding\ShadowCode` (branch `training/pipeline`): committed `d17122d` with only `.kiro/steering/tech.md`, `.kiro/steering/boundaries.md`, `.kiro/steering/kiro-log.md`, `docs/message-format.md`.
+- Cherry-picked it onto `master` as `71e2acc`. `npm test` 1/1 passed. Pushed `master` (`4cf1f04..71e2acc`). Run `44887546023`: build passed, deploy failed with the same 404.
+
+**Caught, corrected, or changed my mind about:**
+- `docs/message-format.md` diff adds one note line at the top. The 64-bit total and the bit layout are unchanged.
+- `.kiro/steering/tech.md` diff only adds 3 leading spaces before the `#` heading. Committed as is.
+- The push of `71e2acc` also pushed `01f145f` (`.gitignore` training-artifact rules and a `docs/kiro-log.md` entry). Another session committed it on `master` in `D:\Coding\ShadowCode-web` at 01:00:38, 19 seconds before the cherry-pick. It was not reviewed before the push.
+- New uncommitted files under `training/` appeared in the training checkout during the session. Not staged.
+
+**Went wrong or had to redo:**
+- Both Pages deploys failed because Pages is not enabled for the repo.
+- The `git push` exit code was 1 in PowerShell because git writes to stderr. The push succeeded.
