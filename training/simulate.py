@@ -10,7 +10,7 @@ One knob, ``strength`` in [0, 1], scales every range. Order of the steps:
    (direct mode only: plus random rotation, scale and shift)
 2. defocus and motion blur
 3. colour shift and contrast
-4. loss of resolution, down   to about camera_px_per_tile pixels per tile
+4. loss of resolution, down   to camera_px_per_tile pixels per tile
 5. sensor noise               at camera resolution
 6. approximate JPEG           at camera resolution
 7. loss of resolution, up     back to the frame size
@@ -18,6 +18,14 @@ One knob, ``strength`` in [0, 1], scales every range. Order of the steps:
 Steps 4 and 7 are skipped while ``camera_px_per_tile`` is unset; everything
 else still runs. Each step can be switched off in ``simulation.effects``.
 Everything is differentiable with respect to the surface.
+
+The frame is a window onto the surface drawn at TILE_PX pixels per tile. It
+is not the camera stream: the resolution of the camera is what steps 4 to 7
+model. With ``camera_px_per_tile: [low, high]`` every sample draws its own
+value, log-uniform over the range. The frame is square by default, which is
+neutral between portrait and landscape; ``simulation.frame_px: [width,
+height]`` gives any other shape, and nothing here or in geometry.py depends
+on which side is longer.
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ from typing import NamedTuple
 import torch
 import torch.nn.functional as F
 
+from camera import camera_range, frame_size
 from constants import TILE_PX
 from geometry import apply_homography, warp
 
@@ -79,10 +88,17 @@ def _tilt(tilt: torch.Tensor, azimuth: torch.Tensor, distance: torch.Tensor) -> 
     return h
 
 
-def sample_homography(batch: int, surface_px: int, cfg: dict, strength: float, direct: bool) -> torch.Tensor:
-    """Random surface -> frame homography, (B,3,3) float64 on the CPU."""
+def sample_homography(
+    batch: int, surface_px: int, cfg: dict, strength: float, direct: bool
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Random surface -> frame homography, (B,3,3) float64 on the CPU, and the fit scale (B,).
+
+    The fit scale is how much each sample was shrunk to fit the frame (1 in
+    direct mode). It is not part of the camera model, so the loss-of-resolution
+    step divides it out again.
+    """
     sim = cfg["simulation"]
-    frame_px = int(sim["frame_px"])
+    frame_w, frame_h = frame_size(cfg)
     half = surface_px / 2.0
     centre = torch.full((batch,), -half, dtype=torch.float64)
     h = _translate(centre, centre)
@@ -107,18 +123,20 @@ def sample_homography(batch: int, surface_px: int, cfg: dict, strength: float, d
         lo, hi = d["scale"]
         log_scale = math.log(lo) + torch.rand(batch, dtype=torch.float64) * (math.log(hi) - math.log(lo))
         h = _scale_rotate(torch.exp(log_scale * amount), angle) @ h
+        fit = torch.ones(batch, dtype=torch.float64)
     else:
         # Keep the middle two tiles' worth of surface inside the frame, so a
         # tile-sized patch at any offset can be flattened out of it.
         reach = TILE_PX + 8.0
         corners = torch.tensor([[-reach, -reach], [reach, -reach], [reach, reach], [-reach, reach]], dtype=torch.float64)
         projected = apply_homography(h, (corners + half).unsqueeze(0).expand(batch, -1, -1))
-        extent = projected.abs().amax(dim=(1, 2))
-        fit = torch.clamp((frame_px / 2.0 - 4.0) / extent, max=1.0)
+        extent_x, extent_y = projected[..., 0].abs().amax(dim=1), projected[..., 1].abs().amax(dim=1)
+        fit = torch.minimum((frame_w / 2.0 - 4.0) / extent_x, (frame_h / 2.0 - 4.0) / extent_y).clamp(max=1.0)
         h = _scale_rotate(fit, torch.zeros_like(fit)) @ h
 
-    middle = torch.full((batch,), frame_px / 2.0, dtype=torch.float64)
-    return _translate(middle, middle) @ h
+    middle_x = torch.full((batch,), frame_w / 2.0, dtype=torch.float64)
+    middle_y = torch.full((batch,), frame_h / 2.0, dtype=torch.float64)
+    return _translate(middle_x, middle_y) @ h, fit
 
 
 # -- blur -------------------------------------------------------------------
@@ -263,11 +281,17 @@ def colour_shift(x: torch.Tensor, c: dict, strength: float) -> torch.Tensor:
 _warned_no_camera_px = False
 
 
-def _camera_size(frame_px: int, cfg: dict, strength: float) -> int | None:
-    """Side of the frame at camera resolution, or None if the step does not apply."""
+def _camera_ratios(batch: int, cfg: dict, strength: float, fit: torch.Tensor) -> list[float] | None:
+    """Per sample, camera resolution as a fraction of the frame resolution. None if the step does not apply.
+
+    Each sample draws its camera pixels per tile log-uniformly from
+    ``camera_px_per_tile``. The frame shows a tile at ``fit * TILE_PX`` pixels,
+    so the fraction is the drawn value over that. A fraction of 1 or more
+    means the frame is already no finer than the camera and nothing is lost.
+    """
     global _warned_no_camera_px
-    camera = cfg.get("camera_px_per_tile")
-    if camera is None:
+    span = camera_range(cfg)
+    if span is None:
         if not _warned_no_camera_px:
             warnings.warn(
                 "camera_px_per_tile is unset: the loss-of-resolution step is skipped. "
@@ -276,12 +300,21 @@ def _camera_size(frame_px: int, cfg: dict, strength: float) -> int | None:
             )
             _warned_no_camera_px = True
         return None
-    jitter = cfg["simulation"]["resolution"]["jitter"]
-    ratio = float(camera) / TILE_PX * (1.0 + (torch.rand(()).item() * 2 - 1) * jitter)
+    low, high = span
+    camera = low * (high / low) ** torch.rand(batch, dtype=torch.float64)
+    ratio = camera / (TILE_PX * fit.double().cpu())
     ratio = 1.0 + strength * (ratio - 1.0)          # strength 0: no loss
-    if ratio >= 1.0:
-        return None
-    return max(16, round(frame_px * ratio))
+    return ratio.tolist()
+
+
+def _sensor(frame: torch.Tensor, sigma: torch.Tensor | None, quality: torch.Tensor | None, chroma: bool) -> torch.Tensor:
+    """Noise, clipping to [0,1] and the approximate JPEG, at whatever resolution ``frame`` has."""
+    if sigma is not None:
+        frame = frame + torch.randn_like(frame) * sigma.view(-1, 1, 1, 1)
+    frame = frame.clamp(0.0, 1.0)
+    if quality is not None:
+        frame = jpeg_approx(frame, quality, chroma).clamp(0.0, 1.0)
+    return frame
 
 
 # -- the simulation ---------------------------------------------------------
@@ -308,12 +341,12 @@ def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = F
     on = strength > 0
 
     if direct or (effects["perspective"] and on):
-        h64 = sample_homography(b, surface_px, cfg, strength, direct)
-        frame_px = int(sim["frame_px"])
-        frame = warp(surface, torch.linalg.inv(h64).to(surface), (frame_px, frame_px))
+        h64, fit = sample_homography(b, surface_px, cfg, strength, direct)
+        frame_w, frame_h = frame_size(cfg)
+        frame = warp(surface, torch.linalg.inv(h64).to(surface), (frame_h, frame_w))
         homography = h64.to(surface)
     else:
-        frame, homography = surface, identity
+        frame, homography, fit = surface, identity, torch.ones(b, dtype=torch.float64)
     if not on:
         return SimResult(frame, homography)
 
@@ -332,19 +365,30 @@ def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = F
     if effects["colour"]:
         frame = colour_shift(frame, sim["colour"], strength)
 
-    full_size = frame.shape[-2:]
-    camera_size = _camera_size(full_size[0], cfg, strength) if effects["resolution"] else None
-    if camera_size is not None:
-        frame = F.interpolate(frame, size=(camera_size, camera_size), mode="bilinear", antialias=True, align_corners=False)
+    sigma = uniform(sim["noise"]["sigma"]) if effects["noise"] else None
+    quality = 100.0 - uniform(100.0 - sim["jpeg"]["min_quality"]) if effects["jpeg"] else None
+    chroma = sim["jpeg"]["chroma_subsampling"]
+    ratios = _camera_ratios(b, cfg, strength, fit) if effects["resolution"] else None
+    if ratios is None:
+        return SimResult(_sensor(frame, sigma, quality, chroma), homography)
 
-    if effects["noise"]:
-        frame = frame + torch.randn_like(frame) * uniform(sim["noise"]["sigma"]).view(b, 1, 1, 1)
-
-    frame = frame.clamp(0.0, 1.0)
-    if effects["jpeg"]:
-        quality = 100.0 - uniform(100.0 - sim["jpeg"]["min_quality"])
-        frame = jpeg_approx(frame, quality, sim["jpeg"]["chroma_subsampling"]).clamp(0.0, 1.0)
-
-    if camera_size is not None:
-        frame = F.interpolate(frame, size=full_size, mode="bilinear", align_corners=False).clamp(0.0, 1.0)
-    return SimResult(frame, homography)
+    # Each sample has its own camera resolution, so each goes down, through
+    # the sensor and back up on its own.
+    full_h, full_w = frame.shape[-2:]
+    out = []
+    for i, ratio in enumerate(ratios):
+        one = frame[i : i + 1]
+        lossy = ratio < 1.0
+        if lossy:
+            size = (max(16, round(full_h * ratio)), max(16, round(full_w * ratio)))
+            one = F.interpolate(one, size=size, mode="bilinear", antialias=True, align_corners=False)
+        one = _sensor(
+            one,
+            None if sigma is None else sigma[i : i + 1],
+            None if quality is None else quality[i : i + 1],
+            chroma,
+        )
+        if lossy:
+            one = F.interpolate(one, size=(full_h, full_w), mode="bilinear", align_corners=False).clamp(0.0, 1.0)
+        out.append(one)
+    return SimResult(torch.cat(out, dim=0), homography)

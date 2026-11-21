@@ -7,6 +7,12 @@
 # main (flattened) run, and the learning check below is there so that a run
 # that is not learning costs 30 minutes of GPU time, not a night.
 #
+# It is also not matched to the phone. simulation.direct.scale (0.8 to 1.25)
+# shows the reader a tile at about 307 to 480 pixels; the phone shows one at
+# 154 to 340 (camera_px_per_tile), which direct mode applies as blur only.
+# A run with this config tests whether direct mode can learn at all.
+# docs/runs.md, "Direct mode".
+#
 # Everything except reader_input and the paths is default.yaml unchanged, so
 # the two runs can be compared.
 #

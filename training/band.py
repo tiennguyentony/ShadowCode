@@ -11,9 +11,14 @@ With ``message_init: gratings`` each bit starts as one grating at
 
 ``band.grating_step: auto`` picks the highest band the camera can still
 resolve: the largest step whose highest starting frequency leaves at least
-``band.min_camera_px_per_cycle`` camera pixels per cycle. Higher bands are
-preferred because picture content is weaker there. While
-``camera_px_per_tile`` is unset, ``band.fallback_step`` is used.
+``band.min_camera_px_per_cycle`` camera pixels per cycle at the low end of
+``camera_px_per_tile``. Higher bands are preferred because picture content is
+weaker there. While ``camera_px_per_tile`` is unset, ``band.fallback_step`` is
+used.
+
+A step set by hand is checked the same way. Below the margin it is kept and
+the shortfall is reported; at or past the sampling limit (2 camera pixels per
+cycle) it is refused.
 
 This only sets where training starts. The dense layer and the reader are free
 to move the code elsewhere.
@@ -24,6 +29,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass
 
+from camera import NYQUIST_PX_PER_CYCLE, camera_range
 from constants import MESSAGE_BITS, TILE_PX
 
 # Steps for which 16 * step divides TILE_PX.
@@ -69,13 +75,33 @@ class Band:
     texture_kernel: int
     texture_downsample: int
     source: str                # how grating_step was chosen
+    # Camera pixels per cycle of the highest starting frequency at the low and
+    # the high end of camera_px_per_tile; None while that is unset.
+    px_per_cycle_low: float | None = None
+    px_per_cycle_high: float | None = None
+    margin: float | None = None        # band.min_camera_px_per_cycle
+
+    @property
+    def within_margin(self) -> bool | None:
+        if self.px_per_cycle_low is None or self.margin is None:
+            return None
+        return self.px_per_cycle_low >= self.margin
 
     def describe(self) -> str:
-        return (
+        text = (
             f"starting band {self.low_cycles:.0f}-{self.high_cycles:.0f} cycles per tile "
             f"(grating_step {self.grating_step}, {self.source}); message_grid {self.message_grid}, "
             f"texture window {self.texture_kernel * self.texture_downsample} px"
         )
+        if self.px_per_cycle_low is not None:
+            text += (
+                f"\nhighest starting frequency gets {self.px_per_cycle_low:.2f} to {self.px_per_cycle_high:.2f} "
+                f"camera px per cycle over the camera range (sampling limit {NYQUIST_PX_PER_CYCLE:.0f}, "
+                f"margin {self.margin:g})"
+            )
+            if not self.within_margin:
+                text += ": BELOW THE MARGIN at the low end of the range"
+        return text
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -92,10 +118,11 @@ def _texture_window(step: int) -> tuple[int, int]:
 
 def _auto_step(cfg: dict) -> tuple[int, str]:
     band_cfg = cfg["band"]
-    camera = cfg.get("camera_px_per_tile")
-    if camera is None:
+    span = camera_range(cfg)
+    if span is None:
         return int(band_cfg["fallback_step"]), "fallback, camera_px_per_tile is unset"
-    highest_allowed = float(camera) / float(band_cfg["min_camera_px_per_cycle"])
+    camera = span[0]                   # the low end is where the camera resolves least
+    highest_allowed = camera / float(band_cfg["min_camera_px_per_cycle"])
     usable = [
         s for s in ALLOWED_STEPS if s <= int(band_cfg["max_step"]) and band_limits(s)[1] <= highest_allowed
     ]
@@ -106,7 +133,7 @@ def _auto_step(cfg: dict) -> tuple[int, str]:
             f"{band_cfg['min_camera_px_per_cycle']} px per cycle, but the lowest band already reaches "
             f"{lowest:.1f}. Set band.grating_step by hand or lower band.min_camera_px_per_cycle."
         )
-    return max(usable), f"derived from camera_px_per_tile={camera}"
+    return max(usable), f"derived from camera_px_per_tile={camera:g}"
 
 
 def resolve_band(cfg: dict) -> Band:
@@ -128,7 +155,18 @@ def resolve_band(cfg: dict) -> Band:
         kernel = int(texture["kernel"])
     if texture.get("downsample", "auto") != "auto":
         downsample = int(texture["downsample"])
-    return Band(step, grid, low, high, kernel, downsample, source)
+    span = camera_range(cfg)
+    if span is None:
+        return Band(step, grid, low, high, kernel, downsample, source)
+    at_low, at_high = span[0] / high, span[1] / high
+    if at_low <= NYQUIST_PX_PER_CYCLE:
+        raise ValueError(
+            f"grating_step {step} starts as high as {high:.1f} cycles per tile, which a camera at "
+            f"{span[0]:g} px per tile cannot sample ({at_low:.2f} px per cycle, the limit is "
+            f"{NYQUIST_PX_PER_CYCLE:.0f}). Use a lower step or raise the low end of camera_px_per_tile."
+        )
+    margin = float(cfg["band"]["min_camera_px_per_cycle"])
+    return Band(step, grid, low, high, kernel, downsample, source, at_low, at_high, margin)
 
 
 def _radius_range(grid: int, step: int) -> tuple[float, float]:

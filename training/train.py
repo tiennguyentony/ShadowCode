@@ -27,6 +27,7 @@ from collections import deque
 import torch
 import torch.nn.functional as F
 
+from camera import camera_range, check_demo
 from checkpoint import load_latest_checkpoint, save_checkpoint, set_aside_checkpoints
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
@@ -300,6 +301,7 @@ def main() -> int:
         parser.error("--price-per-hour cannot be negative")
 
     cfg = load_config(args.config, args.overrides)
+    check_demo(cfg)
     ckpt_cfg, log_cfg = cfg["checkpoint"], cfg["log"]
     early = cfg.get("early_stop") or {}
     check_enabled = bool(early.get("enabled", False))
@@ -327,6 +329,12 @@ def main() -> int:
         f"reader_input={cfg['train']['reader_input']}"
     )
     print(trainer.models.band.describe())
+    span = camera_range(cfg)
+    print(
+        "camera: not set, the loss-of-resolution step is skipped"
+        if span is None
+        else f"camera: {span[0]:g} to {span[1]:g} px per printed tile, drawn per sample"
+    )
     if cfg["train"]["reader_input"] == "direct":
         print(DIRECT_NOTICE)
 

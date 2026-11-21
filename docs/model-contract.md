@@ -147,9 +147,13 @@ function flatten(frame, corners, spec, roundToLevels = false) {
 
 This is plain JavaScript on the CPU, written to be exact rather than fast. A WebGL or WebGPU version is fine as long as it passes the fixture checks below.
 
+The frame can be any shape. The fixture frames have been portrait (768 x 1366) since 2026-11-21, so a flatten that swaps width and height fails on them. The code above was run in Node on the five portrait fixtures of an export made that day, flatten only: at most 2 values in 442,368 off by one level.
+
 ### `reader_input: direct`
 
-No flatten. `flatten` is `null` and `center_crop` is set instead: the reader gets the 384 x 384 square from the middle of the frame, pixels copied as they are. `center_crop` also records the rotation and scale range the reader was trained on. This mode has only been run for a few training steps and is not shown to learn yet, so treat it as provisional.
+No flatten. `flatten` is `null` and `center_crop` is set instead: the reader gets the 384 x 384 square from the middle of the frame, pixels copied as they are. `center_crop` also records the rotation and scale range the reader was trained on, and `simulated_frame_px` as `[width, height]`. This mode has only been run for a few training steps and is not shown to learn yet, so treat it as provisional.
+
+Direct mode is also not matched to the phone yet. Its `trained_scale` (0.8 to 1.25) means a tile about 307 to 480 pixels wide in the crop, while the phone shows a tile at 154 to 340 pixels (`camera.trained_px_per_tile`). A direct reader trained this way would need the frame scaled up before cropping.
 
 To turn already-cropped RGBA pixels into the input:
 
@@ -165,6 +169,23 @@ function imageToInput(pixels) {
   return input;
 }
 ```
+
+## The camera: `camera`
+
+What the models were trained for. Nothing here changes how the reader is fed; it says when to expect a read to work. `null` in bundles made before 2026-11-21.
+
+| Field | Value now | Meaning |
+|---|---|---|
+| `tile_mm` | `50` | Printed size of one tile. |
+| `stream_px`, `orientation` | `[1080, 1920]`, `portrait` | The camera stream the demo uses, `[width, height]`. Phone only. |
+| `trained_px_per_tile` | `[154, 340]` | Camera pixels across one printed tile, seen straight on. Training covers this range. Outside it the reader is untested: on the measured phone, closer than about 19 cm the tile is larger than 340 pixels, and further than about 42 cm it is smaller than 154. |
+| `tiles_across_stream_width` | `[3.18, 7.01]` | 1080 divided by the two ends of the range. |
+| `measured` | two entries | The measurements the range was built from: Galaxy S23 Ultra, 66.3 px/cm at about 20 cm (331.5 pixels per tile) and 37.2 px/cm at about 35 cm (186 pixels per tile). |
+| `starting_band` | 16 to 51.2 cycles per tile | Where the code starts in training, and how many camera pixels its finest stripes get per cycle at the two ends of the range (3.01 and 6.64). The trained code may sit elsewhere. For information. |
+
+To tell whether a tile is in range, measure the side of the located quadrilateral in frame pixels and compare it with `trained_px_per_tile`.
+
+The flattened patch is always 384 x 384, whatever size the tile has in the frame. At 154 pixels per tile the flatten enlarges it about 2.5 times; that is expected and is what the reader was trained on.
 
 ## Running the reader
 
@@ -193,7 +214,9 @@ Each fixture is three files. `NN.json` holds:
 | `bits_equal_to_embedded` | How many of `bits` equal `embedded_bits`. About 32 of 64 for random weights. |
 | `simulation_strength` | How hard the print-and-camera simulation was, 0 to 1. The five fixtures go from 0.2 to 1.0. |
 
-The frames are generated images put through the training simulation (tilt, blur, colour shift, noise, JPEG-like damage). No camera and no dataset image is involved.
+The frames are generated images put through the training simulation (tilt, blur, colour shift, loss of resolution, noise, JPEG-like damage). No camera and no dataset image is involved.
+
+A fixture frame is 768 x 1366: portrait, in the 9:16 shape of the phone stream, but not a 1080 x 1920 camera frame. It shows the surface at 384 pixels per tile, with the camera's lower resolution blurred into it. `fixtures.frame_size` in the contract repeats the size. Do not use the fixtures to judge speed or tile size on a real frame.
 
 `embedded_bits` are random. They are not valid messages (`fixtures.embedded_bits_follow_message_format` is `false`), so do not expect the message codec to decode them. That changes once `/training` has its own copy of the codec.
 

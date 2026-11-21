@@ -9,7 +9,8 @@ hash, for example ``20261120-ea8f718``:
 
     reader.onnx      the reader, one file, for ONNX Runtime Web
     locator.onnx     only once the locator exists
-    contract.json    names, shapes, value ranges, the flatten step, checksums
+    contract.json    names, shapes, value ranges, the flatten step, the camera
+                     the models were trained for, checksums
     fixtures/        camera-like frames with corners, flattened patch and
                      expected logits and bits
 
@@ -48,6 +49,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from camera import camera_summary, check_demo, frame_size
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from data import procedural_image
@@ -62,6 +64,11 @@ OPSET = 20
 TOLERANCE = 1e-4
 READER_INPUTS = ("flattened", "direct")
 CORNER_ORDER = ["top-left", "top-right", "bottom-right", "bottom-left"]
+# Fixture frames: [width, height] in the 9:16 shape of the phone stream, and a
+# surface large enough to fill them. Portrait on purpose: a flatten that mixes
+# up width and height passes on a square frame and fails on this one.
+FIXTURE_FRAME_PX = [768, 1366]
+FIXTURE_SURFACE_REPEAT = 5
 COORDINATES = (
     "x to the right, y down, in pixels of the image. The top-left corner of the image is (0, 0) "
     "and the centre of the pixel in column j, row i is (j + 0.5, i + 0.5)."
@@ -146,7 +153,9 @@ def make_fixtures(models: Models, cfg: dict, directory: Path, count: int, seed: 
 
     Each fixture is made the way a training sample is: a generated tile is
     marked with random bits, repeated, and put through the print-and-camera
-    simulation. The frame is then saved as an 8-bit PNG, and everything after
+    simulation. Two things differ from training: the frame is portrait
+    (FIXTURE_FRAME_PX) and the tile is repeated more often to fill it. The
+    frame is then saved as an 8-bit PNG, and everything after
     that starts from the saved pixels, so the browser can reproduce the chain
     exactly: frame PNG -> flatten with the listed corners -> patch PNG ->
     reader -> logits.
@@ -158,6 +167,8 @@ def make_fixtures(models: Models, cfg: dict, directory: Path, count: int, seed: 
     direct = cfg["train"]["reader_input"] == "direct"
     sim_cfg = copy.deepcopy(cfg)
     sim_cfg["simulation"]["enabled"] = True
+    sim_cfg["simulation"]["frame_px"] = list(FIXTURE_FRAME_PX)
+    repeat = max(int(cfg["surface"]["repeat"]), FIXTURE_SURFACE_REPEAT)
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed + 1)
     strengths = np.linspace(0.2, 1.0, count) if count > 1 else np.array([1.0])
@@ -166,7 +177,7 @@ def make_fixtures(models: Models, cfg: dict, directory: Path, count: int, seed: 
         tile = from_uint8(procedural_image(rng, TILE_PX))
         embedded = torch.randint(0, 2, (1, MESSAGE_BITS)).float()
         marked = (tile + models.embedder(tile, embedded)).clamp(0.0, 1.0)
-        surface = wrap_surface(marked, int(cfg["surface"]["repeat"]))
+        surface = wrap_surface(marked, repeat)
         sim = simulate(surface, sim_cfg, float(strength), direct=direct)
 
         frame_pixels = to_uint8(sim.frame[0])
@@ -248,14 +259,14 @@ def model_specs(models: Models, cfg: dict) -> list[ModelSpec]:
         )
     ]
     if models.locator is not None:
-        frame_px = int(cfg["simulation"]["frame_px"])
+        frame_w, frame_h = frame_size(cfg)
         specs.append(
             ModelSpec(
                 name="locator",
                 module=models.locator,
                 input_name="frame",
                 output_name="corners",
-                example=torch.rand(1, 3, frame_px, frame_px),
+                example=torch.rand(1, 3, frame_h, frame_w),
                 input_doc={"content": "One camera frame."},
                 output_doc={
                     "content": (
@@ -377,11 +388,33 @@ def crop_contract(cfg: dict) -> dict:
         "resampling": "none; the crop copies frame pixels",
         "trained_rotation_deg": d["rotation_deg"],
         "trained_scale": d["scale"],
-        "simulated_frame_px": int(cfg["simulation"]["frame_px"]),
+        "simulated_frame_px": list(frame_size(cfg)),
+        "simulated_frame_px_order": "[width, height]",
     }
 
 
-def build_contract(bundle_id: str, repo: dict, source: dict, cfg: dict, model_entries: dict, fixture_names: list[str], checks: dict) -> dict:
+def camera_contract(cfg: dict, models: Models) -> dict | None:
+    """The camera the models were trained for, and the band the code started in."""
+    camera = camera_summary(cfg)
+    if camera is None:
+        return None
+    band = models.band
+    camera["starting_band"] = {
+        "cycles_per_tile": [round(band.low_cycles, 1), round(band.high_cycles, 1)],
+        "grating_step": band.grating_step,
+        "camera_px_per_cycle_of_highest": (
+            None if band.px_per_cycle_low is None
+            else [round(band.px_per_cycle_low, 2), round(band.px_per_cycle_high, 2)]
+        ),
+        "note": "where training starts; the trained code is free to sit elsewhere",
+    }
+    return camera
+
+
+def build_contract(
+    bundle_id: str, repo: dict, source: dict, cfg: dict, models: Models, model_entries: dict,
+    fixture_names: list[str], checks: dict,
+) -> dict:
     import onnx
     import onnxruntime as ort
 
@@ -400,6 +433,7 @@ def build_contract(bundle_id: str, repo: dict, source: dict, cfg: dict, model_en
         "models": model_entries,
         "flatten": flatten_contract() if flattened else None,
         "center_crop": None if flattened else crop_contract(cfg),
+        "camera": camera_contract(cfg, models),
         "bits": {
             "rule": "bit i = 1 if logits[i] > 0 else 0",
             "order": "index i is Message index i in /docs/message-format.md",
@@ -413,6 +447,12 @@ def build_contract(bundle_id: str, repo: dict, source: dict, cfg: dict, model_en
             "compare": "the logits, not only the bits; /docs/model-contract.md says how closely",
             "embedded_bits_follow_message_format": False,
             "frames_from": "generated images put through the training simulation; no camera, no dataset",
+            "frame_size": list(FIXTURE_FRAME_PX),
+            "frame_size_order": "[width, height]",
+            "frame_is": (
+                "a portrait window onto the surface at TILE_PX pixels per tile, in the 9:16 shape of the "
+                "camera stream but not at its size; a real frame is camera.stream_px"
+            ),
         },
         "verification": {
             "what": "each ONNX file run in ONNX Runtime (CPU) against PyTorch (CPU, float32) on the same inputs",
@@ -450,6 +490,7 @@ def main() -> None:
     bundle_id = f"{datetime.date.today():%Y%m%d}-{repo['short']}"
     bundle = Path(args.out) / bundle_id
     models, cfg, source = load_models(args)
+    check_demo(cfg)
     if bundle.exists():
         print(f"replacing existing {bundle}")
         shutil.rmtree(bundle)
@@ -512,7 +553,7 @@ def main() -> None:
 
     for fixture in fixtures:
         write_json(bundle / "fixtures" / f"{fixture['name']}.json", fixture["json"])
-    contract = build_contract(bundle_id, repo, source, cfg, model_entries, [f["name"] for f in fixtures], checks)
+    contract = build_contract(bundle_id, repo, source, cfg, models, model_entries, [f["name"] for f in fixtures], checks)
     write_json(bundle / "contract.json", contract)
 
     print(f"\n{bundle}")

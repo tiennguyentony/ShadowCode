@@ -66,6 +66,13 @@ python smoke_test.py --config configs/smoke_blur.yaml --sheet outputs/smoke_blur
 python smoke_test.py --config configs/smoke_blur.yaml --sheet outputs/smoke_blur_step4.png band.grating_step=4
 ```
 
+Loss of resolution only, used to check a band against one camera resolution
+(results in `/docs/runs.md`):
+
+```bash
+python smoke_test.py --config configs/smoke_resolution.yaml camera_px_per_tile=154
+```
+
 The literal version of the spec (plain dense init, plain CNN reader, batch
 statistics) still runs; it does not learn within 300 steps:
 
@@ -153,7 +160,7 @@ python export_bundle.py --untrained
 ```
 
 Writes `export/<date>-<short git hash>/` with `reader.onnx`, `contract.json`
-and `fixtures/` (five camera-like frames, each with its corners, flattened
+and `fixtures/` (five portrait camera-like frames, each with its corners, flattened
 patch, expected logits and bits). `--untrained` uses random weights and is for
 wiring the browser only. With a checkpoint, every setting comes from the
 config saved in the checkpoint.
@@ -167,13 +174,16 @@ inputs and stops before writing `contract.json` if they differ by more than
 ## The config
 
 Everything is in `configs/default.yaml`; `configs/smoke.yaml`,
-`configs/smoke_blur.yaml` and `configs/runpod_direct.yaml` inherit from it.
+`configs/smoke_blur.yaml`, `configs/smoke_resolution.yaml` and
+`configs/runpod_direct.yaml` inherit from it.
 The parts that need a decision:
 
 | Key | Meaning |
 |---|---|
-| `camera_px_per_tile` | Measured camera pixels per printed tile at demo distance. `null` until measured. While null, the loss-of-resolution step is skipped and the starting band uses `band.fallback_step`. |
-| `band.grating_step` | `auto` derives the starting frequency band from `camera_px_per_tile` (see `band.py`). Step 8 is 16-51 cycles per tile, step 4 is 8-26. |
+| `demo` | The demo setup: 50 mm printed tile, 1080 x 1920 portrait phone stream, and the measurements. Checked against the range below and copied into `contract.json`. |
+| `camera_px_per_tile` | Camera pixels per printed tile, seen straight on: `[154, 340]`, from measurements on a Galaxy S23 Ultra. Every sample draws its own value. One number fixes it. `null` skips the loss-of-resolution step and the starting band uses `band.fallback_step`. |
+| `band.grating_step` | `auto`: the highest band whose finest stripes still get `band.min_camera_px_per_cycle` camera pixels per cycle at the low end of the range (see `band.py`). With 154 that is step 8, the top band: 16-51 cycles per tile, 3.01 pixels per cycle. One pixel lower and auto drops to step 6. `/docs/runs.md` has the check. |
+| `simulation.frame_px` | The simulated frame: a window onto the surface at 384 pixels per tile, not the camera stream. One number is a square; `[width, height]` gives any shape. |
 | `data.train_dir` | The dataset path. |
 | `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the simulation adds random rotation, scale and shift and the reader gets the centre crop of the frame. Not yet shown to learn. |
 | `early_stop` | The learning check. Off by default, on in `runpod_direct.yaml`. |
@@ -190,7 +200,8 @@ band mid-run, resume stops with a message instead of loading mismatched weights.
 | File | Contents |
 |---|---|
 | `constants.py` | `MESSAGE_BITS`, `TILE_PX` |
-| `band.py` | Starting band from `camera_px_per_tile` |
+| `camera.py` | The camera range, the demo measurements and the simulated frame size, read from the config |
+| `band.py` | Starting band, checked against `camera_px_per_tile` |
 | `models/` | Embedder, reader, locator slot |
 | `simulate.py` | Print-and-camera simulation; returns the frame and the exact homography |
 | `geometry.py` | Homographies, the flatten step |

@@ -25,13 +25,15 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
 
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from data import infinite, make_loader, procedural_image
-from geometry import flatten_from_corners, square_corners
+from geometry import apply_homography, flatten_from_corners, flatten_random_patch, square_corners
 from models import count_parameters
+from simulate import simulate
 from train import Trainer
 from viz import sample_sheet, save_image
 
@@ -87,6 +89,34 @@ def check_structure(trainer: Trainer) -> None:
     gap = (patch - crop).abs().max().item()
     assert gap < 1e-9, f"flatten does not reproduce an exact crop (max difference {gap:.2e})"
 
+    check_frame_shapes(trainer.cfg)
+
+
+def check_frame_shapes(cfg: dict) -> None:
+    """The simulation and the flatten step must not care which side of the frame is longer.
+
+    For a portrait, a landscape and a square frame: tilt a smooth surface into
+    the frame, flatten a patch back out with the true corners, and compare it
+    with the same patch cut straight from the surface.
+    """
+    geo = copy.deepcopy(cfg)
+    geo["simulation"]["enabled"] = True
+    geo["simulation"]["effects"] = {name: name == "perspective" for name in geo["simulation"]["effects"]}
+    generator = torch.Generator().manual_seed(0)
+    coarse = torch.rand(2, 3, 12, 12, generator=generator, dtype=torch.float64)
+    surface = F.interpolate(coarse, size=(3 * TILE_PX, 3 * TILE_PX), mode="bicubic", align_corners=False).clamp(0.0, 1.0)
+    for width, height in ((540, 960), (960, 540), (768, 768)):
+        geo["simulation"]["frame_px"] = [width, height]
+        sim = simulate(surface, geo, 1.0)
+        assert sim.frame.shape[-2:] == (height, width), f"frame is {tuple(sim.frame.shape[-2:])}, wanted {(height, width)}"
+        patch, corners = flatten_random_patch(sim.frame, sim.homography, TILE_PX, corner_jitter_px=0.0)
+        assert corners[..., 0].min() >= 0 and corners[..., 0].max() <= width, "patch corners leave the frame in x"
+        assert corners[..., 1].min() >= 0 and corners[..., 1].max() <= height, "patch corners leave the frame in y"
+        on_surface = apply_homography(torch.linalg.inv(sim.homography), corners)
+        straight = flatten_from_corners(surface, on_surface, TILE_PX)
+        gap = (patch - straight).abs().max().item()
+        assert gap < 0.02, f"{width}x{height} frame: flattened patch is off by {gap:.3f}"
+
 
 def describe_simulation(cfg: dict) -> str:
     sim = cfg["simulation"]
@@ -122,7 +152,10 @@ def run_smoke(
             f"reader {count_parameters(trainer.reader) / 1e6:.2f}M params"
         )
         check_structure(trainer)
-        print("structure checks passed: circular convs, seamless residual, reader under 3M, exact flatten")
+        print(
+            "structure checks passed: circular convs, seamless residual, reader under 3M, exact flatten, "
+            "portrait, landscape and square frames"
+        )
 
         batches = infinite(make_loader(cfg, device))
         history: list[dict[str, float]] = []
