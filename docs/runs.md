@@ -7,10 +7,40 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
-| Long run (main reader, flattened, laptop) | **Not started.** Waiting for a go-ahead. Settings below. |
+| Long run (main reader, flattened, laptop) | **Running** since 2026-11-21 03:43, resumed from the sanity run at step 7,001. See "Long run". |
 | Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
 | Direct reader (RunPod) | Not started, and not recommended yet. Direct mode is matched to the phone, but every smoke test with rotation ends at chance. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
+
+## Long run
+
+Started 2026-11-21 03:43 on the laptop's RTX 4070, from commit `6aa5b0b`:
+
+```bash
+python train.py --config configs/long.yaml --keep-awake
+```
+
+**It resumed from the sanity run's checkpoint at step 7,001** instead of
+starting at step 0. The two configs were compared key by key, and against the
+config stored in the checkpoint. They differ only in the folders, the sample
+sheet interval, and `simulation.direct.scale`, which the flattened run never
+reads. Model, band, batch size, learning rate, losses, both schedules and the
+whole simulation are identical, so the sanity hour is the long run's first
+hour. The checkpoint, `progress.csv`, the clock and the TensorBoard file were
+copied into `checkpoints/long` and `runs/long`; the sanity folders are
+untouched.
+
+One thing is not identical: steps 1 to 7,001 saw only the first 2,000
+dataset images. From 7,001 on the run draws from all 16,000.
+
+- Same GPU checks as the sanity run: CUDA available, `cuda:0` is the RTX
+  4070, 7,068 of 8,188 MiB free; it would have stopped otherwise.
+- 140,000 steps in total. At the 1.4 to 2.1 steps per second seen so far,
+  about 18 to 26 more hours.
+- Sample sheets every 5,000 steps in `training/runs/long/samples/`.
+- Checkpoints every 2,000 steps in `training/checkpoints/long/`. The same
+  command resumes after a stop or a crash.
+- No other GPU job runs while it trains.
 
 ## Sanity run
 
