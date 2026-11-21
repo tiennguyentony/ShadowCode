@@ -158,3 +158,9 @@ step is reported.
 New bundles carry a `camera` block: tile size, stream size and orientation,
 the trained range, the measurements and the starting band.
 `docs/model-contract.md` explains it. Older bundles were left as they are.
+
+Current wiring bundle: **`20261121-e5b5090`**. Random weights, flattened
+reader, range 154 to 340, exported from commit `e5b5090` with no uncommitted
+changes (`git_dirty: false`). It replaces `20261121-8f13ea4`, which was
+exported from uncommitted code with the earlier 150 low end and has been
+deleted.
