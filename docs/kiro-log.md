@@ -94,3 +94,20 @@ Entries before this log are not backfilled.
 **Went wrong or had to redo:**
 - Both Pages deploys failed because Pages is not enabled for the repo.
 - The `git push` exit code was 1 in PowerShell because git writes to stderr. The push succeeded.
+**Feature:** spec (message-codec, tasks 1.2 to 10)
+**Output:**
+- Added `web/src/codec/bch.ts` (GF(2^6) tables, `bchParity`, `bchCorrect` with Berlekamp-Massey, Chien search and syndrome re-check) and `web/src/codec/message.ts` (`encodeMessage`, `decodeMessage`, `DecodeOptions`, `DecodeResult`, layout constants). Layout 32 ID + 7 CRC + 24 BCH parity + 1 spare, as in the design.
+- Finished `web/scripts/gen-message-vectors.mjs` (emitter, write mode, `--check`, error exits 1/2/3). Added `gen:vectors` script to `web/package.json`.
+- Ran the generator: `docs/message-format.md` Vector_Block now holds 6 clean and 2 corrupted vectors. All values equal the design's preliminary table.
+- Added 10 test files under `web/src/codec/__tests__/` (helpers, crc-bch, edge, validation, vectors, generator, properties 1-13, measure, spare, perf, isolation). `npm test`: 11 files, 90 tests pass.
+- Measured at m = 4, seed 0x2545F491: k >= 8 False_Accept_Rate 29 / 100,000 = 2.9e-4; random input 31 / 100,000 non-null (99.969% rejected). m = 3: 1 / 100,000 and 1 / 100,000. Mean decode 0.0029 ms (0-4 flips), 0.0020 ms (random).
+- Filled the "Residual risk" values in `docs/message-format.md`; replaced "preliminary" status lines in `.kiro/specs/message-codec/design.md`; marked all tasks done in `tasks.md`.
+- `web/tsconfig.json`: excluded `src/**/__tests__` from `tsc`, because the tests import `node:` modules and the project has no `@types/node`.
+**Caught, corrected, or changed my mind about:**
+- Work was done in the `master` worktree `D:\Coding\ShadowCode-web`, not in `D:\Coding\ShadowCode` (branch `training/pipeline` with uncommitted `/training` changes).
+- Moved the seeded draw procedures from `message.measure.test.ts` into `message.helpers.ts`, so the spare-bit test does not import a test file.
+- Rounding in design tables: "all" rates corrected to 2.46e-4 (Option B) and 2.06e-4 (Option A). Counts unchanged.
+- Tile-codec spec search for the Requirement 11.7 strings: only hit is the CRC-7 reason sentence in REQ-1.4, which the requirement allows.
+**Went wrong or had to redo:**
+- First manual CRLF test of the generator reported a mismatch because PowerShell `Get-Content` re-encoded the en dash. Re-run with UTF-8 file I/O: CRLF check and write mode pass.
+- `tsc` failed on the new test helpers (no Node types) until the tsconfig exclude was added.
