@@ -35,3 +35,16 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+# Training artifacts (checkpoints, exports, datasets)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+/training/export/
+/training/data/
+/training/datasets/
+/training/dataset/
+# ONNX models: ignored everywhere except the deployed bundles
+*.onnx
+!web/public/models/
+!web/public/models/**/*.onnx

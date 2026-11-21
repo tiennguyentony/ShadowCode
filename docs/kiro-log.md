@@ -67,3 +67,13 @@ Entries before this log are not backfilled.
 
 **Went wrong or had to redo:**
 - `git worktree add` returned exit code 1 in PowerShell because git writes progress text to stderr. The worktree was created correctly.
+
+**Feature:** chat
+**Output:**
+- `.gitignore` on `master`: added rules for `*.pt`, `*.pth`, `*.ckpt`, `*.safetensors` (any path); `/training/export/`, `/training/data/`, `/training/datasets/`, `/training/dataset/`; `*.onnx` (any path) with exceptions `!web/public/models/` and `!web/public/models/**/*.onnx`.
+- `docs/kiro-log.md`: this entry.
+**Caught, corrected, or changed my mind about:**
+- `training/data.py` is tracked code. The dataset rules match folder names only, so this file stays tracked.
+- The `*.pt` rule also ignores any `.pt` file inside `web/public/models/`. A bundle containing a `.pt` file would not be committed.
+**Went wrong or had to redo:**
+- Nothing recorded.
