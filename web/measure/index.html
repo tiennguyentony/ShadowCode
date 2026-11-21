@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Measure</title>
+    <style>
+      body { font: 16px/1.4 system-ui, sans-serif; margin: 0; padding: 12px; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+      button, select { font: inherit; padding: 6px 10px; }
+      video, canvas { display: block; width: 100%; max-width: 1280px; height: auto; background: #000; }
+      canvas { touch-action: none; cursor: crosshair; }
+      code { font-family: ui-monospace, Consolas, monospace; }
+      #error { color: #c00; }
+      ol { margin: 4px 0; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <label>Camera <select id="camera"></select></label>
+      <button id="freeze" type="button" disabled>Freeze</button>
+      <button id="clear" type="button">Clear measurements</button>
+    </div>
+    <div>Stream: <code id="res">-</code> | Label: <code id="label">-</code></div>
+    <div>WebGPU: <code id="gpu">checking...</code></div>
+    <div id="error"></div>
+    <p id="hint"></p>
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="frame" hidden></canvas>
+    <div>Measurements (camera px per 1 cm):</div>
+    <ol id="list"></ol>
+    <div>Pixels per cm (average of last 5): <strong><code id="avg">-</code></strong></div>
+    <script type="module" src="../src/ui/measure.ts"></script>
+  </body>
+</html>
