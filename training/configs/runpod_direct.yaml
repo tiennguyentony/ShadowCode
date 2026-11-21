@@ -1,17 +1,15 @@
 # Direct reader on a RunPod pod: no locator and no flatten step. The reader
-# gets the centre crop of the simulated camera frame, at a random rotation,
-# scale and shift, and has to read the bits from that.
+# gets a 384 pixel square of camera frame, with the tile at the size the phone
+# shows it (154 to 340 pixels), at a random rotation, position and tilt, and
+# has to read the bits from that.
 #
 # DIRECT MODE HAS NOT YET BEEN SHOWN TO LEARN. Nothing in this repository has
 # trained it above chance. This config is an experiment that runs beside the
 # main (flattened) run, and the learning check below is there so that a run
 # that is not learning costs 30 minutes of GPU time, not a night.
 #
-# It is also not matched to the phone. simulation.direct.scale (0.8 to 1.25)
-# shows the reader a tile at about 307 to 480 pixels; the phone shows one at
-# 154 to 340 (camera_px_per_tile), which direct mode applies as blur only.
-# A run with this config tests whether direct mode can learn at all.
-# docs/runs.md, "Direct mode".
+# The tile size comes from camera_px_per_tile (simulation.direct.scale: auto),
+# so the run is matched to the phone. docs/runs.md, "Direct mode".
 #
 # Everything except reader_input and the paths is default.yaml unchanged, so
 # the two runs can be compared.

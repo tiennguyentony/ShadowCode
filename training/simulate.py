@@ -7,7 +7,6 @@ surface pixels to frame pixels (coordinates as in geometry.py).
 One knob, ``strength`` in [0, 1], scales every range. Order of the steps:
 
 1. perspective warp           tilt up to max_tilt_deg * strength
-   (direct mode only: plus random rotation, scale and shift)
 2. defocus and motion blur
 3. colour shift and contrast
 4. loss of resolution, down   to camera_px_per_tile pixels per tile
@@ -26,6 +25,13 @@ value, log-uniform over the range. The frame is square by default, which is
 neutral between portrait and landscape; ``simulation.frame_px: [width,
 height]`` gives any other shape, and nothing here or in geometry.py depends
 on which side is longer.
+
+Direct mode (the reader gets the camera frame unflattened) is its own path,
+``_simulate_direct``. There the frame is in camera pixels: the tile is drawn
+at the size the camera shows it, 154 to 340 pixels with the phone settings,
+at a random rotation and position, and the frame is the TILE_PX square the
+reader is given. Steps 4 and 7 do not exist in that path; drawing the tile at
+camera size is the loss of resolution.
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ import torch.nn.functional as F
 
 from camera import camera_range, frame_size
 from constants import TILE_PX
-from geometry import apply_homography, warp
+from geometry import apply_homography, warp, warp_periodic
 
 
 class SimResult(NamedTuple):
@@ -88,55 +94,65 @@ def _tilt(tilt: torch.Tensor, azimuth: torch.Tensor, distance: torch.Tensor) -> 
     return h
 
 
-def sample_homography(
-    batch: int, surface_px: int, cfg: dict, strength: float, direct: bool
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Random surface -> frame homography, (B,3,3) float64 on the CPU, and the fit scale (B,).
-
-    The fit scale is how much each sample was shrunk to fit the frame (1 in
-    direct mode). It is not part of the camera model, so the loss-of-resolution
-    step divides it out again.
-    """
+def _random_tilt(batch: int, cfg: dict, strength: float) -> torch.Tensor | None:
+    """A random tilt of the surface, acting on centred surface coordinates, or None when it is off."""
     sim = cfg["simulation"]
+    if not (sim["effects"]["perspective"] and strength > 0):
+        return None
+    p = sim["perspective"]
+    tilt = torch.rand(batch, dtype=torch.float64) * math.radians(p["max_tilt_deg"]) * strength
+    azimuth = torch.rand(batch, dtype=torch.float64) * 2 * math.pi
+    lo, hi = p["distance_tiles"]
+    distance = (lo + torch.rand(batch, dtype=torch.float64) * (hi - lo)) * TILE_PX
+    return _tilt(tilt, azimuth, distance)
+
+
+def sample_homography(batch: int, surface_px: int, cfg: dict, strength: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flattened mode: random surface -> frame homography, (B,3,3) float64 on the CPU, and the fit scale (B,).
+
+    The fit scale is how much each sample was shrunk to fit the frame. It is
+    not part of the camera model, so the loss-of-resolution step divides it
+    out again.
+    """
     frame_w, frame_h = frame_size(cfg)
     half = surface_px / 2.0
     centre = torch.full((batch,), -half, dtype=torch.float64)
     h = _translate(centre, centre)
+    tilt = _random_tilt(batch, cfg, strength)
+    if tilt is not None:
+        h = tilt @ h
 
-    if direct:
-        # Random position within the tile pattern, so the centre crop starts anywhere in a tile.
-        shift = (torch.rand(batch, 2, dtype=torch.float64) - 0.5) * TILE_PX
-        h = _translate(shift[:, 0], shift[:, 1]) @ h
-
-    if sim["effects"]["perspective"] and strength > 0:
-        p = sim["perspective"]
-        tilt = torch.rand(batch, dtype=torch.float64) * math.radians(p["max_tilt_deg"]) * strength
-        azimuth = torch.rand(batch, dtype=torch.float64) * 2 * math.pi
-        lo, hi = p["distance_tiles"]
-        distance = (lo + torch.rand(batch, dtype=torch.float64) * (hi - lo)) * TILE_PX
-        h = _tilt(tilt, azimuth, distance) @ h
-
-    if direct:
-        d = sim["direct"]
-        amount = strength if d["ramp_with_strength"] else 1.0
-        angle = torch.rand(batch, dtype=torch.float64) * math.radians(d["rotation_deg"]) * amount
-        lo, hi = d["scale"]
-        log_scale = math.log(lo) + torch.rand(batch, dtype=torch.float64) * (math.log(hi) - math.log(lo))
-        h = _scale_rotate(torch.exp(log_scale * amount), angle) @ h
-        fit = torch.ones(batch, dtype=torch.float64)
-    else:
-        # Keep the middle two tiles' worth of surface inside the frame, so a
-        # tile-sized patch at any offset can be flattened out of it.
-        reach = TILE_PX + 8.0
-        corners = torch.tensor([[-reach, -reach], [reach, -reach], [reach, reach], [-reach, reach]], dtype=torch.float64)
-        projected = apply_homography(h, (corners + half).unsqueeze(0).expand(batch, -1, -1))
-        extent_x, extent_y = projected[..., 0].abs().amax(dim=1), projected[..., 1].abs().amax(dim=1)
-        fit = torch.minimum((frame_w / 2.0 - 4.0) / extent_x, (frame_h / 2.0 - 4.0) / extent_y).clamp(max=1.0)
-        h = _scale_rotate(fit, torch.zeros_like(fit)) @ h
+    # Keep the middle two tiles' worth of surface inside the frame, so a
+    # tile-sized patch at any offset can be flattened out of it.
+    reach = TILE_PX + 8.0
+    corners = torch.tensor([[-reach, -reach], [reach, -reach], [reach, reach], [-reach, reach]], dtype=torch.float64)
+    projected = apply_homography(h, (corners + half).unsqueeze(0).expand(batch, -1, -1))
+    extent_x, extent_y = projected[..., 0].abs().amax(dim=1), projected[..., 1].abs().amax(dim=1)
+    fit = torch.minimum((frame_w / 2.0 - 4.0) / extent_x, (frame_h / 2.0 - 4.0) / extent_y).clamp(max=1.0)
+    h = _scale_rotate(fit, torch.zeros_like(fit)) @ h
 
     middle_x = torch.full((batch,), frame_w / 2.0, dtype=torch.float64)
     middle_y = torch.full((batch,), frame_h / 2.0, dtype=torch.float64)
     return _translate(middle_x, middle_y) @ h, fit
+
+
+def direct_scale_range(cfg: dict) -> tuple[float, float]:
+    """Direct mode: the size of a tile in the frame, as a fraction of TILE_PX, (low, high).
+
+    ``simulation.direct.scale: auto`` takes it from ``camera_px_per_tile``,
+    which is the point of direct mode: the reader sees the tile at the size
+    the camera shows it. ``[low, high]`` sets it by hand.
+    """
+    value = cfg["simulation"]["direct"]["scale"]
+    if value == "auto":
+        span = camera_range(cfg)
+        if span is None:
+            raise ValueError("simulation.direct.scale: auto needs camera_px_per_tile; set that or give [low, high]")
+        return span[0] / TILE_PX, span[1] / TILE_PX
+    low, high = float(value[0]), float(value[1])
+    if not 0 < low <= high:
+        raise ValueError(f"simulation.direct.scale needs 0 < low <= high, got {value!r}")
+    return low, high
 
 
 # -- blur -------------------------------------------------------------------
@@ -320,13 +336,89 @@ def _sensor(frame: torch.Tensor, sigma: torch.Tensor | None, quality: torch.Tens
 # -- the simulation ---------------------------------------------------------
 
 
-def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = False) -> SimResult:
-    """Wrapped surface -> (camera frame, surface-to-frame homography).
+def _simulate_direct(surface: torch.Tensor, cfg: dict, strength: float) -> SimResult:
+    """Direct mode: the TILE_PX square of camera frame the reader is given.
 
-    ``strength`` is the single knob, 0 to 1. ``direct`` adds the random
-    rotation, scale and shift used when the reader gets the frame unflattened;
-    those apply whenever the simulation is enabled, at any strength, unless
-    ``simulation.direct.ramp_with_strength`` is set.
+    Per sample: the surface, taken as repeating without end, is drawn at full
+    resolution with a random position, tilt and rotation into a square just
+    large enough; blur and colour are applied there; the square is then
+    reduced, with averaging as a sensor does, to TILE_PX. That last step puts
+    the tile at its camera size, ``direct_scale_range`` times TILE_PX. Noise
+    and JPEG follow at that resolution.
+
+    Rotation and size apply at any strength unless
+    ``simulation.direct.ramp_with_strength`` is set; then both ranges grow
+    with the strength. ``simulation.direct.rotation_near_right_angles_deg``
+    replaces the free rotation by one of the four right-angle orientations
+    plus or minus that many degrees.
+    """
+    sim = cfg["simulation"]
+    effects, d = sim["effects"], sim["direct"]
+    b, _, surface_px, _ = surface.shape
+    on = strength > 0
+    amount = strength if d["ramp_with_strength"] else 1.0
+
+    half = torch.full((b,), -surface_px / 2.0, dtype=torch.float64)
+    # Random position within the tile pattern, so the frame starts anywhere in a tile.
+    shift = (torch.rand(b, 2, dtype=torch.float64) - 0.5) * TILE_PX
+    h = _translate(shift[:, 0], shift[:, 1]) @ _translate(half, half)
+    tilt = _random_tilt(b, cfg, strength)
+    if tilt is not None:
+        h = tilt @ h
+    near = d.get("rotation_near_right_angles_deg")
+    if near is None:
+        angle = torch.rand(b, dtype=torch.float64) * math.radians(d["rotation_deg"]) * amount
+    else:
+        # Upright, on either side or upside down, each within plus or minus `near` degrees.
+        quarter = torch.randint(0, 4, (b,)).double() * (math.pi / 2)
+        angle = quarter + (torch.rand(b, dtype=torch.float64) * 2 - 1) * math.radians(near) * amount
+    h = _scale_rotate(torch.ones(b, dtype=torch.float64), angle) @ h
+    low, high = direct_scale_range(cfg)
+    log_scale = math.log(low) + torch.rand(b, dtype=torch.float64) * (math.log(high) - math.log(low))
+    # Side of the full-resolution square that becomes the TILE_PX frame.
+    sides = [max(32, round(TILE_PX / s)) for s in torch.exp(log_scale * amount).tolist()]
+
+    def uniform(scale: float) -> torch.Tensor:
+        return torch.rand(b, device=surface.device, dtype=surface.dtype) * scale * strength
+
+    kernels = None
+    if on and effects["blur"]:
+        kernels = blur_kernels(
+            uniform(sim["blur"]["defocus_radius_px"]),
+            uniform(sim["blur"]["motion_length_px"]),
+            torch.rand(b, device=surface.device, dtype=surface.dtype) * math.pi,
+            _blur_kernel_size(sim["blur"]),
+        )
+
+    frames, homographies = [], []
+    for i, side in enumerate(sides):
+        middle = torch.full((1,), side / 2.0, dtype=torch.float64)
+        to_square = _translate(middle, middle) @ h[i : i + 1]
+        view = warp_periodic(surface[i : i + 1], torch.linalg.inv(to_square).to(surface), (side, side))
+        if kernels is not None:
+            view = apply_blur(view, kernels[i : i + 1])
+        if on and effects["colour"]:
+            view = colour_shift(view, sim["colour"], strength)
+        if side != TILE_PX:
+            view = F.interpolate(view, size=(TILE_PX, TILE_PX), mode="bilinear", antialias=True, align_corners=False)
+        frames.append(view)
+        to_frame = torch.full((1,), TILE_PX / side, dtype=torch.float64)
+        homographies.append(_scale_rotate(to_frame, torch.zeros(1, dtype=torch.float64)) @ to_square)
+    frame, homography = torch.cat(frames, dim=0), torch.cat(homographies, dim=0).to(surface)
+    if not on:
+        return SimResult(frame, homography)
+    sigma = uniform(sim["noise"]["sigma"]) if effects["noise"] else None
+    quality = 100.0 - uniform(100.0 - sim["jpeg"]["min_quality"]) if effects["jpeg"] else None
+    return SimResult(_sensor(frame, sigma, quality, sim["jpeg"]["chroma_subsampling"]), homography)
+
+
+def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = False) -> SimResult:
+    """Surface -> (camera frame, surface-to-frame homography).
+
+    ``strength`` is the single knob, 0 to 1. ``direct`` is the mode in which
+    the reader gets the frame unflattened; see ``_simulate_direct``. There the
+    surface is taken as periodic, so one tile is enough, and the frame is
+    TILE_PX square.
 
     With the simulation disabled the frame is the surface and the homography
     is the identity. The same holds, without any resampling, in flattened
@@ -337,11 +429,13 @@ def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = F
     identity = torch.eye(3, device=surface.device, dtype=surface.dtype).repeat(b, 1, 1)
     if not sim["enabled"]:
         return SimResult(surface, identity)
+    if direct:
+        return _simulate_direct(surface, cfg, strength)
     effects = sim["effects"]
     on = strength > 0
 
-    if direct or (effects["perspective"] and on):
-        h64, fit = sample_homography(b, surface_px, cfg, strength, direct)
+    if effects["perspective"] and on:
+        h64, fit = sample_homography(b, surface_px, cfg, strength)
         frame_w, frame_h = frame_size(cfg)
         frame = warp(surface, torch.linalg.inv(h64).to(surface), (frame_h, frame_w))
         homography = h64.to(surface)

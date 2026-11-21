@@ -46,7 +46,7 @@ Deploy the pod **from the network volume** (so that it is attached), with:
   with Python 3.10 or newer, PyTorch 2.2 or newer and CUDA works;
   `setup_runpod.sh` checks.
 - GPU: one NVIDIA GPU with 12 GB or more. The flattened run at batch 8 peaks
-  at about 4.3 GB on the laptop; direct mode has not been measured.
+  at about 4.3 GB on the laptop; direct mode peaked at 3.6 GB in a short test without LPIPS.
 - Volume mount path: `/workspace` (the default). The config assumes it.
 - Container disk: the template default. It only has to hold the pip packages.
 - On-demand, not spot (interruptible), unless you accept restarts. A restarted run

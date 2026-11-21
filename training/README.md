@@ -114,6 +114,27 @@ checkpoints are moved to a `replaced-...` subfolder, not deleted):
 python train.py data.train_dir=D:/path/to/images --fresh
 ```
 
+**Sanity run.** One hour of the long run's own settings on the laptop GPU,
+in its own folders. It prints the GPU name and free memory first and stops
+if it is not on the RTX 4070 (`train.expect_gpu`); it never falls back to the
+CPU. `--max-minutes` stops any run after that much training, with a
+checkpoint, eval-mode metrics and a sample sheet in `<log.dir>/samples/`.
+Results are in `/docs/runs.md`.
+
+```bash
+python train.py --config configs/sanity.yaml --max-minutes 60
+```
+
+**Long run.** `configs/long.yaml` is `default.yaml` with the dataset path,
+its own folders (`runs/long`, `checkpoints/long`), the RTX 4070 requirement
+and a sample sheet every 5,000 steps (`log.sheet_every`). `--keep-awake`
+keeps a Windows machine from idle-sleeping while the run lives. The same
+command resumes after a stop. `/docs/runs.md` records how it was started.
+
+```bash
+python train.py --config configs/long.yaml --keep-awake
+```
+
 **Progress and cost.** Every `log.report_every` steps (1,000) one line is
 printed and appended to `<log.dir>/progress.csv`: step, bit accuracy and PSNR
 (means over those steps) and the cost so far. The cost needs the machine's
@@ -174,7 +195,8 @@ inputs and stops before writing `contract.json` if they differ by more than
 ## The config
 
 Everything is in `configs/default.yaml`; `configs/smoke.yaml`,
-`configs/smoke_blur.yaml`, `configs/smoke_resolution.yaml` and
+`configs/smoke_blur.yaml`, `configs/smoke_resolution.yaml`, `configs/sanity.yaml`,
+`configs/long.yaml` and
 `configs/runpod_direct.yaml` inherit from it.
 The parts that need a decision:
 
@@ -185,7 +207,7 @@ The parts that need a decision:
 | `band.grating_step` | `auto`: the highest band whose finest stripes still get `band.min_camera_px_per_cycle` camera pixels per cycle at the low end of the range (see `band.py`). With 154 that is step 8, the top band: 16-51 cycles per tile, 3.01 pixels per cycle. One pixel lower and auto drops to step 6. `/docs/runs.md` has the check. |
 | `simulation.frame_px` | The simulated frame: a window onto the surface at 384 pixels per tile, not the camera stream. One number is a square; `[width, height]` gives any shape. |
 | `data.train_dir` | The dataset path. |
-| `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the simulation adds random rotation, scale and shift and the reader gets the centre crop of the frame. Not yet shown to learn. |
+| `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the reader gets a 384 pixel square of camera frame with the tile at camera size (`simulation.direct.scale: auto`, 154 to 340 pixels), at a random rotation, position and tilt. Not shown to learn: every smoke test with rotation ends at chance (`/docs/runs.md`, "Direct mode"). `simulation.direct.rotation_near_right_angles_deg` and `ramp_with_strength` restrict or ease in the rotation. |
 | `early_stop` | The learning check. Off by default, on in `runpod_direct.yaml`. |
 | `schedule.image_loss` | Image-loss weight is 0 until bit accuracy passes `acc_threshold`, then ramps over `ramp_steps`. |
 | `schedule.sim_strength` | Simulation strength ramps from 0 to `max_strength` over `ramp_steps`. |

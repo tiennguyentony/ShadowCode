@@ -11,18 +11,27 @@ Every ``log.report_every`` steps one line goes to the console and to
 
     python train.py --config configs/runpod_direct.yaml --price-per-hour 0.69
 
-Ctrl-C or SIGTERM saves a checkpoint and exits. Exit codes: 0 finished,
-3 stopped by the learning check (``early_stop``), 130 interrupted.
+Ctrl-C or SIGTERM saves a checkpoint and exits. Exit codes: 0 finished or
+stopped by ``--max-minutes``, 3 stopped by the learning check
+(``early_stop``), 130 interrupted.
+
+On a CUDA device the run first prints what the GPU is and how much memory is
+free. ``train.expect_gpu`` names the GPU the run must be on; anything else,
+including no CUDA at all, stops the run. It never falls back to the CPU then.
+
+    python train.py --config configs/sanity.yaml --max-minutes 60
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import signal
 import sys
 import time
 from collections import deque
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -36,7 +45,7 @@ from geometry import center_crop, flatten_random_patch
 from models import build_models, count_parameters
 from runlog import ProgressLog, RunClock
 from simulate import simulate, wrap_surface
-from viz import residual_image, sample_sheet
+from viz import residual_image, sample_sheet, save_image
 
 READER_INPUTS = ("flattened", "direct")
 # BCH(63,39) in /docs/message-format.md corrects up to 4 errors in bits 0-62.
@@ -146,8 +155,9 @@ class Trainer:
     def forward(self, tiles: torch.Tensor, bits: torch.Tensor) -> dict[str, torch.Tensor]:
         residual = self.embedder(tiles, bits)
         marked = (tiles + residual).clamp(0.0, 1.0)
-        surface = wrap_surface(marked, int(self.cfg["surface"]["repeat"]))
         direct = self.cfg["train"]["reader_input"] == "direct"
+        # Direct mode samples the tile as a repeating pattern, so it needs no repeats.
+        surface = marked if direct else wrap_surface(marked, int(self.cfg["surface"]["repeat"]))
         sim = simulate(surface, self.cfg, self.sim_strength(), direct=direct)
         view = self.reader_view(sim.frame, sim.homography)
         logits = self.reader(view)
@@ -249,6 +259,78 @@ def log_scalars(writer, metrics: dict, step: int) -> None:
             writer.add_scalar(tag, metrics[key], step)
 
 
+def require_gpu(device: torch.device, expect: str | None) -> None:
+    """Print what the GPU is; stop if there is none or it is not the expected one.
+
+    ``expect`` is a part of the device name, for example "RTX 4070". With it
+    set the run has to be on that GPU: a CPU or MPS device stops the run too.
+    """
+    if device.type != "cuda":
+        if expect:
+            raise SystemExit(
+                f"stopped: train.expect_gpu is {expect!r} but the device is {device}. "
+                f"torch.cuda.is_available() is {torch.cuda.is_available()}. Not falling back."
+            )
+        return
+    available = torch.cuda.is_available()
+    print(f"torch.cuda.is_available(): {available}")
+    if not available:
+        raise SystemExit(
+            f"stopped: the device is {device} but this PyTorch ({torch.__version__}) cannot use CUDA. "
+            "Either the build has no CUDA support or no NVIDIA driver is reachable. Not falling back to the CPU."
+        )
+    index = device.index or 0
+    name = torch.cuda.get_device_name(index)
+    free, total = torch.cuda.mem_get_info(index)
+    print(f"torch.cuda.get_device_name({index}): {name}")
+    print(f"GPU memory free: {free / 2**20:.0f} MiB of {total / 2**20:.0f} MiB")
+    if expect and expect.lower() not in name.lower():
+        raise SystemExit(f"stopped: expected a GPU named like {expect!r}, cuda:{index} is {name!r}. Not falling back.")
+
+
+def final_report(trainer: "Trainer", batches, directory: str | Path, count: int, batches_averaged: int = 8) -> None:
+    """Eval-mode metrics on fresh batches and a sample sheet, at the end of a run."""
+    results = [trainer.evaluate(next(batches), keep_outputs=True) for _ in range(batches_averaged)]
+
+    def mean(key: str) -> float:
+        return sum(m[key] for m in results) / len(results)
+
+    outputs = results[0]["outputs"]
+    sheet = save_image(
+        sample_sheet(outputs["original"][:count], outputs["marked"][:count]),
+        Path(directory) / "samples" / f"final_step_{trainer.step:08d}.png",
+    )
+    print(
+        f"final, eval mode, {batches_averaged} fresh batches at simulation strength {trainer.sim_strength():.2f}: "
+        f"bit_acc {mean('bit_acc'):.3f}  all 64 bits right {mean('message_exact'):.3f}  "
+        f"within BCH reach {mean('message_correctable'):.3f}  psnr {mean('psnr'):.1f} dB\n"
+        f"sample sheet (original | marked | difference x10): {sheet}",
+        flush=True,
+    )
+
+
+def keep_awake() -> None:
+    """Keep the machine from idle-sleeping while this process lives (Windows only).
+
+    The request belongs to the process and ends with it; no power setting is
+    changed. A closed lid still sleeps.
+    """
+    if os.name != "nt":
+        print("--keep-awake does nothing on this system")
+        return
+    import ctypes
+
+    es_continuous, es_system_required = 0x80000000, 0x00000001
+    ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | es_system_required)
+    print("keeping the computer awake while this run lives (a closed lid still sleeps)")
+
+
+def save_sheet(outputs: dict, step: int, count: int, directory: str | Path) -> Path:
+    """Sample sheet for this step: original | marked | difference x10, one row per sample."""
+    original, marked = (outputs[k][:count].float().cpu() for k in ("original", "marked"))
+    return save_image(sample_sheet(original, marked), Path(directory) / "samples" / f"step_{step:08d}.png")
+
+
 def log_images(writer, outputs: dict, step: int, count: int) -> None:
     original, marked, view = (outputs[k][:count].float().cpu() for k in ("original", "marked", "view"))
     writer.add_images("samples/1_original", original, step)
@@ -295,10 +377,19 @@ def main() -> int:
         default=None,
         help="what the machine costs per hour, in dollars; adds the cost so far to every report line",
     )
+    parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=None,
+        help="stop after this many minutes of training in this process, with a checkpoint and a final report",
+    )
+    parser.add_argument("--keep-awake", action="store_true", help="keep the computer from idle-sleeping during the run")
     parser.add_argument("overrides", nargs="*", help="dotted.key=value config overrides")
     args = parser.parse_args()
     if args.price_per_hour is not None and args.price_per_hour < 0:
         parser.error("--price-per-hour cannot be negative")
+    if args.max_minutes is not None and args.max_minutes <= 0:
+        parser.error("--max-minutes must be positive")
 
     cfg = load_config(args.config, args.overrides)
     check_demo(cfg)
@@ -308,6 +399,7 @@ def main() -> int:
     check_after_s = float(early.get("after_minutes", 30)) * 60.0
     check_min_acc = float(early.get("min_bit_acc", 0.55))
     report_every = int(log_cfg.get("report_every", 1000))
+    sheet_every = int(log_cfg.get("sheet_every", log_cfg["image_every"]))
 
     clock = RunClock(log_cfg["dir"], args.price_per_hour, fresh=args.fresh)
     if check_enabled and clock.learning_check and clock.learning_check["result"] == "failed":
@@ -322,6 +414,9 @@ def main() -> int:
 
     torch.manual_seed(cfg["train"]["seed"])
     device = pick_device(cfg["train"]["device"])
+    require_gpu(device, cfg["train"].get("expect_gpu"))
+    if args.keep_awake:
+        keep_awake()
     trainer = Trainer(cfg, device)
     print(
         f"device={device}  embedder={count_parameters(trainer.embedder) / 1e6:.2f}M params  "
@@ -377,6 +472,10 @@ def main() -> int:
     recent: deque[tuple[float, float]] = deque(maxlen=max(1, report_every))
     stop = StopRequest()
     not_learning = False
+    out_of_time = False
+    max_seconds = None if args.max_minutes is None else args.max_minutes * 60.0
+    if max_seconds is not None:
+        print(f"time limit: the run stops after {args.max_minutes:g} minutes of training")
 
     def checkpoint_now() -> None:
         path = save_checkpoint(trainer, ckpt_cfg["dir"], int(ckpt_cfg["keep"]))
@@ -389,7 +488,8 @@ def main() -> int:
     try:
         while trainer.step < total and stop.signal_name is None:
             want_images = (trainer.step + 1) % log_cfg["image_every"] == 0
-            m = trainer.train_step(next(batches), keep_outputs=want_images)
+            want_sheet = bool(sheet_every) and (trainer.step + 1) % sheet_every == 0
+            m = trainer.train_step(next(batches), keep_outputs=want_images or want_sheet)
             step = trainer.step
             clock.tick()
             recent.append((m["bit_acc"], m["psnr"]))
@@ -397,6 +497,8 @@ def main() -> int:
                 log_scalars(writer, m, step)
             if want_images:
                 log_images(writer, m["outputs"], step, int(log_cfg["num_images"]))
+            if want_sheet:
+                print(f"sample sheet: {save_sheet(m['outputs'], step, int(log_cfg['num_images']), log_cfg['dir'])}", flush=True)
             if log_cfg["print_every"] and step % log_cfg["print_every"] == 0:
                 rate = (step - start_step) / max(1e-9, time.time() - t0)
                 print(
@@ -436,6 +538,9 @@ def main() -> int:
                 )
                 if not_learning:
                     break
+            if max_seconds is not None and time.time() - t0 >= max_seconds:
+                out_of_time = True
+                break
     except Exception:
         # Ctrl-C also reaches the data-loader workers; if their exit is what
         # failed here, the stop was asked for and the checkpoint below still happens.
@@ -456,7 +561,19 @@ def main() -> int:
         checkpoint_now()
         print(f"stopped by {stop.signal_name} at step {trainer.step}; the same command resumes from here")
         return EXIT_INTERRUPTED
-    print(f"finished {trainer.step} steps in {clock.elapsed_seconds / 3600.0:.2f} h, {clock.cost_text()}")
+    rate = (trainer.step - start_step) / max(1e-9, time.time() - t0)
+    if out_of_time:
+        checkpoint_now()
+        print(
+            f"time limit reached: stopped at step {trainer.step} after {args.max_minutes:g} minutes, "
+            f"{rate:.2f} steps per second over this process; the same command without --max-minutes resumes from here"
+        )
+    else:
+        print(
+            f"finished {trainer.step} steps in {clock.elapsed_seconds / 3600.0:.2f} h, {clock.cost_text()}, "
+            f"{rate:.2f} steps per second over this process"
+        )
+    final_report(trainer, batches, log_cfg["dir"], int(log_cfg["num_images"]))
     return 0
 
 

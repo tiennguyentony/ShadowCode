@@ -31,7 +31,7 @@ from PIL import Image
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from data import infinite, make_loader, procedural_image
-from geometry import apply_homography, flatten_from_corners, flatten_random_patch, square_corners
+from geometry import apply_homography, flatten_from_corners, flatten_random_patch, square_corners, warp_periodic
 from models import count_parameters
 from simulate import simulate
 from train import Trainer
@@ -90,6 +90,13 @@ def check_structure(trainer: Trainer) -> None:
     assert gap < 1e-9, f"flatten does not reproduce an exact crop (max difference {gap:.2e})"
 
     check_frame_shapes(trainer.cfg)
+
+    # Direct mode samples the tile as an endless pattern: the identity must
+    # give the tile repeated, with nothing lost at the seams.
+    tile = torch.rand(1, 3, TILE_PX, TILE_PX, dtype=torch.float64)
+    identity = torch.eye(3, dtype=torch.float64).unsqueeze(0)
+    gap = (warp_periodic(tile, identity, (2 * TILE_PX, 3 * TILE_PX)) - tile.repeat(1, 1, 2, 3)).abs().max().item()
+    assert gap < 1e-9, f"periodic sampling does not reproduce the repeated tile (max difference {gap:.2e})"
 
 
 def check_frame_shapes(cfg: dict) -> None:
@@ -154,7 +161,7 @@ def run_smoke(
         check_structure(trainer)
         print(
             "structure checks passed: circular convs, seamless residual, reader under 3M, exact flatten, "
-            "portrait, landscape and square frames"
+            "portrait, landscape and square frames, periodic sampling"
         )
 
         batches = infinite(make_loader(cfg, device))

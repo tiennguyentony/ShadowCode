@@ -55,7 +55,7 @@ from constants import MESSAGE_BITS, TILE_PX
 from data import procedural_image
 from geometry import center_crop, flatten_from_corners, flatten_random_patch
 from models import Models, build_models
-from simulate import simulate, wrap_surface
+from simulate import direct_scale_range, simulate, wrap_surface
 
 HERE = Path(__file__).resolve().parent
 CONTRACT_VERSION = 1
@@ -382,14 +382,19 @@ def flatten_contract() -> dict:
 
 def crop_contract(cfg: dict) -> dict:
     d = cfg["simulation"]["direct"]
+    low, high = direct_scale_range(cfg)
     return {
         "size": [TILE_PX, TILE_PX],
         "position": "centred: left = (frame width - size) // 2, top = (frame height - size) // 2",
         "resampling": "none; the crop copies frame pixels",
         "trained_rotation_deg": d["rotation_deg"],
-        "trained_scale": d["scale"],
-        "simulated_frame_px": list(frame_size(cfg)),
+        "trained_rotation_near_right_angles_deg": d.get("rotation_near_right_angles_deg"),
+        "trained_px_per_tile": [round(low * TILE_PX), round(high * TILE_PX)],
+        "trained_px_per_tile_means": "width of one printed tile in the crop, in pixels, seen straight on",
+        "trained_scale": [round(low, 4), round(high, 4)],
+        "simulated_frame_px": [TILE_PX, TILE_PX],
         "simulated_frame_px_order": "[width, height]",
+        "simulated_frame_is": "the crop itself: training draws only the square the reader is given",
     }
 
 
@@ -447,11 +452,13 @@ def build_contract(
             "compare": "the logits, not only the bits; /docs/model-contract.md says how closely",
             "embedded_bits_follow_message_format": False,
             "frames_from": "generated images put through the training simulation; no camera, no dataset",
-            "frame_size": list(FIXTURE_FRAME_PX),
+            "frame_size": list(FIXTURE_FRAME_PX) if flattened else [TILE_PX, TILE_PX],
             "frame_size_order": "[width, height]",
             "frame_is": (
                 "a portrait window onto the surface at TILE_PX pixels per tile, in the 9:16 shape of the "
                 "camera stream but not at its size; a real frame is camera.stream_px"
+                if flattened
+                else "the TILE_PX square the reader is given, in camera pixels; it stands for the centre of a real frame"
             ),
         },
         "verification": {

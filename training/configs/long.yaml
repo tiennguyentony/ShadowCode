@@ -1,0 +1,27 @@
+# The long run of the main (flattened) reader on the laptop GPU:
+#
+#   python train.py --config configs/long.yaml --keep-awake
+#
+# Every training setting is default.yaml unchanged: the phone camera range
+# (154 to 340 px per tile, 50 mm tile), the top band (step 8, picked by
+# auto), batch 8, 140,000 steps. This file only says where to read and write,
+# requires the RTX 4070, and saves a sample sheet every 5,000 steps.
+#
+# The same command resumes after a stop. docs/runs.md records how it was
+# started.
+base: default.yaml
+
+data:
+  train_dir: data/open-images-v7-val/images   # 16,000 images: python fetch_dataset.py --out data/open-images-v7-val
+
+train:
+  device: cuda:0
+  expect_gpu: RTX 4070         # stop unless cuda:0 is this GPU; never fall back to the CPU
+
+log:
+  dir: runs/long
+  print_every: 100
+  sheet_every: 5000            # runs/long/samples/step_XXXXXXXX.png
+
+checkpoint:
+  dir: checkpoints/long

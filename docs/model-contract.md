@@ -151,9 +151,11 @@ The frame can be any shape. The fixture frames have been portrait (768 x 1366) s
 
 ### `reader_input: direct`
 
-No flatten. `flatten` is `null` and `center_crop` is set instead: the reader gets the 384 x 384 square from the middle of the frame, pixels copied as they are. `center_crop` also records the rotation and scale range the reader was trained on, and `simulated_frame_px` as `[width, height]`. This mode has only been run for a few training steps and is not shown to learn yet, so treat it as provisional.
+No flatten. `flatten` is `null` and `center_crop` is set instead: the reader gets the 384 x 384 square from the middle of the frame, pixels copied as they are. `center_crop` also records what the reader was trained on: `trained_rotation_deg` (any rotation) and `trained_px_per_tile`, the width of one tile in the crop. This mode has only been run for a few training steps and is not shown to learn yet, so treat it as provisional.
 
-Direct mode is also not matched to the phone yet. Its `trained_scale` (0.8 to 1.25) means a tile about 307 to 480 pixels wide in the crop, while the phone shows a tile at 154 to 340 pixels (`camera.trained_px_per_tile`). A direct reader trained this way would need the frame scaled up before cropping.
+Since 2026-11-21 direct mode is matched to the phone: `trained_px_per_tile` is `[154, 340]`, the same range as `camera.trained_px_per_tile`, so the crop is taken from the camera frame as it is, with no scaling. The crop then holds between 1.1 and 2.5 tiles across. Bundles made before that date were trained at 307 to 480 pixels per tile (`trained_scale` 0.8 to 1.25) and do not fit a phone frame.
+
+In direct mode the fixture frames are 384 x 384, the crop itself, so they check the model but not the cropping.
 
 To turn already-cropped RGBA pixels into the input:
 

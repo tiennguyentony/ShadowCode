@@ -55,6 +55,29 @@ def warp(image: torch.Tensor, out_to_in: torch.Tensor, out_hw: tuple[int, int]) 
     return F.grid_sample(image, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
 
 
+def warp_periodic(image: torch.Tensor, out_to_in: torch.Tensor, out_hw: tuple[int, int]) -> torch.Tensor:
+    """Like ``warp``, for an image that repeats without end in both directions.
+
+    ``image`` (B,C,H,W) is one period. Input coordinates are wrapped into it,
+    so nothing is ever outside, and the blend across the seam uses the pixels
+    from the other edge. Used for the tiled surface, which a view at a small
+    scale or a steep tilt sees far more of than any fixed number of repeats.
+    """
+    b, _, h, w = image.shape
+    oh, ow = out_hw
+    ys = torch.arange(oh, device=image.device, dtype=image.dtype) + 0.5
+    xs = torch.arange(ow, device=image.device, dtype=image.dtype) + 0.5
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+    points = torch.stack([xx, yy], dim=-1).view(1, -1, 2).expand(b, -1, -1)
+    src = apply_homography(out_to_in, points)
+    # One wrapped pixel on every side, so bilinear sampling near an edge finds its neighbour.
+    padded = F.pad(image, (1, 1, 1, 1), mode="circular")
+    x = torch.remainder(src[..., 0], w) + 1.0
+    y = torch.remainder(src[..., 1], h) + 1.0
+    grid = torch.stack([x * (2.0 / (w + 2)) - 1.0, y * (2.0 / (h + 2)) - 1.0], dim=-1).view(b, oh, ow, 2)
+    return F.grid_sample(padded, grid, mode="bilinear", padding_mode="border", align_corners=False)
+
+
 def square_corners(size: float, batch: int, device=None, dtype=None) -> torch.Tensor:
     """Corners of a size x size square: top-left, top-right, bottom-right, bottom-left. (B,4,2)."""
     c = torch.tensor([[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]], device=device, dtype=dtype)

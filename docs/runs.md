@@ -8,9 +8,65 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 | Run | State |
 |---|---|
 | Long run (main reader, flattened, laptop) | **Not started.** Waiting for a go-ahead. Settings below. |
-| Sanity run | **Not started.** No checkpoint or run folder exists under `/training` on the laptop, and nothing was training on its GPU when the settings below were applied. No run has used an older camera range. |
-| Direct reader (RunPod) | Not started. See "Direct mode" below before starting it. |
+| Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
+| Direct reader (RunPod) | Not started, and not recommended yet. Direct mode is matched to the phone, but every smoke test with rotation ends at chance. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
+
+## Sanity run
+
+One hour of the long run's own config (`configs/sanity.yaml` changes only the
+folders and requires the RTX 4070), 2026-11-21, 01:56 to 02:56.
+
+```bash
+python train.py --config configs/sanity.yaml --max-minutes 60
+```
+
+- GPU: NVIDIA GeForce RTX 4070 Laptop GPU, `cuda:0`, 7,068 of 8,188 MiB free
+  at the start. Batch 8, no out-of-memory error. PyTorch's peak was 4,322 MiB;
+  `nvidia-smi` showed 5,021 MiB used on the whole card and 92 to 100 percent
+  utilisation.
+- Data: the first 2,000 images of the dataset. The long run uses 16,000.
+- 7,001 steps in 60 minutes: 1.94 steps per second overall.
+
+| Step | Bit accuracy | PSNR, dB | Minutes for these 1,000 steps |
+|---|---|---|---|
+| 1,000 | 0.660 | 14.4 | 8.2 |
+| 2,000 | 0.819 | 12.4 | 7.7 |
+| 3,000 | 0.899 | 12.3 | 7.7 |
+| 4,000 | 0.941 | 12.3 | 7.7 |
+| 5,000 | 0.959 | 13.0 | 8.0 |
+| 6,000 | 0.974 | 15.7 | 8.7 |
+| 7,000 | 0.976 | 18.9 | 11.9 |
+
+Bit accuracy and PSNR are training means over the 1,000 steps ending there.
+
+At the end, in eval mode on 8 fresh batches: **bit accuracy 0.960**, all 64
+bits right in 16 percent of tiles, within reach of the error correction (at
+most 4 wrong bits) in 83 percent, **PSNR 20.4 dB**.
+
+What that does and does not show:
+
+- The run learns with the phone settings and the top band, on real images.
+- The image loss switched on at about step 4,000, when bit accuracy passed
+  0.95. From there the PSNR rose 7 dB in 3,000 steps while bit accuracy kept
+  rising. At step 7,000 the image loss was at 20 percent of its weight, so
+  the mark is still plainly visible in the samples. That is expected at this
+  point and says nothing about the final look.
+- The simulation was at 35 percent of full strength at the end (it ramps over
+  20,000 steps). The full phone camera has not been trained against yet.
+- Speed fell in the last quarter hour, from about 2.1 to 1.4 steps per
+  second. The image loss is not the cause by itself: the first 1,000 steps
+  with it cost 4 percent more. Unrelated timing runs straight afterwards were
+  also slower than in the afternoon (0.80 s per step against 0.50 s for the
+  same test), so the laptop as a whole had slowed after an hour under load.
+  It was on mains power, Balanced plan. Heat is the likely reason; that was
+  not verified.
+- At 1.4 to 2.1 steps per second, 140,000 steps take 18 to 28 hours.
+
+Samples: `training/runs/sanity/samples/` (original, marked, difference x10;
+one sheet every 1,000 steps and `final_step_00007001.png`). The images are
+dataset images under CC BY 2.0: credit the authors from `ATTRIBUTION.csv`
+before publishing a sheet. Checkpoint: `training/checkpoints/sanity/`.
 
 ## Camera settings for the long run
 
@@ -143,15 +199,79 @@ test: 3.9 GB.
 
 ## Direct mode
 
-Not matched to the phone yet. `simulation.direct.scale` is 0.8 to 1.25, so
-the direct reader sees a tile at about 307 to 480 pixels in its 384 pixel
-crop. On the phone a tile is 154 to 340 pixels. The camera range is applied
-to direct mode as blur only, not as size. A direct run started now answers
-"can it learn without the locator", not "does it work on the phone".
+Matched to the phone since 2026-11-21.
 
-Matching it to the phone is agreed and comes next, after the sanity run has
-started. The pod is not to be launched before that is done and its cost per
-step is reported.
+**What changed.** The direct reader used to see a tile at 307 to 480 pixels
+in its 384 pixel crop (`simulation.direct.scale: [0.8, 1.25]`), with the
+camera range applied as blur only. Now `scale: auto` takes the size from
+`camera_px_per_tile`: the tile is 154 to 340 pixels wide in the crop, at any
+rotation, position and tilt, so the crop holds 1.1 to 2.5 tiles across. The
+tile is drawn large and reduced with averaging, as a sensor does it; noise
+and JPEG are applied at that size. The surface is sampled as an endless
+pattern, so a small or tilted view never runs off its edge.
+
+Checked on the CPU: tile size between 154.6 and 339.8 pixels over 320
+samples; a stripe pattern lands at the expected frequency at both ends; a
+pattern too fine for 154 pixels comes out flat, not as a false coarse one;
+the returned homography agrees with where a dot is seen to within 0.5 pixel.
+
+**Cost per step.** Faster, not slower. Old and new measured in turn on the
+RTX 4070, twice each (batch 8, full-size models, every effect on, generated
+images, no LPIPS, 60 steps timed):
+
+| | Old direct | New direct | Flattened, as a control |
+|---|---|---|---|
+| Seconds per step | 0.780, 0.786 | 0.673, 0.668 | 0.797, 0.795 old code; 0.802, 0.798 new |
+| Peak GPU memory | 3,849 MiB | 3,596 MiB | 3,884 MiB |
+
+New direct takes 14 percent less time per step than old direct. The drawn
+square is smaller on average than the old 768 frame, and one tile is sampled
+instead of a 3 x 3 surface. The absolute times are high because the laptop
+was running slow after the sanity run (see there); the ratio is what counts.
+On a pod the split between CPU and GPU work differs, so expect the direction
+to hold, not the exact figure.
+
+**Does it learn?** Not shown, and the first evidence is mixed. 300-step smoke
+tests, generated images, no other effect, one run each:
+
+| Direct mode with | Bit accuracy, training | Eval |
+|---|---|---|
+| any rotation, tile 154 to 340 px (what the pod config trains) | 0.502 | 0.497 |
+| no rotation, tile 154 to 340 px | 0.653 | 0.639 |
+| no rotation, tile fixed at 340 px | 0.935 | 0.947 |
+
+Chance is 0.50. So the direct path itself works and learns quickly when the
+view is upright and one size; the size range slows it; free rotation stops
+it within 300 steps.
+
+Three longer runs on the same day, to see whether easing rotation in helps:
+
+| Direct mode with | Steps | Bit accuracy, training | Eval |
+|---|---|---|---|
+| `ramp_with_strength`: rotation and size range grow from nothing to full over the first 700 steps | 900 | 0.507 | 0.506 |
+| rotation within 30 degrees of the four right angles (`rotation_near_right_angles_deg: 30`), from step 0 | 900 | 0.515 | 0.520 |
+| `ramp_with_strength` after 300 upright steps: growing over steps 300 to 800 | 1,000 | 0.499 | 0.501 |
+
+The third is the telling one. Upright it reached 0.833 by step 300. As
+rotation and size range grew it fell to 0.595 by step 400 (rotation up to 72
+degrees) and to chance by step 500 (up to 144 degrees), and did not recover.
+It learns the upright case and loses it as soon as the tile turns.
+
+**Verdict: this does not justify launching the pod.** Every test with
+rotation ends at chance, including the restricted and the eased-in ones. A
+pod run with the current config would most likely be stopped by its
+30-minute check. These are short runs with small models on generated images,
+one run each, so they do not prove a long run cannot learn; but nothing here
+points that way.
+
+A likely reason, not established: the code is made of stripes at set
+orientations and the reader's texture filters are tied to those orientations.
+A turned tile presents each bit's stripes at an angle the reader has learned
+for another bit or for none, and nothing in the tile says which way is up.
+If so, direct mode needs a change of design (an orientation cue in the mark,
+or a reader built to be indifferent to rotation), not more training time.
+The flattened route does not have the problem: the locator hands the reader
+an upright patch.
 
 ## contract.json
 

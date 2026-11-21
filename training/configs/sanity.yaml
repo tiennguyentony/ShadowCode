@@ -1,0 +1,28 @@
+# One-hour sanity run on the laptop GPU, before the long run:
+#
+#   python train.py --config configs/sanity.yaml --max-minutes 60
+#
+# Every training setting is default.yaml unchanged: the phone camera range
+# (154 to 340 px per tile, 50 mm tile), the top band (step 8, picked by
+# auto), batch 8, the same schedules. So this is the first hour of the long
+# run, in its own folders. Two things differ: where it reads and writes, and
+# that it must be on the RTX 4070.
+#
+# The schedules are the long run's, so one hour does not reach full
+# simulation strength (it ramps over 20,000 steps). The hour shows that the
+# run starts, learns and uses the GPU, not what the long run ends at.
+base: default.yaml
+
+data:
+  train_dir: data/open-images-v7-val/images   # fetch_dataset.py --out data/open-images-v7-val
+
+train:
+  device: cuda:0
+  expect_gpu: RTX 4070         # stop unless cuda:0 is this GPU; never fall back to the CPU
+
+log:
+  dir: runs/sanity
+  print_every: 100
+
+checkpoint:
+  dir: checkpoints/sanity

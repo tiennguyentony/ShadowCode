@@ -61,7 +61,8 @@ model:
 train:
   stage: 1                     # 1 = embedder + reader. The locator's stage is not written yet.
   reader_input: flattened      # flattened | direct
-  device: auto                 # auto | cuda | mps | cpu
+  device: auto                 # auto | cuda | cuda:0 | mps | cpu
+  expect_gpu: null             # part of a GPU name, e.g. "RTX 4070": stop unless the run is on that GPU
   seed: 0
   batch_size: 8
   total_steps: 140000
@@ -121,7 +122,15 @@ simulation:                    # every range below is its value at strength 1 an
     chroma_subsampling: true
   direct:                      # reader_input: direct only. Applied at any strength unless ramp_with_strength.
     rotation_deg: 360.0        # rotation uniform in [0, this]
-    scale: [0.8, 1.25]         # scale log-uniform in this range
+    # Set to a number, e.g. 30, to replace the free rotation: the tile is then
+    # upright, on either side or upside down, each within plus or minus this.
+    rotation_near_right_angles_deg: null
+    # Size of a tile in the frame as a fraction of TILE_PX, log-uniform.
+    # auto: camera_px_per_tile / TILE_PX, so the reader sees the tile at the
+    # size the phone shows it (154 to 340 px: 0.40 to 0.89). Or [low, high].
+    # In direct mode the frame is the TILE_PX square the reader gets, in
+    # camera pixels; frame_px and effects.resolution do not apply.
+    scale: auto
     ramp_with_strength: false  # true: rotation and scale ranges grow with the strength knob
 
 log:
@@ -130,7 +139,8 @@ log:
   report_every: 1000           # report line and progress.csv row: step, mean bit accuracy and PSNR
                                # over the steps since the last one, cost so far (--price-per-hour)
   scalar_every: 50
-  image_every: 1000
+  image_every: 1000            # sample images to TensorBoard
+  sheet_every: 1000            # sample sheet (original | marked | difference x10) to <log.dir>/samples/
   num_images: 4
 
 checkpoint:
