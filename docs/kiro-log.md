@@ -51,3 +51,19 @@ Entries before this log are not backfilled.
 **Went wrong or had to redo:**
 - First edit of `web/src/main.ts` failed because `[IO.File]` resolved the relative path against the repo root. Redone with an absolute path.
 - Verified: `npm run build` passes, `npm test` 1/1 passes, built files served from a local `/ShadowCode/` sub-path loaded without errors. Camera page not tested on a device.
+
+**Feature:** chat
+
+**Output:**
+- In `D:\Coding\ShadowCode` (branch `training/pipeline`): staged only `.github/workflows/deploy-web.yml`, `docs/kiro-log.md`, `web/measure/index.html`, `web/src/main.ts`, `web/src/ui/measure.ts`, `web/vite.config.ts`; committed as `b86360c`.
+- Created worktree `D:\Coding\ShadowCode-web` on `master`. Confirmed `web/` and `.kiro/` exist on `master`.
+- Cherry-picked `b86360c` onto `master` as `d58f12e`, with no conflicts.
+- In `web/` on `master`: `npm ci` (0 vulnerabilities), `npm test` 1/1 passed, `npm run build` passed.
+
+**Caught, corrected, or changed my mind about:**
+- Left unstaged in the training checkout: `.kiro/steering/tech.md`, `docs/message-format.md` (modified), and `.kiro/steering/boundaries.md`, `.kiro/steering/kiro-log.md`, `training/fetch_dataset.py` (untracked).
+- `.kiro/steering/boundaries.md` and `.kiro/steering/kiro-log.md` exist only as untracked files in the training checkout, so they are not on `master`.
+- `docs/kiro-log.md` in the commit also contains the 2026-11-20 entry, because the file was untracked until this commit.
+
+**Went wrong or had to redo:**
+- `git worktree add` returned exit code 1 in PowerShell because git writes progress text to stderr. The worktree was created correctly.
