@@ -10,6 +10,8 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
+from constants import TILE_PX
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
@@ -24,9 +26,9 @@ def list_images(root: str | Path) -> list[Path]:
 
 
 class ImageFolderDataset(Dataset):
-    """Returns float RGB tensors in [0,1] of shape (3, image_size, image_size)."""
+    """Returns float RGB tiles in [0,1] of shape (3, image_size, image_size)."""
 
-    def __init__(self, root: str | Path, image_size: int = 256, min_crop_scale: float = 0.35):
+    def __init__(self, root: str | Path, image_size: int = TILE_PX, min_crop_scale: float = 0.35):
         self.files = list_images(root)
         self.transform = transforms.Compose(
             [
@@ -50,10 +52,10 @@ def make_loader(cfg: dict, device: torch.device) -> DataLoader:
     data_cfg = cfg["data"]
     dataset = ImageFolderDataset(
         data_cfg["train_dir"],
-        image_size=data_cfg["image_size"],
-        min_crop_scale=data_cfg.get("min_crop_scale", 0.35),
+        image_size=TILE_PX,
+        min_crop_scale=data_cfg["min_crop_scale"],
     )
-    workers = int(data_cfg.get("num_workers", 0))
+    workers = int(data_cfg["num_workers"])
     return DataLoader(
         dataset,
         batch_size=cfg["train"]["batch_size"],

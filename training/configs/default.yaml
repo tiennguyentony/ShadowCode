@@ -1,48 +1,63 @@
-# Full training run. Paths are relative to the directory you launch from.
+# Full stage 1 training run. Paths are relative to the directory you launch from.
+#
+# MESSAGE_BITS, TILE_PX and CAMERA_PX_PER_TILE are fixed in constants.py and
+# are deliberately not settable here.
 
 data:
   train_dir: data/train        # any folder of images, searched recursively
-  image_size: 256              # encoder tile size; must be a multiple of 16
-  min_crop_scale: 0.35         # RandomResizedCrop lower bound
+  min_crop_scale: 0.35         # RandomResizedCrop lower bound; crops are resized to TILE_PX
   num_workers: 8
 
 model:
-  message_bits: 64
-  encoder:
+  embedder:
     base_channels: 32
-    message_grid: 16           # dense layer output is message_channels x grid x grid
-    message_upsample: 1        # nearest upsampling of that map before it is tiled to the image size
+    message_grid: 128          # dense layer output is message_channels x grid x grid, upsampled to TILE_PX
     message_channels: 16
-    message_init: gratings     # gratings (each bit switches one grating on/off) | dense (plain init)
-    max_residual: 0.3          # residual is max_residual * tanh(.)
-  decoder:
-    input_size: 224
-    widths: [32, 64, 128, 192]
-    stem_filters: 48           # second-order branch: products of all pairs of these filters are pooled
-    stem_kernel: 8
-    stem_stride: 2
-    head_dim: 0                # 0 = linear from pooled features to logits; >0 adds a hidden layer
+    message_init: gratings     # gratings (each bit switches one grating on/off) | dense (default init)
+    grating_step: 8            # gratings init only: gratings sit at multiples of this many cycles per tile
+    alpha: 0.3                 # strength: residual is alpha * tanh(.)
+  reader:
+    widths: [32, 64, 128, 192, 256]   # one stride-2 stage per entry
+    texture:                   # pooled filter-pair products; set to null for the plain CNN
+      filters: 48
+      kernel: 24
+      stride: 4
+      downsample: 2            # window is downsample * kernel input pixels; keep it near TILE_PX / grating_step
+  locator: null                # third model, not built yet
 
 train:
+  stage: 1                     # 1 = embedder + reader. The locator's stage is not written yet.
+  reader_input: flattened      # flattened | direct
   device: auto                 # auto | cuda | mps | cpu
   seed: 0
-  batch_size: 32
+  batch_size: 16
   total_steps: 140000
   lr: 1.0e-4
   grad_clip: 1.0
 
+surface:
+  repeat: 3                    # the marked tile is repeated repeat x repeat before the camera
+
+flatten:                       # reader_input: flattened only
+  corner_jitter_px: 3.0        # each corner moves by up to this many frame pixels in x and y
+
 loss:
   bit_weight: 1.0
-  l2_weight: 2.0
-  image_ramp:
-    acc_threshold: 0.95        # image loss stays at 0 until bit accuracy passes this
-    acc_ema: 0.98              # smoothing of the bit accuracy used for the trigger
-    steps: 15000               # linear ramp length once triggered
+  l2_weight: 2.0               # multiplied by the image-loss schedule
+  lpips_weight: 1.0            # multiplied by the image-loss schedule
 
-distortion:
+schedule:
+  image_loss:
+    acc_threshold: 0.95        # image-loss weight stays 0 until bit accuracy passes this
+    acc_ema: 0.98              # smoothing of the bit accuracy used for the trigger
+    ramp_steps: 15000          # linear ramp 0 -> 1 once triggered
+  sim_strength:
+    start_step: 0              # strength is 0 before this step
+    ramp_steps: 20000          # linear ramp 0 -> max_strength
+    max_strength: 1.0
+
+simulation:
   enabled: true
-  tile: 3                      # encoded image is tiled tile x tile before the camera
-  ramp_steps: 5000             # distortion strength ramps 0 -> 1 over these steps
 
 log:
   print_every: 50

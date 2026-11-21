@@ -1,4 +1,4 @@
-# Smoke test: 300 steps, tiny generated dataset, distortions off.
+# Smoke test: 300 steps, tiny generated dataset, simulation off.
 # Same models and training step as the full run.
 base: default.yaml
 
@@ -6,7 +6,7 @@ data:
   num_workers: 0
 
 model:
-  encoder:
+  embedder:
     base_channels: 16          # half width, to keep CPU time reasonable
 
 train:
@@ -15,10 +15,13 @@ train:
   lr: 1.0e-3
 
 loss:
-  image_ramp:
+  lpips_weight: 0.0            # keeps the smoke test offline: LPIPS needs pretrained weights
+
+schedule:
+  image_loss:
     acc_ema: 0.9
 
-distortion:
+simulation:
   enabled: false
 
 log:

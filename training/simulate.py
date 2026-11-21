@@ -1,38 +1,37 @@
-"""Surface simulation between encoder and decoder.
+"""Print-and-camera simulation between the embedder and the reader.
 
-Only the parts the smoke test needs live here so far: tiling the encoded
-image into a wrapped surface and taking a random crop of it.
+``simulate`` takes the wrapped surface (the marked tile repeated) and returns
+the camera frame together with the exact homography it applied, mapping
+surface pixels to frame pixels.
+
+Only the pass-through exists so far: with the simulation disabled, or at
+strength 0, the frame is the surface and the homography is the identity.
 """
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import torch
 
 
-def tile(x: torch.Tensor, n: int = 3) -> torch.Tensor:
-    """Repeat (B,C,H,W) n times in both directions: (B,C,n*H,n*W)."""
-    return x.repeat(1, 1, n, n)
+class SimResult(NamedTuple):
+    frame: torch.Tensor        # (B,3,H,W) in [0,1]: what the camera sees
+    homography: torch.Tensor   # (B,3,3): surface pixels -> frame pixels, exact
 
 
-def random_crop(x: torch.Tensor, size: int, generator: torch.Generator | None = None) -> torch.Tensor:
-    """Independent random size x size crop for every item in the batch."""
-    b, _, h, w = x.shape
-    if h < size or w < size:
-        raise ValueError(f"cannot crop {size} from {h}x{w}")
-    tops = torch.randint(0, h - size + 1, (b,), generator=generator).tolist()
-    lefts = torch.randint(0, w - size + 1, (b,), generator=generator).tolist()
-    return torch.stack([x[i, :, t : t + size, l : l + size] for i, (t, l) in enumerate(zip(tops, lefts))])
+def wrap_surface(marked: torch.Tensor, repeat: int = 3) -> torch.Tensor:
+    """Repeat the marked tile repeat x repeat times: (B,C,H,W) -> (B,C,repeat*H,repeat*W)."""
+    return marked.repeat(1, 1, repeat, repeat)
 
 
-def simulate(encoded: torch.Tensor, cfg: dict, strength: float) -> torch.Tensor:
-    """Encoded image batch -> what the decoder sees.
+def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = False) -> SimResult:
+    """Wrapped surface -> (camera frame, surface-to-frame homography).
 
-    With distortions disabled this is a 3x3 tiling followed by a random
-    crop at an arbitrary tile offset, with no resampling.
+    ``strength`` is the single knob, 0 to 1. ``direct`` asks for the extra
+    random rotation and scale used when the reader gets the frame unflattened.
     """
-    dist = cfg["distortion"]
-    crop = cfg["model"]["decoder"]["input_size"]
-    surface = tile(encoded, int(dist.get("tile", 3)))
-    if not dist.get("enabled", True):
-        return random_crop(surface, crop)
-    raise NotImplementedError("print-and-camera distortions are not written yet")
+    identity = torch.eye(3, device=surface.device, dtype=surface.dtype).repeat(surface.shape[0], 1, 1)
+    if not cfg["simulation"]["enabled"] or strength <= 0.0:
+        return SimResult(surface, identity)
+    raise NotImplementedError("the print-and-camera distortions are not written yet")
