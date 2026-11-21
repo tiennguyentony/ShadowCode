@@ -38,7 +38,9 @@ CPU-only machine, skip it; `requirements.txt` installs the default build.
 300 steps on 24 generated images with the simulation off. Asserts bit
 accuracy of at least 0.70 (chance is 0.50) in training and in eval mode,
 prints the PSNR between marked and original tiles, and saves
-`outputs/smoke_samples.png` (original | marked | residual x10).
+`outputs/smoke_samples.png` (original | marked | residual x10). Before
+training it runs structure checks, among them that the two `spread` options
+measure what they claim and pass gradients.
 
 ```bash
 python smoke_test.py
@@ -147,11 +149,35 @@ python train.py data.train_dir=D:/path/to/images --price-per-hour 0.50
 It is that price times the time `train.py` has run on this run, summed over
 restarts (`<log.dir>/run_state.json`). It is an estimate, not a bill.
 
-**Direct reader and the learning check.** `configs/runpod_direct.yaml` trains
-with `train.reader_input: direct` and paths on a RunPod network volume; see
-`RUNPOD.md`. Direct mode has not yet been shown to learn. That config turns on
-`early_stop`: 30 minutes into the run, if mean bit accuracy is below 0.55
-(chance is 0.50), the run saves a checkpoint and exits with code 3.
+**Keeping the mark spread.** Left alone, the image loss lets the embedder
+put the whole code into one bright patch at the tile corner; the long run did
+(`/docs/runs.md`, "Corner patch"). Two switches in the config section
+`spread` work against that, both off by default (`spread.py`):
+
+- `spread.peak_penalty`: a loss on the strongest local region of the mark
+  (the mean energy of the strongest 2 percent of 48 pixel windows, windows
+  wrapping around the tile). It follows the image-loss schedule.
+- `spread.hide`: before the reader sees its patch in a training step, random
+  regions covering up to half of it are blanked with the patch's mean colour.
+
+No training run has used them yet; the smoke test checks that they run and
+that gradients flow. Every run prints how piled-up the mark is, as "strongest
+spot is N times the tile average", on the sample-sheet line: 1 is even, the
+long run's corner patch is 20.
+
+```bash
+python smoke_test.py spread.peak_penalty.enabled=true spread.hide.enabled=true
+```
+
+**The pod run and the learning check.** `configs/runpod_spread.yaml` is the
+long run with both switches on and paths on a RunPod network volume; see
+`RUNPOD.md`. It turns on `early_stop`: 45 minutes into the run, if mean bit
+accuracy is below 0.75, the run saves a checkpoint and exits with code 3.
+
+**Direct reader.** `configs/runpod_direct.yaml` trains with
+`train.reader_input: direct`. Dropped for the gate: every test with rotation
+ended at chance (`/docs/runs.md`, "Direct mode"). Its check is at 30 minutes
+and 0.55 (chance is 0.50).
 
 **TensorBoard.**
 
@@ -196,7 +222,7 @@ inputs and stops before writing `contract.json` if they differ by more than
 
 Everything is in `configs/default.yaml`; `configs/smoke.yaml`,
 `configs/smoke_blur.yaml`, `configs/smoke_resolution.yaml`, `configs/sanity.yaml`,
-`configs/long.yaml` and
+`configs/long.yaml`, `configs/runpod_spread.yaml` and
 `configs/runpod_direct.yaml` inherit from it.
 The parts that need a decision:
 
@@ -208,7 +234,8 @@ The parts that need a decision:
 | `simulation.frame_px` | The simulated frame: a window onto the surface at 384 pixels per tile, not the camera stream. One number is a square; `[width, height]` gives any shape. |
 | `data.train_dir` | The dataset path. |
 | `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the reader gets a 384 pixel square of camera frame with the tile at camera size (`simulation.direct.scale: auto`, 154 to 340 pixels), at a random rotation, position and tilt. Not shown to learn: every smoke test with rotation ends at chance (`/docs/runs.md`, "Direct mode"). `simulation.direct.rotation_near_right_angles_deg` and `ramp_with_strength` restrict or ease in the rotation. |
-| `early_stop` | The learning check. Off by default, on in `runpod_direct.yaml`. |
+| `spread.peak_penalty`, `spread.hide` | The two switches that keep the mark spread over the tile. Off by default, on in `runpod_spread.yaml`. |
+| `early_stop` | The learning check. Off by default, on in the two `runpod_` configs. |
 | `schedule.image_loss` | Image-loss weight is 0 until bit accuracy passes `acc_threshold`, then ramps over `ramp_steps`. |
 | `schedule.sim_strength` | Simulation strength ramps from 0 to `max_strength` over `ramp_steps`. |
 | `simulation.*` | One range per effect, each given at strength 1. `simulation.effects` switches single effects off. |
@@ -228,6 +255,7 @@ band mid-run, resume stops with a message instead of loading mismatched weights.
 | `simulate.py` | Print-and-camera simulation; returns the frame and the exact homography |
 | `geometry.py` | Homographies, the flatten step |
 | `losses.py` | LPIPS wrapper |
+| `spread.py` | The peak penalty, the random hiding and the "strongest spot" measure |
 | `train.py` | Training step, schedules, logging, checkpoints, learning check |
 | `checkpoint.py` | Save, find newest, resume |
 | `runlog.py` | Run time and cost across restarts, `progress.csv` |

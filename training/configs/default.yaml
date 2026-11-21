@@ -133,8 +133,20 @@ simulation:                    # every range below is its value at strength 1 an
     scale: auto
     ramp_with_strength: false  # true: rotation and scale ranges grow with the strength knob
 
+spread:                        # keep the mark from piling up in one spot (spread.py). Both off by default.
+  peak_penalty:                # embedder side: a loss on the strongest local region of the mark
+    enabled: false
+    weight: 4.0                # multiplied by the image-loss schedule, like l2_weight. Not tuned by any run.
+    window_px: 48              # a region is a window this wide; windows wrap around the tile edges
+    stride_px: 8               # one window every this many pixels; must divide TILE_PX
+    top_fraction: 0.02         # the loss is the mean energy of this share of windows, the strongest ones
+  hide:                        # reader side: blank random regions of the patch, in training steps only
+    enabled: false
+    max_fraction: 0.5          # share of the patch blanked, uniform in [0, this] per sample
+    cells: [2, 3, 4, 6, 8]     # the patch is cut into n x n cells, n drawn from here; 2 gives large regions
+
 log:
-  dir: runs/stage1             # TensorBoard event files, progress.csv and run_state.json
+  dir: runs/stage1            # TensorBoard event files, progress.csv and run_state.json
   print_every: 50              # detailed console line; 0 switches it off
   report_every: 1000           # report line and progress.csv row: step, mean bit accuracy and PSNR
                                # over the steps since the last one, cost so far (--price-per-hour)

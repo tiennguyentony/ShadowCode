@@ -9,14 +9,14 @@
 # start training and it does not start or stop anything that is billed.
 #
 # Settings, as environment variables:
-#     CONFIG          config whose data.train_dir is filled   (configs/runpod_direct.yaml)
+#     CONFIG          config whose data.train_dir is filled   (configs/runpod_spread.yaml)
 #     VOLUME          where the network volume is mounted      (/workspace)
 #     DATASET_COUNT   images to fetch, or "all"                (16000 = 4.94 GB)
 #     ALLOW_LARGE=1   permit a dataset download over 5 GB
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-CONFIG="${CONFIG:-configs/runpod_direct.yaml}"
+CONFIG="${CONFIG:-configs/runpod_spread.yaml}"
 VOLUME="${VOLUME:-/workspace}"
 DATASET_COUNT="${DATASET_COUNT:-16000}"
 PYTHON="${PYTHON:-python3}"
@@ -94,11 +94,23 @@ if [ -n "${RUNPOD_POD_ID:-}" ] && command -v runpodctl >/dev/null; then
 else
     echo "  RUNPOD_POD_ID or runpodctl is missing: stop the pod from the RunPod console instead (RUNPOD.md)"
 fi
+echo
+"$PYTHON" - "$CONFIG" <<'PY'
+import sys
+from config import load_config
+cfg = load_config(sys.argv[1])
+if cfg["train"]["reader_input"] == "direct":
+    print("  Direct mode has not yet been shown to learn.")
+spread = cfg.get("spread") or {}
+if any((spread.get(name) or {}).get("enabled") for name in ("peak_penalty", "hide")):
+    print("  The spread options in this config have not been used in a training run before.")
+early = cfg.get("early_stop") or {}
+if early.get("enabled"):
+    print(f"  The run stops itself after {early['after_minutes']:g} minutes of training if bit accuracy is")
+    print(f"  below {early['min_bit_acc']}. The pod keeps billing after that unless you use the")
+    print("  stop-when-done command or stop it yourself.")
+PY
 cat <<EOF
-
-  Direct mode has not yet been shown to learn. The run stops itself after 30
-  minutes if bit accuracy is still near 50 percent. The pod keeps billing
-  after that unless you use the stop-when-done command or stop it yourself.
 
   To train, in tmux (RUNPOD.md, "Run"):
 

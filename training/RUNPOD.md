@@ -1,17 +1,26 @@
-# Running the direct reader on RunPod
+# Running the spread run on RunPod
 
-The pod trains the direct reader (`configs/runpod_direct.yaml`: no locator, no
-flatten) while the laptop trains the main reader.
+The pod trains `configs/runpod_spread.yaml`: the long run's settings
+(flattened reader, phone camera range, top band, 140,000 steps) with the two
+options that keep the mark spread over the whole tile both on. The laptop's
+long run puts the code into one bright patch at the tile corner
+(`/docs/runs.md`, "Corner patch"); this run is the attempt to fix that.
 
-**Direct mode has not yet been shown to learn.** Nothing in this repository
-has trained it above chance. The run checks itself 30 minutes in and stops if
-bit accuracy is still near 50 percent, so a failed attempt costs about half an
-hour of GPU time, provided the pod is stopped afterwards (see "Run").
+**No training run has used the two options yet.** They were checked on the
+CPU only: they run and gradients flow. The run checks itself 45 minutes in
+and stops if bit accuracy is under 0.75. That check does not tell you whether
+the mark is even. The sample sheets do, one every 2,000 steps; section 6 says
+how to copy one to the laptop and what to look for.
 
 **This guide has not been run on a pod.** The RunPod facts in it (mount path,
-what is billed, `runpodctl` commands) were read from docs.runpod.io on
-2026-11-21. `setup_runpod.sh` was run only on the laptop against an ordinary
-folder standing in for the volume. Prices change; check the console.
+what is billed, `runpodctl` commands, file transfer) were read from
+docs.runpod.io on 2026-11-21. `setup_runpod.sh` was run only on the laptop
+against an ordinary folder standing in for the volume. Prices change; check
+the console.
+
+The direct reader (`configs/runpod_direct.yaml`) is dropped for the gate: it
+never left chance with rotation (`/docs/runs.md`, "Direct mode"). The config
+is still there; section 8 says how to run it.
 
 ## What is billed
 
@@ -46,13 +55,15 @@ Deploy the pod **from the network volume** (so that it is attached), with:
   with Python 3.10 or newer, PyTorch 2.2 or newer and CUDA works;
   `setup_runpod.sh` checks.
 - GPU: one NVIDIA GPU with 12 GB or more. The flattened run at batch 8 peaks
-  at about 4.3 GB on the laptop; direct mode peaked at 3.6 GB in a short test without LPIPS.
+  at about 4.3 GB on the laptop. The two options work on tensors the run
+  already holds, so they should add little; that was not measured on a GPU.
 - Volume mount path: `/workspace` (the default). The config assumes it.
 - Container disk: the template default. It only has to hold the pip packages.
 - On-demand, not spot (interruptible), unless you accept restarts. A restarted run
   resumes from its newest checkpoint and loses at most 2,000 steps.
 - For `scp` or `rsync`, the pod needs a public IP with TCP port 22 exposed.
-  RunPod's proxied "basic SSH" does not support them.
+  RunPod's proxied "basic SSH" does not support them. `runpodctl send`
+  (section 6) needs neither.
 
 Note the price per hour the pod shows. You pass it to `train.py`.
 
@@ -67,6 +78,12 @@ cd /workspace && git clone https://github.com/tiennguyentony/ShadowCode.git
 
 ```bash
 cd /workspace/ShadowCode && git checkout training/pipeline
+```
+
+If the code is already on the volume from an earlier pod, update it instead:
+
+```bash
+cd /workspace/ShadowCode && git pull
 ```
 
 The branch has to be pushed first. Without git (private repository, no token
@@ -119,22 +136,22 @@ DATASET_COUNT=all ALLOW_LARGE=1 bash setup_runpod.sh
 Start a tmux session, so the run survives a dropped connection:
 
 ```bash
-tmux new -s direct
+tmux new -s spread
 ```
 
 Inside it:
 
 ```bash
-cd /workspace/ShadowCode/training && export TORCH_HOME=/workspace/cache/torch && mkdir -p /workspace/runs/direct
+cd /workspace/ShadowCode/training && export TORCH_HOME=/workspace/cache/torch && mkdir -p /workspace/runs/spread
 ```
 
 Then one of the two commands below, with your pod's price in place of `0.00`.
 
-**Stop the pod when the run ends** (finished, stopped by the 30-minute check,
+**Stop the pod when the run ends** (finished, stopped by the 45-minute check,
 or crashed). This is the one to use if you will not be watching:
 
 ```bash
-python3 train.py --config configs/runpod_direct.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/direct/console.log; runpodctl pod stop "$RUNPOD_POD_ID" || runpodctl stop pod "$RUNPOD_POD_ID"
+python3 train.py --config configs/runpod_spread.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/spread/console.log; runpodctl pod stop "$RUNPOD_POD_ID" || runpodctl stop pod "$RUNPOD_POD_ID"
 ```
 
 `setup_runpod.sh` says at the end whether `RUNPOD_POD_ID` and `runpodctl` are
@@ -145,7 +162,7 @@ version. Check in the console afterwards that the pod really is stopped.
 **Leave the pod running** when the run ends (it keeps billing until you stop it):
 
 ```bash
-python3 train.py --config configs/runpod_direct.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/direct/console.log
+python3 train.py --config configs/runpod_spread.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/spread/console.log
 ```
 
 tmux:
@@ -153,11 +170,11 @@ tmux:
 | Do | Keys or command |
 |---|---|
 | Leave the session, run continues | `Ctrl-b` then `d` |
-| Come back | `tmux attach -t direct` |
+| Come back | `tmux attach -t spread` |
 | List sessions | `tmux ls` |
 | Scroll back | `Ctrl-b` then `[`, arrows or PgUp, `q` to leave |
 | Stop the run, with a checkpoint | `Ctrl-c` once, in the session |
-| Close the session | `exit` in it, or `tmux kill-session -t direct` |
+| Close the session | `exit` in it, or `tmux kill-session -t spread` |
 
 With the stop-the-pod command, `Ctrl-c` also stops the pod, because
 `runpodctl` runs as soon as `train.py` exits.
@@ -165,50 +182,127 @@ With the stop-the-pod command, `Ctrl-c` also stops the pod, because
 From any other shell on the pod:
 
 ```bash
-tail -f /workspace/runs/direct/logs/progress.csv
+tail -f /workspace/runs/spread/console.log
 ```
 
 ### What you will see
 
-One line every 1,000 steps, also written to `progress.csv`. The numbers in
-the examples below are made up to show the format:
+At the start, one line confirms both options are on:
 
 ```
-[report] step    3000  bit_acc 0.502  psnr 19.8 dB  (mean of last 1000 steps)  0.21 h  cost $0.14
+spread: peak penalty on (weight 4, strongest 2 percent of 48 px windows, with the image loss); hiding on (up to 50 percent of the reader's patch blanked, training steps only)
 ```
 
-- `bit_acc` and `psnr` are means over the last 1,000 training steps. Chance is 0.500.
+Then one line every 1,000 steps, also written to `logs/progress.csv`, and one
+line for every sample sheet. The numbers in the examples below are made up to
+show the format:
+
+```
+[report] step    3000  bit_acc 0.871  psnr 12.3 dB  (mean of last 1000 steps)  0.21 h  cost $0.14
+sample sheet: /workspace/runs/spread/logs/samples/step_00004000.png  (strongest spot is 1.6 times the tile average)
+```
+
+- `bit_acc` and `psnr` are means over the last 1,000 training steps. Chance
+  is 0.500. The reader's patch has regions blanked in those steps, so expect
+  `bit_acc` to run below the laptop's numbers at the same step.
+- `strongest spot` is the number for the corner patch: the mark's energy in
+  its strongest 48 pixel windows, divided by the average over the tile. 1 is
+  perfectly even. Measured on the laptop's checkpoints: 1.0 at step 4,000
+  and 1.1 at step 6,000 (even), 3.3 at step 7,001 (starting to pile up),
+  20 at steps 20,000 and 22,000 (the corner patch).
 - `cost` is `--price-per-hour` times the time `train.py` has been running on
   this run, summed over restarts. It is an estimate of the GPU bill only. It
   leaves out setup and download time, time the pod idles after the run, and
   storage. The RunPod billing page is the real figure.
-- The PSNR stays low while the image loss is off, which it is until bit
-  accuracy passes 0.95.
+- The PSNR stays near 12 dB while the image loss is off, which it is until
+  bit accuracy passes 0.95. On the laptop that took about 4,000 steps. With
+  regions blanked it may take longer. **If the PSNR is still near 12 dB after
+  15,000 steps, the image loss never switched on**; that is a failed run even
+  though the 45-minute check passed.
 
-The 30-minute check prints one of:
+The 45-minute check prints one of:
 
 ```
-learning check at step 9000, 30 minutes in: mean bit accuracy over the last 1000 steps is 0.501 (chance is 0.500, required 0.55) -> NOT LEARNING, stopping the run
-learning check at step 9000, 30 minutes in: mean bit accuracy over the last 1000 steps is 0.731 (chance is 0.500, required 0.55) -> passed, the run continues
+learning check at step 9000, 45 minutes in: mean bit accuracy over the last 1000 steps is 0.612 (chance is 0.500, required 0.75) -> NOT LEARNING, stopping the run
+learning check at step 9000, 45 minutes in: mean bit accuracy over the last 1000 steps is 0.931 (chance is 0.500, required 0.75) -> passed, the run continues
 ```
 
 A stopped run saves a checkpoint and exits with code 3. It then refuses to
 resume until you add `early_stop.enabled=false` (continue anyway) or `--fresh`
 (start over; old checkpoints are moved to a `replaced-...` folder). Passing the
-check means only that accuracy left chance. It does not mean direct mode works.
+check means only that the reader is learning. It says nothing about the
+corner patch.
 
-The thresholds are in `configs/runpod_direct.yaml` under `early_stop`.
+The thresholds are in `configs/runpod_spread.yaml` under `early_stop`.
 
 ### After a restart
 
-Checkpoints (every 2,000 steps), TensorBoard files, `progress.csv` and
-`run_state.json` are all under `/workspace/runs/direct`, on the volume. After
-a pod restart or a new pod on the same volume: run section 4, then the same
-command from section 5. It prints `resumed from ... at step N` and carries the
-time and cost on. If the newest checkpoint file is damaged, the one before it
-is used.
+Checkpoints (every 2,000 steps), TensorBoard files, sample sheets,
+`progress.csv` and `run_state.json` are all under `/workspace/runs/spread`, on
+the volume. After a pod restart or a new pod on the same volume: run section
+4, then the same command from section 5. It prints `resumed from ... at step
+N` and carries the time and cost on. If the newest checkpoint file is
+damaged, the one before it is used.
 
-## 6. Stop the pod so billing ends
+## 6. Copy a sample sheet to the laptop
+
+Sheets are PNG files, about 3 MB each, one every 2,000 steps:
+
+```bash
+ls /workspace/runs/spread/logs/samples/
+```
+
+**With `runpodctl`** (no public IP needed; `runpodctl` is on every pod and
+has to be installed on the laptop once, see RunPod's installation guide). On
+the pod, in a shell outside the tmux session:
+
+```bash
+runpodctl send /workspace/runs/spread/logs/samples/step_00010000.png
+```
+
+It prints a one-time code and the command to run on the other computer. On
+the laptop, in the folder where the file should land, run that command:
+
+```bash
+runpodctl receive <the code it printed>
+```
+
+**With `scp`** (needs the public IP and port from section 2). On the laptop;
+the IP and port are in the pod's **Connect** panel, and `-i` names the SSH key
+registered with RunPod:
+
+```bash
+scp -P <port> -i ~/.ssh/id_ed25519 root@<pod ip>:/workspace/runs/spread/logs/samples/step_00010000.png .
+```
+
+All sheets at once:
+
+```bash
+scp -P <port> -i ~/.ssh/id_ed25519 -r root@<pod ip>:/workspace/runs/spread/logs/samples ./spread-samples
+```
+
+Copying does not disturb the run.
+
+**What to look for.** Each row is original, marked, difference times 10.
+
+- Before the image loss is on (PSNR near 12 dB) the mark covers the whole
+  tile at full strength in every run. Those sheets say nothing yet.
+- The laptop run's patch showed between steps 6,000 and 10,000, two to six
+  thousand steps after its image loss switched on. Judge this run the same
+  distance after its PSNR starts to rise.
+- Good: the difference column shows a fine texture over the whole tile and no
+  bright corner, and `strongest spot` stays below about 2 well after the PSNR
+  has risen past 20 dB.
+- Bad: the difference column goes grey with a bright patch at the corners, as
+  in the laptop's `runs/long/samples/step_00020000.png`, and `strongest spot`
+  climbs: the laptop run was at 3.3 by 20 dB and at 20 by 26 dB.
+- The number on the sheet line is from one training batch of 8, so it moves
+  a little from sheet to sheet. The trend is what counts.
+
+The images are dataset images under CC BY 2.0: credit the authors from
+`ATTRIBUTION.csv` before publishing a sheet.
+
+## 7. Stop the pod so billing ends
 
 Stopping the run (`Ctrl-c`) does **not** stop billing. The pod does.
 
@@ -218,7 +312,7 @@ Stopping the run (`Ctrl-c`) does **not** stop billing. The pod does.
    section 2):
 
    ```bash
-   scp -P <port> -r root@<pod ip>:/workspace/runs/direct ./runpod-direct
+   scp -P <port> -i ~/.ssh/id_ed25519 -r root@<pod ip>:/workspace/runs/spread ./runpod-spread
    ```
 
 3. **Stop or terminate the pod.** In the console: **Pods > your pod > Stop**,
@@ -241,3 +335,16 @@ Stopping the run (`Ctrl-c`) does **not** stop billing. The pod does.
    `runpodctl network-volume delete <volume-id>`. That erases the dataset and
    every checkpoint on it for good, so do step 2 first. Billing has ended
    completely only when there is no pod and no volume.
+
+## 8. The direct reader
+
+Dropped for the gate, and not recommended: every test with rotation ended at
+chance (`/docs/runs.md`, "Direct mode"). The config still runs. Use the steps
+above with `direct` in place of `spread` in the paths and the session name,
+`configs/runpod_direct.yaml` as the config, and
+
+```bash
+CONFIG=configs/runpod_direct.yaml bash setup_runpod.sh
+```
+
+for the setup. Its check is at 30 minutes and 0.55.

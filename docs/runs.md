@@ -7,9 +7,10 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
-| Long run (main reader, flattened, laptop) | **Running** since 2026-11-21 03:43, resumed from the sanity run at step 7,001. See "Long run". |
+| Long run (main reader, flattened, laptop) | **Running** since 2026-11-21 03:43, resumed from the sanity run at step 7,001. It reads well (bit accuracy 0.95 to 0.96) but has put the mark into one bright patch at the tile corner. See "Long run" and "Corner patch". |
+| Spread run (RunPod) | **Not started.** `configs/runpod_spread.yaml`: the long run's settings with the two options against the corner patch on. Checked on the CPU only. See "Corner patch". |
 | Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
-| Direct reader (RunPod) | Not started, and not recommended yet. Direct mode is matched to the phone, but every smoke test with rotation ends at chance. See "Direct mode". |
+| Direct reader | **Dropped for the gate.** Every smoke test with rotation ends at chance; no pod run was made. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
 
 ## Long run
@@ -42,7 +43,142 @@ dataset images. From 7,001 on the run draws from all 16,000.
   command resumes after a stop or a crash.
 - No other GPU job runs while it trains.
 
-## Sanity run
+Progress, from `runs/long/progress.csv` (training means over the 1,000 steps
+ending at each step):
+
+| Step | Bit accuracy | PSNR, dB | Notes |
+|---|---|---|---|
+| 10,000 | 0.969 | 23.5 | |
+| 13,000 | 0.971 | 25.0 | highest bit accuracy so far |
+| 16,000 | 0.967 | 25.7 | |
+| 19,000 | 0.958 | 26.1 | image loss at full weight from about here |
+| 20,000 | 0.953 | 26.1 | simulation at full strength from here |
+| 22,000 | 0.954 | 26.1 | |
+| 24,000 | 0.958 | 26.1 | |
+
+The step 25,000 sheet still shows the patch.
+
+Speed since the resume has been between 1.4 and 2.1 steps per second. CPU
+checks for the spread options ran on the same machine from 06:03 to 06:32.
+The thousand steps to 24,000, when those checks ran at normal priority, took
+11.2 minutes, against 9.4 for the thousand before. The checks were then moved
+to idle priority and the next two thousands took 10.2 and 8.8 minutes. The
+run's own pace had varied as much before any check ran (12.1 minutes for
+21,000 to 22,000), so the cost to the long run is a few minutes at most.
+
+The mark is not spread over the tile: see the next section.
+
+## Corner patch
+
+**What the long run does.** Once the image loss is on, the embedder moves the
+whole code into one bright, multicoloured patch at the tile corner (one spot,
+since the tile repeats) and leaves the rest of the tile almost clean. It is
+plainly visible in `training/runs/long/samples/step_00020000.png` and was
+already there at step 10,000.
+
+Measured on the CPU from the saved checkpoints, on 16 dataset images with
+random bits. "Strongest spot" is the mark's energy in its strongest 2 percent
+of 48 pixel windows, divided by the average over the tile; 1 is perfectly
+even. A 96 pixel square is 6.25 percent of the tile.
+
+| Checkpoint | PSNR, dB | Strongest spot | Share of the mark's energy in one 96 px square |
+|---|---|---|---|
+| step 4,000 (image loss just on) | 12.1 | 1.0 | 6.4 percent |
+| step 6,000 | 16.8 | 1.1 | 6.7 percent |
+| step 7,001 | 20.6 | 3.3 | 18.2 percent |
+| step 20,000 | 25.7 | 19.8 | 86.0 percent |
+| step 22,000 | 26.3 | 20.7 | 89.2 percent |
+
+So the mark is even while the image loss is off, and piles up as the image
+loss comes on. The likely reason, not established by a test: the mean-square
+loss does not care where the mark's energy sits, the perceptual loss is
+cheaper for one small patch than for a texture over the whole image, and the
+reader always gets a full tile, so one spot is enough for it.
+
+Two things follow. The 26 dB is mostly that patch, not a faint mark. And a
+print or a camera view that loses that one spot loses the whole message.
+
+**Two options against it**, both off by default (`training/spread.py`,
+config section `spread`):
+
+- `spread.peak_penalty`: a loss on the strongest local region of the mark,
+  the same quantity as "strongest spot" above before dividing by the
+  average. For an even mark it equals the mean-square loss; for the long
+  run's mark it is 20 times that. Weight 4, on the image-loss schedule, so it
+  acts exactly when the pile-up happens. The weight is a first guess; no run
+  has tuned it.
+- `spread.hide`: before the reader sees its patch in a training step, random
+  regions of it are blanked with the patch's mean colour. Per sample the
+  share is uniform between 0 and 50 percent, in a grid of 2 x 2 to 8 x 8
+  cells shifted by a random amount, so the regions are large and connected
+  for some samples and scattered for others. Evaluation reads the whole patch.
+
+A plain per-pixel limit on the mark was considered and not added: one already
+exists (`model.embedder.alpha`, 0.3), and tightening it enough to matter
+would also weaken the full-strength mark the reader learns from in the first
+4,000 steps. The penalty on the strongest region costs an even mark nothing.
+
+**Checked on the CPU, 2026-11-21. No training run has used the options.**
+The long run kept the GPU throughout.
+
+1. Checks inside `smoke_test.py`, run before any training step: an even mark
+   scores 1 and the same energy packed on the tile corner scores above 20,
+   seen as one patch across the tile edges; the penalty's gradient falls on
+   the patch and nowhere else; hiding never blanks more than the limit and
+   leaves the other pixels untouched; with both on and 22 percent of the
+   patch blanked, the bit loss still gives gradient to the embedder (norm
+   11.7) and the reader (20.6), and the penalty gives gradient to the
+   embedder (0.096). All finite.
+2. The 300-step smoke test with both on, on the CPU (generated images,
+   simulation off):
+
+   | | Bit accuracy, training | Eval, whole patch |
+   |---|---|---|
+   | both options on (CPU) | 0.821, read with regions blanked | 0.820 |
+   | plain smoke test, for comparison (GPU, from the table further down) | 0.852 | 0.833 |
+
+   So the reader still learns from the start with part of its patch hidden.
+   The image loss stays off in a 300-step test, so this exercises the hiding
+   and not the penalty.
+3. 30 real training steps on the CPU from the long run's step 22,000
+   checkpoint (full-size models, real images, full simulation, LPIPS, batch
+   4, same images and seed in both rows):
+
+   | 30 steps with | Strongest spot | Energy in one 96 px square | PSNR, dB | Bit accuracy, training mean |
+   |---|---|---|---|---|
+   | before | 20.7 | 89.2 percent | 26.3 | |
+   | options off (control) | 21.0 | 89.3 percent | 26.7 | 0.949 |
+   | both options on | 14.2 | 70.1 percent | 30.1 | 0.771, read with regions blanked |
+
+   The penalty term was 0.049 at the first step (times its weight of 4: 0.20,
+   against a bit loss near 0.2), and the patch began to shrink at once.
+
+What this does and does not show. The options do what they are built to do
+and push in the right direction on the real model. In those 30 steps the
+patch got weaker; the mark did not yet reappear elsewhere, and bit accuracy
+fell, as it must while the reader still depends on a patch that is being
+hidden and penalised. Whether a run that has the options on from step 0
+ends with an even mark that reads well is not known. Three things to watch
+in such a run:
+
+- The image loss only switches on when training bit accuracy passes 0.95.
+  With regions blanked that may come later than the 4,000 steps of the
+  sanity run, or not at all. A PSNR still near 12 dB after 15,000 steps
+  means it never switched on.
+- The penalty's weight is untested over a whole run. Too low and the patch
+  comes back; too high and it could hold the mark down everywhere.
+- Hiding up to half the patch forces the message to be readable from half a
+  tile. It does not promise a quarter.
+
+The pod config for this is `training/configs/runpod_spread.yaml`: the long
+run's settings with both options on, a sample sheet every 2,000 steps, and a
+check 45 minutes in that stops the run if bit accuracy is under 0.75.
+`training/RUNPOD.md` has the commands.
+
+Every run started from this code prints the "strongest spot" number with
+each sample sheet and logs it to TensorBoard (`image/concentration`), whether
+or not the options are on. The long run was started before it and does not.
+
 
 One hour of the long run's own config (`configs/sanity.yaml` changes only the
 folders and requires the RTX 4070), 2026-11-21, 01:56 to 02:56.
@@ -228,6 +364,26 @@ loss switches on, adds to that and was not timed. Peak GPU memory in that
 test: 3.9 GB.
 
 ## Direct mode
+
+**Dropped for the gate, 2026-11-21.** The gate goes ahead with the flattened
+reader only. The reason is the test results below: six smoke tests, and all
+four that turn the tile end at chance.
+
+| Direct mode with | Steps | Bit accuracy, training | Eval |
+|---|---|---|---|
+| no rotation, tile fixed at 340 px | 300 | 0.935 | 0.947 |
+| no rotation, tile 154 to 340 px | 300 | 0.653 | 0.639 |
+| any rotation, tile 154 to 340 px (what `runpod_direct.yaml` trains) | 300 | 0.502 | 0.497 |
+| rotation and size range eased in over the first 700 steps | 900 | 0.507 | 0.506 |
+| rotation within 30 degrees of the four right angles, from step 0 | 900 | 0.515 | 0.520 |
+| 300 upright steps, then rotation and size range eased in over steps 300 to 800 | 1,000 | 0.499 | 0.501 |
+
+Chance is 0.50. One run each, small models, generated images. The last row
+reached 0.833 upright at step 300 and fell to chance as the tile began to
+turn. No pod run of direct mode was made, and none is planned.
+`configs/runpod_direct.yaml` and the code path stay in the repository,
+unchanged and unrecommended; the pod now runs `configs/runpod_spread.yaml`
+(see "Corner patch"). The details behind the table follow.
 
 Matched to the phone since 2026-11-21.
 

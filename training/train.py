@@ -45,6 +45,7 @@ from geometry import center_crop, flatten_random_patch
 from models import build_models, count_parameters
 from runlog import ProgressLog, RunClock
 from simulate import simulate, wrap_surface
+from spread import concentration, hide_regions, hide_settings, peak_penalty, peak_settings
 from viz import residual_image, sample_sheet, save_image
 
 READER_INPUTS = ("flattened", "direct")
@@ -92,6 +93,10 @@ class Trainer:
     * ``sim_strength``: the simulation strength is 0 until ``start_step``,
       then ramps linearly to ``max_strength`` over ``ramp_steps`` steps
       (0 steps: full strength from ``start_step``).
+
+    Config section ``spread`` (see spread.py), both off by default: the
+    ``peak_penalty`` loss follows the image-loss schedule, and ``hide``
+    blanks regions of the reader's patch in training steps only.
     """
 
     def __init__(self, cfg: dict, device: torch.device):
@@ -152,7 +157,8 @@ class Trainer:
             return patch
         return center_crop(frame, TILE_PX)
 
-    def forward(self, tiles: torch.Tensor, bits: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, tiles: torch.Tensor, bits: torch.Tensor, hide: bool = False) -> dict:
+        """``hide``: blank random regions of the reader's patch, if spread.hide is on."""
         residual = self.embedder(tiles, bits)
         marked = (tiles + residual).clamp(0.0, 1.0)
         direct = self.cfg["train"]["reader_input"] == "direct"
@@ -160,8 +166,18 @@ class Trainer:
         surface = marked if direct else wrap_surface(marked, int(self.cfg["surface"]["repeat"]))
         sim = simulate(surface, self.cfg, self.sim_strength(), direct=direct)
         view = self.reader_view(sim.frame, sim.homography)
+        hidden = 0.0
+        if hide and hide_settings(self.cfg)["enabled"]:
+            view, hidden = hide_regions(view, self.cfg)
         logits = self.reader(view)
-        return {"residual": residual, "marked": marked, "frame": sim.frame, "view": view, "logits": logits}
+        return {
+            "residual": residual,
+            "marked": marked,
+            "frame": sim.frame,
+            "view": view,
+            "logits": logits,
+            "hidden_fraction": hidden,
+        }
 
     def random_bits(self, batch: int) -> torch.Tensor:
         return torch.randint(0, 2, (batch, MESSAGE_BITS), device=self.device).float()
@@ -175,7 +191,7 @@ class Trainer:
         tiles = tiles.to(self.device, non_blocking=True)
         bits = self.random_bits(tiles.shape[0])
 
-        out = self.forward(tiles, bits)
+        out = self.forward(tiles, bits, hide=True)
         bit_loss = F.binary_cross_entropy_with_logits(out["logits"], bits)
         # L2 on the residual before the [0,1] clamp, so pixels pushed past
         # the clamp are still pulled back.
@@ -183,8 +199,15 @@ class Trainer:
         image_scale = self.image_loss_scale()
         loss = weights["bit_weight"] * bit_loss
         lpips_loss = None
+        peak_loss = None
+        peak = peak_settings(self.cfg)
         if image_scale > 0:
             loss = loss + image_scale * weights["l2_weight"] * l2_loss
+            if peak["enabled"]:
+                # On the residual before the clamp, like the L2 loss, and on the same schedule:
+                # the mark only piles up once the image loss is on.
+                peak_loss = peak_penalty(out["residual"], self.cfg)
+                loss = loss + image_scale * float(peak["weight"]) * peak_loss
             if self.perceptual is not None:
                 lpips_loss = self.perceptual(out["marked"], tiles)
                 loss = loss + image_scale * weights["lpips_weight"] * lpips_loss
@@ -212,7 +235,11 @@ class Trainer:
                 psnr=psnr(out["marked"], tiles),
                 image_scale=image_scale,
                 sim_strength=strength,
+                concentration=concentration(out["residual"], self.cfg),
+                hidden_fraction=out["hidden_fraction"],
             )
+            if peak_loss is not None:
+                metrics["peak_loss"] = peak_loss.item()
             if lpips_loss is not None:
                 metrics["lpips_loss"] = lpips_loss.item()
             if keep_outputs:
@@ -224,15 +251,19 @@ class Trainer:
             return metrics
 
     @torch.no_grad()
-    def evaluate(self, tiles: torch.Tensor, keep_outputs: bool = False) -> dict:
-        """Metrics in eval mode on fresh random bits and a fresh view."""
+    def evaluate(self, tiles: torch.Tensor, keep_outputs: bool = False, hide: bool = False) -> dict:
+        """Metrics in eval mode on fresh random bits and a fresh view.
+
+        The reader sees its whole patch unless ``hide`` is set and spread.hide is on.
+        """
         self.embedder.eval()
         self.reader.eval()
         tiles = tiles.to(self.device)
         bits = self.random_bits(tiles.shape[0])
-        out = self.forward(tiles, bits)
+        out = self.forward(tiles, bits, hide=hide)
         metrics: dict = bit_metrics(out["logits"], bits)
         metrics["psnr"] = psnr(out["marked"], tiles)
+        metrics["concentration"] = concentration(out["residual"], self.cfg)
         if keep_outputs:
             metrics["outputs"] = {"original": tiles, "marked": out["marked"], "view": out["view"]}
         return metrics
@@ -248,6 +279,9 @@ SCALARS = {
     "loss/bit": "bit_loss",
     "loss/l2": "l2_loss",
     "loss/lpips": "lpips_loss",
+    "loss/peak": "peak_loss",
+    "image/concentration": "concentration",
+    "read/hidden_fraction": "hidden_fraction",
     "schedule/image_loss_scale": "image_scale",
     "schedule/sim_strength": "sim_strength",
 }
@@ -303,10 +337,15 @@ def final_report(trainer: "Trainer", batches, directory: str | Path, count: int,
     print(
         f"final, eval mode, {batches_averaged} fresh batches at simulation strength {trainer.sim_strength():.2f}: "
         f"bit_acc {mean('bit_acc'):.3f}  all 64 bits right {mean('message_exact'):.3f}  "
-        f"within BCH reach {mean('message_correctable'):.3f}  psnr {mean('psnr'):.1f} dB\n"
+        f"within BCH reach {mean('message_correctable'):.3f}  psnr {mean('psnr'):.1f} dB  "
+        f"strongest spot {mean('concentration'):.1f} times the tile average\n"
         f"sample sheet (original | marked | difference x10): {sheet}",
         flush=True,
     )
+    if hide_settings(trainer.cfg)["enabled"]:
+        hidden = [trainer.evaluate(next(batches), hide=True) for _ in range(batches_averaged)]
+        acc = sum(m["bit_acc"] for m in hidden) / len(hidden)
+        print(f"the same with regions of the reader's patch blanked as in training: bit_acc {acc:.3f}", flush=True)
 
 
 def keep_awake() -> None:
@@ -365,6 +404,23 @@ DIRECT_NOTICE = (
 
 EXIT_NOT_LEARNING = 3
 EXIT_INTERRUPTED = 130
+
+
+def spread_summary(cfg: dict) -> str:
+    """One line saying which of the two spread options are on."""
+    peak, hide = peak_settings(cfg), hide_settings(cfg)
+    peak_text = (
+        f"on (weight {peak['weight']:g}, strongest {float(peak['top_fraction']) * 100:g} percent of "
+        f"{peak['window_px']} px windows, with the image loss)"
+        if peak["enabled"]
+        else "off"
+    )
+    hide_text = (
+        f"on (up to {float(hide['max_fraction']) * 100:g} percent of the reader's patch blanked, training steps only)"
+        if hide["enabled"]
+        else "off"
+    )
+    return f"spread: peak penalty {peak_text}; hiding {hide_text}"
 
 
 def main() -> int:
@@ -432,6 +488,7 @@ def main() -> int:
     )
     if cfg["train"]["reader_input"] == "direct":
         print(DIRECT_NOTICE)
+    print(spread_summary(cfg))
 
     newest = None
     if args.fresh:
@@ -498,13 +555,14 @@ def main() -> int:
             if want_images:
                 log_images(writer, m["outputs"], step, int(log_cfg["num_images"]))
             if want_sheet:
-                print(f"sample sheet: {save_sheet(m['outputs'], step, int(log_cfg['num_images']), log_cfg['dir'])}", flush=True)
+                sheet = save_sheet(m["outputs"], step, int(log_cfg["num_images"]), log_cfg["dir"])
+                print(f"sample sheet: {sheet}  (strongest spot is {m['concentration']:.1f} times the tile average)", flush=True)
             if log_cfg["print_every"] and step % log_cfg["print_every"] == 0:
                 rate = (step - start_step) / max(1e-9, time.time() - t0)
                 print(
                     f"step {step:6d}  bit_acc {m['bit_acc']:.3f}  decoded {m['message_correctable']:.2f}  "
                     f"psnr {m['psnr']:.1f} dB  loss {m['loss']:.4f}  image_scale {m['image_scale']:.2f}  "
-                    f"sim {m['sim_strength']:.2f}  {rate:.2f} it/s",
+                    f"sim {m['sim_strength']:.2f}  spot {m['concentration']:.1f}x  {rate:.2f} it/s",
                     flush=True,
                 )
             if report_every and step % report_every == 0:
@@ -553,7 +611,7 @@ def main() -> int:
     if not_learning:
         checkpoint_now()
         print(
-            f"Stopped: bit accuracy is still near 50 percent. {clock.cost_text()}.\n"
+            f"Stopped: bit accuracy is below the required {check_min_acc}. {clock.cost_text()}.\n"
             "The machine is still running and still billed; see RUNPOD.md for how to stop it."
         )
         return EXIT_NOT_LEARNING
