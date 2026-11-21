@@ -75,10 +75,19 @@ python smoke_test.py model.embedder.message_init=dense model.reader.texture=null
 
 ## Training
 
-Put any images in a folder (searched recursively) and point `data.train_dir` at it.
+**Dataset.** The chosen dataset is Open Images V7, validation split: first
+16,000 images, 4.94 GB, images listed as CC BY 2.0 (`THIRD_PARTY.md`).
+`fetch_dataset.py` downloads it and can be run again to continue:
 
 ```bash
-python train.py --config configs/default.yaml data.train_dir=D:/path/to/images
+python fetch_dataset.py --out data/open-images-v7-val
+```
+
+The dataset path is the config value `data.train_dir`. Any folder of images
+works (searched recursively).
+
+```bash
+python train.py --config configs/default.yaml data.train_dir=data/open-images-v7-val/images
 ```
 
 Anything in the config can be overridden on the command line as
@@ -89,12 +98,32 @@ python train.py data.train_dir=D:/path/to/images train.reader_input=direct check
 ```
 
 **Resume.** Checkpoints go to `checkpoint.dir` every `checkpoint.every`
-steps. Running the same command again continues from the newest one. To
-start over in the same directory:
+steps, and once more when the run is stopped with Ctrl-C or SIGTERM. Running
+the same command again continues from the newest one; if that file cannot be
+read, the one before it is used. To start over in the same directory (the old
+checkpoints are moved to a `replaced-...` subfolder, not deleted):
 
 ```bash
 python train.py data.train_dir=D:/path/to/images --fresh
 ```
+
+**Progress and cost.** Every `log.report_every` steps (1,000) one line is
+printed and appended to `<log.dir>/progress.csv`: step, bit accuracy and PSNR
+(means over those steps) and the cost so far. The cost needs the machine's
+price:
+
+```bash
+python train.py data.train_dir=D:/path/to/images --price-per-hour 0.50
+```
+
+It is that price times the time `train.py` has run on this run, summed over
+restarts (`<log.dir>/run_state.json`). It is an estimate, not a bill.
+
+**Direct reader and the learning check.** `configs/runpod_direct.yaml` trains
+with `train.reader_input: direct` and paths on a RunPod network volume; see
+`RUNPOD.md`. Direct mode has not yet been shown to learn. That config turns on
+`early_stop`: 30 minutes into the run, if mean bit accuracy is below 0.55
+(chance is 0.50), the run saves a checkpoint and exits with code 3.
 
 **TensorBoard.**
 
@@ -137,14 +166,17 @@ inputs and stops before writing `contract.json` if they differ by more than
 
 ## The config
 
-Everything is in `configs/default.yaml`; `configs/smoke.yaml` and
-`configs/smoke_blur.yaml` inherit from it. The parts that need a decision:
+Everything is in `configs/default.yaml`; `configs/smoke.yaml`,
+`configs/smoke_blur.yaml` and `configs/runpod_direct.yaml` inherit from it.
+The parts that need a decision:
 
 | Key | Meaning |
 |---|---|
 | `camera_px_per_tile` | Measured camera pixels per printed tile at demo distance. `null` until measured. While null, the loss-of-resolution step is skipped and the starting band uses `band.fallback_step`. |
 | `band.grating_step` | `auto` derives the starting frequency band from `camera_px_per_tile` (see `band.py`). Step 8 is 16-51 cycles per tile, step 4 is 8-26. |
-| `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the simulation adds random rotation, scale and shift and the reader gets the centre crop of the frame. |
+| `data.train_dir` | The dataset path. |
+| `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the simulation adds random rotation, scale and shift and the reader gets the centre crop of the frame. Not yet shown to learn. |
+| `early_stop` | The learning check. Off by default, on in `runpod_direct.yaml`. |
 | `schedule.image_loss` | Image-loss weight is 0 until bit accuracy passes `acc_threshold`, then ramps over `ramp_steps`. |
 | `schedule.sim_strength` | Simulation strength ramps from 0 to `max_strength` over `ramp_steps`. |
 | `simulation.*` | One range per effect, each given at strength 1. `simulation.effects` switches single effects off. |
@@ -163,8 +195,11 @@ band mid-run, resume stops with a message instead of loading mismatched weights.
 | `simulate.py` | Print-and-camera simulation; returns the frame and the exact homography |
 | `geometry.py` | Homographies, the flatten step |
 | `losses.py` | LPIPS wrapper |
-| `train.py` | Training step, schedules, logging, checkpoints |
+| `train.py` | Training step, schedules, logging, checkpoints, learning check |
 | `checkpoint.py` | Save, find newest, resume |
+| `runlog.py` | Run time and cost across restarts, `progress.csv` |
+| `fetch_dataset.py` | Downloads the training images |
+| `setup_runpod.sh`, `RUNPOD.md` | Preparing and running a RunPod pod |
 | `viz.py` | Sample sheets |
 | `smoke_test.py` | Smoke test and structure checks |
 | `export_bundle.py` | ONNX export, `contract.json` and fixtures for the browser |

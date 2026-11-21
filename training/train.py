@@ -3,24 +3,37 @@
     python train.py --config configs/default.yaml data.train_dir=/path/to/images
 
 Resumes automatically from the newest checkpoint in ``checkpoint.dir``.
-Pass --fresh to ignore existing checkpoints.
+Pass --fresh to start over; existing checkpoints are moved aside, not deleted.
+
+Every ``log.report_every`` steps one line goes to the console and to
+``<log.dir>/progress.csv``: step, bit accuracy, PSNR and, with
+``--price-per-hour``, the cost so far.
+
+    python train.py --config configs/runpod_direct.yaml --price-per-hour 0.69
+
+Ctrl-C or SIGTERM saves a checkpoint and exits. Exit codes: 0 finished,
+3 stopped by the learning check (``early_stop``), 130 interrupted.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import signal
+import sys
 import time
+from collections import deque
 
 import torch
 import torch.nn.functional as F
 
-from checkpoint import latest_checkpoint, load_checkpoint, save_checkpoint
+from checkpoint import load_latest_checkpoint, save_checkpoint, set_aside_checkpoints
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from data import infinite, make_loader
 from geometry import center_crop, flatten_random_patch
 from models import build_models, count_parameters
+from runlog import ProgressLog, RunClock
 from simulate import simulate, wrap_surface
 from viz import residual_image, sample_sheet
 
@@ -244,14 +257,67 @@ def log_images(writer, outputs: dict, step: int, count: int) -> None:
     writer.add_image("samples/sheet_original_marked_residual_x10", sample_sheet(original, marked), step)
 
 
-def main() -> None:
+class StopRequest:
+    """Turns Ctrl-C and SIGTERM into a stop at the next step boundary, with a checkpoint.
+
+    A second signal stops at once, without one.
+    """
+
+    def __init__(self) -> None:
+        self.signal_name: str | None = None
+        signal.signal(signal.SIGINT, self._handle)
+        signal.signal(signal.SIGTERM, self._handle)
+
+    def _handle(self, signum, frame) -> None:
+        if self.signal_name is not None:
+            raise KeyboardInterrupt
+        self.signal_name = signal.Signals(signum).name
+        print(f"\n{self.signal_name} received: saving a checkpoint after this step (send it again to stop now)", flush=True)
+
+
+DIRECT_NOTICE = (
+    "NOTE: reader_input=direct (no locator, no flatten) has not yet been shown to learn. "
+    "This run is an experiment, not a known-good configuration."
+)
+
+EXIT_NOT_LEARNING = 3
+EXIT_INTERRUPTED = 130
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--fresh", action="store_true", help="do not resume from existing checkpoints")
+    parser.add_argument("--fresh", action="store_true", help="do not resume; existing checkpoints are moved aside")
+    parser.add_argument(
+        "--price-per-hour",
+        type=float,
+        default=None,
+        help="what the machine costs per hour, in dollars; adds the cost so far to every report line",
+    )
     parser.add_argument("overrides", nargs="*", help="dotted.key=value config overrides")
     args = parser.parse_args()
+    if args.price_per_hour is not None and args.price_per_hour < 0:
+        parser.error("--price-per-hour cannot be negative")
 
     cfg = load_config(args.config, args.overrides)
+    ckpt_cfg, log_cfg = cfg["checkpoint"], cfg["log"]
+    early = cfg.get("early_stop") or {}
+    check_enabled = bool(early.get("enabled", False))
+    check_after_s = float(early.get("after_minutes", 30)) * 60.0
+    check_min_acc = float(early.get("min_bit_acc", 0.55))
+    report_every = int(log_cfg.get("report_every", 1000))
+
+    clock = RunClock(log_cfg["dir"], args.price_per_hour, fresh=args.fresh)
+    if check_enabled and clock.learning_check and clock.learning_check["result"] == "failed":
+        c = clock.learning_check
+        print(
+            f"This run was stopped by the learning check at step {c['step']}: bit accuracy {c['bit_acc']:.3f} "
+            f"after {c['elapsed_minutes']:.0f} minutes, below {c['min_bit_acc']}.\n"
+            "It will not resume while the check is on. To continue anyway add early_stop.enabled=false; "
+            "to start over add --fresh."
+        )
+        return EXIT_NOT_LEARNING
+
     torch.manual_seed(cfg["train"]["seed"])
     device = pick_device(cfg["train"]["device"])
     trainer = Trainer(cfg, device)
@@ -261,34 +327,69 @@ def main() -> None:
         f"reader_input={cfg['train']['reader_input']}"
     )
     print(trainer.models.band.describe())
+    if cfg["train"]["reader_input"] == "direct":
+        print(DIRECT_NOTICE)
 
-    ckpt_cfg, log_cfg = cfg["checkpoint"], cfg["log"]
-    newest = None if args.fresh else latest_checkpoint(ckpt_cfg["dir"])
-    if newest is not None:
-        load_checkpoint(trainer, newest)
-        # Different random draws after a resume than in the steps already done.
-        torch.manual_seed(cfg["train"]["seed"] + trainer.step)
-        print(f"resumed from {newest} at step {trainer.step}")
+    newest = None
+    if args.fresh:
+        moved = set_aside_checkpoints(ckpt_cfg["dir"], time.strftime("%Y%m%d-%H%M%S"))
+        print("starting fresh" + (f"; earlier checkpoints moved to {moved}" if moved else ""))
     else:
-        print(f"starting from step 0 (no checkpoint in {ckpt_cfg['dir']})" if not args.fresh else "starting fresh")
+        newest = load_latest_checkpoint(trainer, ckpt_cfg["dir"])
+        if newest is not None:
+            # Different random draws after a resume than in the steps already done.
+            torch.manual_seed(cfg["train"]["seed"] + trainer.step)
+            print(f"resumed from {newest} at step {trainer.step}")
+        else:
+            print(f"starting from step 0 (no checkpoint in {ckpt_cfg['dir']})")
+    print(f"checkpoints: {ckpt_cfg['dir']}   logs: {log_cfg['dir']}")
+    if clock.elapsed_seconds > 0:
+        print(f"time on this run before now: {clock.elapsed_seconds / 3600.0:.2f} h, {clock.cost_text()}")
+    if args.price_per_hour is not None and clock.unpriced_seconds > 60:
+        print(
+            f"note: {clock.unpriced_seconds / 3600.0:.2f} h of this run had no --price-per-hour "
+            "and is not in the cost"
+        )
+    check_pending = check_enabled and clock.learning_check is None
+    if check_pending:
+        print(
+            f"learning check: the run stops if mean bit accuracy is below {check_min_acc} "
+            f"once it has trained for {check_after_s / 60:.0f} minutes"
+        )
 
     from torch.utils.tensorboard import SummaryWriter
 
     # After a resume, drop only what was logged past the checkpoint.
     writer = SummaryWriter(log_cfg["dir"], purge_step=trainer.step + 1 if newest is not None else 0)
+    progress = ProgressLog(log_cfg["dir"], fresh=args.fresh)
     batches = infinite(make_loader(cfg, device))
     total = int(cfg["train"]["total_steps"])
     t0, start_step = time.time(), trainer.step
+    # (bit accuracy, PSNR) of the most recent steps, for the report line and the learning check
+    recent: deque[tuple[float, float]] = deque(maxlen=max(1, report_every))
+    stop = StopRequest()
+    not_learning = False
+
+    def checkpoint_now() -> None:
+        path = save_checkpoint(trainer, ckpt_cfg["dir"], int(ckpt_cfg["keep"]))
+        clock.save()
+        memory = ""
+        if device.type == "cuda":
+            memory = f"  (peak GPU memory {torch.cuda.max_memory_allocated() / 2**20:.0f} MiB)"
+        print(f"saved {path}{memory}", flush=True)
+
     try:
-        while trainer.step < total:
+        while trainer.step < total and stop.signal_name is None:
             want_images = (trainer.step + 1) % log_cfg["image_every"] == 0
             m = trainer.train_step(next(batches), keep_outputs=want_images)
             step = trainer.step
+            clock.tick()
+            recent.append((m["bit_acc"], m["psnr"]))
             if step % log_cfg["scalar_every"] == 0:
                 log_scalars(writer, m, step)
             if want_images:
                 log_images(writer, m["outputs"], step, int(log_cfg["num_images"]))
-            if step % log_cfg["print_every"] == 0:
+            if log_cfg["print_every"] and step % log_cfg["print_every"] == 0:
                 rate = (step - start_step) / max(1e-9, time.time() - t0)
                 print(
                     f"step {step:6d}  bit_acc {m['bit_acc']:.3f}  decoded {m['message_correctable']:.2f}  "
@@ -296,15 +397,60 @@ def main() -> None:
                     f"sim {m['sim_strength']:.2f}  {rate:.2f} it/s",
                     flush=True,
                 )
+            if report_every and step % report_every == 0:
+                mean_acc = sum(a for a, _ in recent) / len(recent)
+                mean_psnr = sum(p for _, p in recent) / len(recent)
+                print(progress.write(step, mean_acc, mean_psnr, len(recent), clock), flush=True)
+                if clock.price_per_hour is not None:
+                    writer.add_scalar("run/cost_usd", clock.cost_usd, step)
+                clock.save()
             if step % ckpt_cfg["every"] == 0 or step == total:
-                path = save_checkpoint(trainer, ckpt_cfg["dir"], int(ckpt_cfg["keep"]))
-                memory = ""
-                if device.type == "cuda":
-                    memory = f"  (peak GPU memory {torch.cuda.max_memory_allocated() / 2**20:.0f} MiB)"
-                print(f"saved {path}{memory}", flush=True)
+                checkpoint_now()
+            # Wait for 100 steps so that a restart just before the mark is not judged on a handful.
+            if check_pending and clock.elapsed_seconds >= check_after_s and len(recent) >= min(100, recent.maxlen):
+                mean_acc = sum(a for a, _ in recent) / len(recent)
+                not_learning = mean_acc < check_min_acc
+                clock.learning_check = {
+                    "result": "failed" if not_learning else "passed",
+                    "step": step,
+                    "bit_acc": mean_acc,
+                    "min_bit_acc": check_min_acc,
+                    "elapsed_minutes": clock.elapsed_seconds / 60.0,
+                }
+                check_pending = False
+                clock.save()
+                print(
+                    f"learning check at step {step}, {clock.elapsed_seconds / 60:.0f} minutes in: "
+                    f"mean bit accuracy over the last {len(recent)} steps is {mean_acc:.3f} "
+                    f"(chance is 0.500, required {check_min_acc}) -> "
+                    + ("NOT LEARNING, stopping the run" if not_learning else "passed, the run continues"),
+                    flush=True,
+                )
+                if not_learning:
+                    break
+    except Exception:
+        # Ctrl-C also reaches the data-loader workers; if their exit is what
+        # failed here, the stop was asked for and the checkpoint below still happens.
+        if stop.signal_name is None:
+            raise
     finally:
         writer.close()
+        clock.save()
+
+    if not_learning:
+        checkpoint_now()
+        print(
+            f"Stopped: bit accuracy is still near 50 percent. {clock.cost_text()}.\n"
+            "The machine is still running and still billed; see RUNPOD.md for how to stop it."
+        )
+        return EXIT_NOT_LEARNING
+    if stop.signal_name is not None:
+        checkpoint_now()
+        print(f"stopped by {stop.signal_name} at step {trainer.step}; the same command resumes from here")
+        return EXIT_INTERRUPTED
+    print(f"finished {trainer.step} steps in {clock.elapsed_seconds / 3600.0:.2f} h, {clock.cost_text()}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

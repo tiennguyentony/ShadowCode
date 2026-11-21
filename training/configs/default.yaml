@@ -9,7 +9,11 @@
 camera_px_per_tile: null
 
 data:
-  train_dir: data/train        # any folder of images, searched recursively
+  # The dataset path. Any folder of images, searched recursively.
+  # fetch_dataset.py downloads the chosen dataset (Open Images V7 validation,
+  # see THIRD_PARTY.md):  python fetch_dataset.py --out data/open-images-v7-val
+  # then set this to data/open-images-v7-val/images.
+  train_dir: data/train
   min_crop_scale: 0.35         # RandomResizedCrop lower bound; crops are resized to TILE_PX
   num_workers: 8
 
@@ -102,8 +106,10 @@ simulation:                    # every range below is its value at strength 1 an
     ramp_with_strength: false  # true: rotation and scale ranges grow with the strength knob
 
 log:
-  dir: runs/stage1             # TensorBoard event files
-  print_every: 50
+  dir: runs/stage1             # TensorBoard event files, progress.csv and run_state.json
+  print_every: 50              # detailed console line; 0 switches it off
+  report_every: 1000           # report line and progress.csv row: step, mean bit accuracy and PSNR
+                               # over the steps since the last one, cost so far (--price-per-hour)
   scalar_every: 50
   image_every: 1000
   num_images: 4
@@ -112,3 +118,8 @@ checkpoint:
   dir: checkpoints/stage1      # training resumes from the newest checkpoint here
   every: 2000
   keep: 3                      # newest checkpoints kept; 0 keeps all
+
+early_stop:                    # the learning check: one look, after_minutes into the run
+  enabled: false
+  after_minutes: 30            # training time, summed over restarts
+  min_bit_acc: 0.55            # stop if the mean of the last log.report_every steps is below this (chance is 0.50)

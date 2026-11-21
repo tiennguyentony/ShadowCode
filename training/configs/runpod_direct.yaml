@@ -1,0 +1,38 @@
+# Direct reader on a RunPod pod: no locator and no flatten step. The reader
+# gets the centre crop of the simulated camera frame, at a random rotation,
+# scale and shift, and has to read the bits from that.
+#
+# DIRECT MODE HAS NOT YET BEEN SHOWN TO LEARN. Nothing in this repository has
+# trained it above chance. This config is an experiment that runs beside the
+# main (flattened) run, and the learning check below is there so that a run
+# that is not learning costs 30 minutes of GPU time, not a night.
+#
+# Everything except reader_input and the paths is default.yaml unchanged, so
+# the two runs can be compared.
+#
+#   python train.py --config configs/runpod_direct.yaml --price-per-hour <pod price>
+#
+# All paths are on the network volume, which RunPod mounts at /workspace.
+# See RUNPOD.md.
+base: default.yaml
+
+data:
+  train_dir: /workspace/datasets/open-images-v7-val/images   # written by setup_runpod.sh
+
+train:
+  reader_input: direct
+
+log:
+  dir: /workspace/runs/direct/logs
+  print_every: 0               # report lines only, one per 1,000 steps
+  report_every: 1000
+
+checkpoint:
+  dir: /workspace/runs/direct/checkpoints
+  every: 2000
+  keep: 3
+
+early_stop:
+  enabled: true
+  after_minutes: 30
+  min_bit_acc: 0.55            # chance is 0.50

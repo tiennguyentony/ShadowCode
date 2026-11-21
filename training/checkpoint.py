@@ -53,9 +53,48 @@ def save_checkpoint(trainer, directory: str | Path, keep: int) -> Path:
     return path
 
 
+def set_aside_checkpoints(directory: str | Path, label: str) -> Path | None:
+    """Move every checkpoint in ``directory`` into ``directory/replaced-<label>``.
+
+    Used by a fresh start. Left in place, the old files would have higher step
+    numbers than the new run's, so they would be the ones kept and resumed from.
+    """
+    files = list_checkpoints(directory)
+    if not files:
+        return None
+    target = Path(directory) / f"replaced-{label}"
+    target.mkdir(parents=True, exist_ok=True)
+    for path in files:
+        os.replace(path, target / path.name)
+    return target
+
+
+def load_latest_checkpoint(trainer, directory: str | Path) -> Path | None:
+    """Resume ``trainer`` from the newest readable checkpoint in ``directory``.
+
+    A file that cannot be read at all (cut short by a full disk, say) is
+    skipped with a warning and the one before it is tried. A file that reads
+    but does not fit the config still stops the run, as in load_checkpoint.
+    """
+    for path in reversed(list_checkpoints(directory)):
+        try:
+            state = torch.load(path, map_location=trainer.device, weights_only=True)
+        except Exception as error:  # noqa: BLE001 - any unreadable file is skipped, loudly
+            reason = (str(error).splitlines() or [""])[0][:160]
+            print(f"warning: {path} cannot be read ({type(error).__name__}: {reason}); trying the one before it")
+            continue
+        _restore(trainer, state, path)
+        return path
+    return None
+
+
 def load_checkpoint(trainer, path: str | Path) -> None:
     """Restore models, optimizer and schedule state into ``trainer``."""
     state = torch.load(path, map_location=trainer.device, weights_only=True)
+    _restore(trainer, state, path)
+
+
+def _restore(trainer, state: dict, path: str | Path) -> None:
     band = trainer.models.band.as_dict()
     saved_band = state["band"]
     for key in ("grating_step", "message_grid", "texture_kernel", "texture_downsample"):
