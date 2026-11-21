@@ -12,6 +12,7 @@
     "gen:vectors": "node scripts/gen-message-vectors.mjs"
   },
   "devDependencies": {
+    "@types/node": "^24.19.2",
     "fast-check": "^4.10.2",
     "typescript": "~7.0.2",
     "vite": "^8.3.6",

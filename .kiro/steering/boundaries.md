@@ -26,3 +26,4 @@ inclusion: always
 - Never commit secrets, `.env` files, model checkpoints, or datasets.
 - Never add `.kiro` to `.gitignore`.
 - Commit messages for app work start with `web:`.
+- Never commit or push directly to master. Work on a branch; only Tony merges.

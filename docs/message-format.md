@@ -1,8 +1,8 @@
-Total frozen at 64 bits (neural models are trained against it). The split of the 32 non-ID bits may still change through the message-codec spec.
-
 # Tilemark Message Format
 
 ## Status
+
+The layout is frozen: 64 bits in total, split as 32 ID + 7 CRC + 24 BCH parity + 1 spare. The 64-bit total is fixed because neural models are trained against it.
 
 This document is the single authoritative cross-language contract for the 64-bit Tilemark Message, including the CRC-7 definition. The TypeScript codec (`/web/src/codec/message.ts`, `encodeMessage` / `decodeMessage`) and any Python implementation in `/training` must match it bit for bit.
 

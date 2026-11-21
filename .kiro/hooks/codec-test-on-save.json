@@ -4,11 +4,11 @@
     {
       "name": "Run codec tests on save",
       "trigger": "PostFileSave",
-      "description": "Runs the Vitest codec test suite whenever a file under /web/src/codec is saved and reports how many property tests pass.",
+      "description": "Runs the Vitest codec test suite whenever a file under /web/src/codec is saved and reports which of the message-codec Properties 1-16 pass.",
       "matcher": "web[\\\\/]src[\\\\/]codec[\\\\/].*\\.(ts|tsx)$",
       "action": {
         "type": "agent",
-        "prompt": "A file under /web/src/codec was just saved. Run the codec test suite with: cd web && npx vitest run src/codec --reporter=verbose 2>&1. Then report: (1) overall pass/fail, (2) which of the six property tests (PT-1 through PT-6) passed and which failed, (3) any type errors or import violations (codec importing from UI or camera APIs). Keep the report short — one line per property test, then a brief summary."
+        "prompt": "A file under /web/src/codec was just saved. Run the codec test suite with: cd web && npx vitest run src/codec --reporter=verbose 2>&1. Then report: (1) overall pass/fail; (2) pass/fail for each message-codec property, using the names in the suite: Property 1 to Property 13 in message.properties.test.ts (Property 4 runs as two tests, 4a and 4b), Property 14 (tests 'false-accept m=4' and 'false-accept m=3') and Property 15 (tests 'random-input m=4' and 'random-input m=3') in message.measure.test.ts, and Property 16 (Format_Document vector conformance) in message.vectors.test.ts; (3) any type errors (run cd web && npx tsc --noEmit -p .) or import violations (codec importing from UI or camera APIs, checked by message.isolation.test.ts). Keep the report short: one line per property, then a brief summary."
       }
     }
   ]

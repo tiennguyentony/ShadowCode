@@ -9,7 +9,7 @@ The Message_Codec alone cannot satisfy "never show a wrong product". Requirement
 - **Catalog check (Requirement 1):** a wrong Product_ID that the codec accepts is an arbitrary 32-bit value, and a catalog uses only a small fraction of the 2^32 possible IDs, so most such values are not real products. Discarding IDs not in the Product_Catalog removes those false accepts. Product_ID 0 is reserved and never assigned to a product (per `/docs/message-format.md`), so the Scanner never shows it.
 - **Consecutive-match confirmation (Requirement 2):** a false accept arises from one heavily corrupted or tile-free frame. Requiring the same Product_ID in N consecutive Decode_Attempts means N independent false accepts would have to produce the same wrong ID back to back, which is far less likely than one.
 
-N is the Confirmation_Count setting (Requirement 3). The candidate values are 2 and 3. The user will choose N after measuring real decode times; this spec fixes neither value and sets no default.
+N is the Confirmation_Count setting (Requirement 3). The user has chosen N = 2 (Requirement 4): a decoded ID is shown only if it exists in the Product_Catalog and the same ID was decoded on 2 consecutive Decode_Attempts.
 
 Timing: the tech steering sets a target of under 100 ms per decode attempt and under 500 ms for a successful read, which may take several attempts. Every successful read takes at least N Decode_Attempts, and all of them count against the 500 ms budget. This relation is the input for choosing N. This spec sets no new timing numbers.
 
@@ -26,7 +26,7 @@ Out of scope: camera handling, UI layout, the Product_Catalog storage format, an
 - **Decoded_ID**: The `id` property of a non-null Decode_Result.
 - **Product_Catalog**: The set of Product_IDs that exist as products. The Scanner only tests membership.
 - **Catalog_ID**: A Decoded_ID that is contained in the Product_Catalog and is not the Reserved_ID.
-- **Confirmation_Count**: The configurable setting N, the number of consecutive Decode_Attempts that must return the same Catalog_ID before the Scanner reports that Catalog_ID as the Shown_Product. Candidate values are 2 and 3; the user chooses N after measuring real decode times.
+- **Confirmation_Count**: The configurable setting N, the number of consecutive Decode_Attempts that must return the same Catalog_ID before the Scanner reports that Catalog_ID as the Shown_Product. The setting accepts 2 and 3; the user has chosen 2 (Requirement 4).
 - **Candidate_ID**: The Catalog_ID from the most recent Decode_Attempt, held while the Scanner waits for confirmation.
 - **Match_Run**: The number of consecutive Decode_Attempts, ending with the most recent one, whose Decoded_ID equals the held Candidate_ID.
 - **Shown_Product**: The Product_ID that the Scanner reports to the UI for display.
@@ -77,6 +77,20 @@ Out of scope: camera handling, UI layout, the Product_Catalog storage format, an
 1. THE Scanner SHALL read the Confirmation_Count from the Scanner_Configuration.
 2. THE Scanner SHALL accept as the Confirmation_Count only integers in the range [2, 3].
 3. IF the Scanner_Configuration supplies a Confirmation_Count that is not an integer in [2, 3] (including 0, 1, 4, negative numbers, non-integer numbers, `NaN`, infinities, and non-number values), THEN THE Scanner SHALL reject the Scanner_Configuration at configuration time with an error that names the Confirmation_Count and the accepted range, and SHALL NOT process any Decode_Attempt with that Scanner_Configuration.
-4. IF the Scanner_Configuration does not supply a Confirmation_Count, THEN THE Scanner SHALL reject the Scanner_Configuration at configuration time with an error that names the missing Confirmation_Count, so that the Scanner has no implicit default pending the user's choice of N.
+4. IF the Scanner_Configuration does not supply a Confirmation_Count, THEN THE Scanner SHALL reject the Scanner_Configuration at configuration time with an error that names the missing Confirmation_Count, so that the Scanner has no implicit default; the app supplies the chosen value 2 (Requirement 4).
 5. THE Scanner documentation SHALL state the reason for the range [2, 3]: a Confirmation_Count of 1 removes the consecutive-match confirmation that message-codec Requirement 12 assigns to the Scanner, and 2 and 3 are the only candidate values under consideration.
-6. THE Scanner documentation SHALL state that the final Confirmation_Count is pending the user's decision after measuring real decode times.
+6. THE Scanner documentation SHALL state that the user has chosen a Confirmation_Count of 2 (Requirement 4).
+
+### Requirement 4: Display rule (user decision)
+
+**User Story:** As a shopper at checkout, I want a product shown only when it is a real catalog product read twice in a row, so that a single misread never shows the wrong product.
+
+Decision recorded 2026-11-21 by the user. It fixes the Confirmation_Count left open in Requirement 3.
+
+Reason: the Message_Codec accepts some wrong reads. The Residual_Risk_Section of `/docs/message-format.md` gives the measured single-decode rates at `maxCorrectableErrors` = 4: a False_Accept_Rate of 2.9 × 10⁻⁴ under heavy corruption (29 False_Accepts in 100,000 trials with 8, 12, 16 or 32 flipped bits, seed 0x2545F491), and a Random_Input_Acceptance_Rate of 0.031% (31 non-null results in 100,000 uniformly random 64-bit inputs, same seed). A falsely accepted ID is an arbitrary 32-bit value, so the catalog check discards almost all of them. Requiring the same ID on 2 consecutive Decode_Attempts means 2 independent false accepts would have to produce the same wrong catalog ID back to back.
+
+#### Acceptance Criteria
+
+1. THE Scanner SHALL report a Decoded_ID as the Shown_Product only if (a) the Decoded_ID exists in the Product_Catalog and is not the Reserved_ID, and (b) the same Decoded_ID was returned by 2 consecutive Decode_Attempts.
+2. THE Scanner_Configuration used by the app SHALL supply a Confirmation_Count of 2.
+3. THE Scanner documentation SHALL state the reason for this rule by citing the measured False_Accept_Rate (2.9 × 10⁻⁴) and Random_Input_Acceptance_Rate (0.031%) from the Residual_Risk_Section.
