@@ -2,6 +2,9 @@
 
 The trained models, the printed tiles and the web scanner all depend on
 these values agreeing.
+
+CAMERA_PX_PER_TILE is a measured value and lives in the config as
+``camera_px_per_tile``.
 """
 
 from __future__ import annotations
@@ -13,8 +16,3 @@ MESSAGE_BITS = 64
 # Side of one tile in pixels, as the embedder sees it and as the reader
 # receives a flattened patch.
 TILE_PX = 384
-
-# Camera pixels covered by one printed tile at demo distance. Measured value,
-# to be supplied. The simulation's loss-of-resolution step refuses to run
-# while this is None.
-CAMERA_PX_PER_TILE: int | None = None

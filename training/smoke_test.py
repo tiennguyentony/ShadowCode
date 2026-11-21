@@ -5,8 +5,12 @@ or MPS, and uses a CUDA GPU when there is one. Uses the real models and the
 real training step: embed, repeat 3x3, flatten one tile-sized patch at a
 random offset with corner jitter, read.
 
+Also reports the PSNR between marked and original tiles and saves a sheet
+with original, marked and residual x10 side by side.
+
     python smoke_test.py                 # fastest device available
     python smoke_test.py --device cpu
+    python smoke_test.py --config configs/smoke_blur.yaml band.grating_step=4
     pytest smoke_test.py -s
 """
 
@@ -25,10 +29,11 @@ from PIL import Image
 
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
-from data import infinite, make_loader
+from data import infinite, make_loader, procedural_image
 from geometry import flatten_from_corners, square_corners
 from models import count_parameters
 from train import Trainer
+from viz import sample_sheet, save_image
 
 HERE = Path(__file__).resolve().parent
 REQUIRED_ACCURACY = 0.70  # chance is 0.50
@@ -40,22 +45,7 @@ def make_tiny_dataset(root: Path, count: int = NUM_IMAGES, size: int = 448, seed
     """Write procedural images (smooth colour fields, shapes, grain) to root."""
     rng = np.random.default_rng(seed)
     for i in range(count):
-        low = rng.random((rng.integers(3, 9), rng.integers(3, 9), 3)).astype(np.float32)
-        img = np.asarray(
-            Image.fromarray((low * 255).astype(np.uint8)).resize((size, size), Image.BICUBIC),
-            dtype=np.float32,
-        )
-        yy, xx = np.mgrid[0:size, 0:size]
-        for _ in range(rng.integers(2, 7)):
-            cx, cy, r = rng.integers(0, size), rng.integers(0, size), rng.integers(16, 110)
-            colour = rng.random(3) * 255
-            if rng.random() < 0.5:
-                mask = (xx - cx) ** 2 + (yy - cy) ** 2 < r**2
-            else:
-                mask = (abs(xx - cx) < r) & (abs(yy - cy) < r // 2 + 4)
-            img[mask] = colour
-        img += rng.normal(0, rng.uniform(0, 12), img.shape)
-        Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).save(root / f"img_{i:03d}.png")
+        Image.fromarray(procedural_image(rng, size)).save(root / f"img_{i:03d}.png")
 
 
 def default_device() -> str:
@@ -98,23 +88,34 @@ def check_structure(trainer: Trainer) -> None:
     assert gap < 1e-9, f"flatten does not reproduce an exact crop (max difference {gap:.2e})"
 
 
-def run_smoke(device_name: str | None = None, overrides: list[str] | None = None) -> dict[str, float]:
+def describe_simulation(cfg: dict) -> str:
+    sim = cfg["simulation"]
+    if not sim["enabled"]:
+        return "simulation off"
+    effects = [name for name, on in sim["effects"].items() if on]
+    return f"simulation on ({', '.join(effects)}) at strength {cfg['schedule']['sim_strength']['max_strength']}"
+
+
+def run_smoke(
+    device_name: str | None = None,
+    overrides: list[str] | None = None,
+    config: str | Path | None = None,
+    sheet_path: str | Path | None = None,
+) -> dict[str, float]:
     device = torch.device(device_name or default_device())
+    config = Path(config) if config else HERE / "configs" / "smoke.yaml"
     with tempfile.TemporaryDirectory(prefix="tilemark_smoke_") as tmp:
         make_tiny_dataset(Path(tmp))
-        cfg = load_config(
-            HERE / "configs" / "smoke.yaml",
-            [f"data.train_dir={Path(tmp).as_posix()}", *(overrides or [])],
-        )
-        assert not cfg["simulation"]["enabled"], "the smoke test runs with the simulation off"
+        cfg = load_config(config, [f"data.train_dir={Path(tmp).as_posix()}", *(overrides or [])])
         torch.manual_seed(cfg["train"]["seed"])
         trainer = Trainer(cfg, device)
         steps = cfg["train"]["total_steps"]
         every = cfg["log"]["print_every"]
         print(
             f"smoke test: {steps} steps, batch {cfg['train']['batch_size']}, {NUM_IMAGES} images, "
-            f"device={device}, simulation off, reader_input={cfg['train']['reader_input']}"
+            f"device={device}, {describe_simulation(cfg)}, reader_input={cfg['train']['reader_input']}"
         )
+        print(trainer.models.band.describe())
         print(
             f"MESSAGE_BITS={MESSAGE_BITS}  TILE_PX={TILE_PX}  "
             f"embedder {count_parameters(trainer.embedder) / 1e6:.2f}M params, "
@@ -141,10 +142,13 @@ def run_smoke(device_name: str | None = None, overrides: list[str] | None = None
 
         first = sum(m["bit_acc"] for m in history[:every]) / every
         final = sum(m["bit_acc"] for m in history[-every:]) / every
-        evals = [trainer.evaluate(next(batches)) for _ in range(8)]
+        evals = [trainer.evaluate(next(batches), keep_outputs=True) for _ in range(8)]
         eval_acc = sum(m["bit_acc"] for m in evals) / len(evals)
         eval_exact = sum(m["message_exact"] for m in evals) / len(evals)
         eval_correctable = sum(m["message_correctable"] for m in evals) / len(evals)
+        eval_psnr = sum(m["psnr"] for m in evals) / len(evals)
+        sheet = sample_sheet(evals[0]["outputs"]["original"], evals[0]["outputs"]["marked"])
+        sheet_path = save_image(sheet, sheet_path or HERE / "outputs" / "smoke_samples.png")
 
     print(f"\nfirst {every} steps:  bit_acc {first:.3f}")
     print(f"last {every} steps:   bit_acc {final:.3f}")
@@ -152,8 +156,10 @@ def run_smoke(device_name: str | None = None, overrides: list[str] | None = None
         f"eval mode, fresh bits and offsets: bit_acc {eval_acc:.3f}, "
         f"all 64 bits right {eval_exact:.3f}, within BCH reach {eval_correctable:.3f}"
     )
+    print(f"PSNR marked vs original: {eval_psnr:.1f} dB (image-loss weight at the end: {history[-1]['image_scale']:.3f})")
+    print(f"sample sheet (original | marked | residual x10): {sheet_path}")
     print(f"total time: {time.time() - t0:.0f}s")
-    return {"first": first, "final": final, "eval": eval_acc}
+    return {"first": first, "final": final, "eval": eval_acc, "psnr": eval_psnr}
 
 
 def check_result(result: dict[str, float]) -> None:
@@ -171,7 +177,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--device", default=None, help="cuda, mps or cpu (default: the first of those available)")
     parser.add_argument("overrides", nargs="*", help="dotted.key=value config overrides, for experiments")
+    parser.add_argument("--config", default=None, help="config file (default: configs/smoke.yaml)")
+    parser.add_argument("--sheet", default=None, help="where to save the sample sheet (default: outputs/smoke_samples.png)")
     args = parser.parse_args()
-    result = run_smoke(args.device, args.overrides)
+    result = run_smoke(args.device, args.overrides, args.config, args.sheet)
     check_result(result)
     print(f"PASS: bit accuracy {result['final']:.3f} (train) / {result['eval']:.3f} (eval) >= {REQUIRED_ACCURACY}")

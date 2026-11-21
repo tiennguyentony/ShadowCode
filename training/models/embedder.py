@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from band import grating_frequencies
+
 
 class CircConv(nn.Sequential):
     """3x3 conv with circular padding, GroupNorm and ReLU."""
@@ -103,29 +105,16 @@ class Embedder(nn.Module):
 
         Bit k owns one spatial frequency (u, v) = step * (a, b) cycles per
         tile and a random direction in channel space. The lowest-frequency
-        candidates are used, so the starting code sits in the band most
-        likely to survive loss of resolution. ``step`` spaces the gratings
+        candidates for that step are used (see band.py for how the step is
+        chosen). ``step`` spaces the gratings
         apart so a reader with a window of tile_px / step pixels can tell
         neighbours apart. The dense layer sees the message as +-1 and the
         bias is the sum of the weights, so a 0 bit removes its grating and a
         1 bit adds it.
         """
         c, g, bits = self.message_channels, self.message_grid, self.message_bits
-        limit = (g // 2 - 1) // step  # stay strictly below the grid's Nyquist frequency
-        # One of each +-frequency pair, without DC and the lowest few.
-        candidates = [
-            (a, b)
-            for a in range(0, limit + 1)
-            for b in range(-limit, limit + 1)
-            if (a > 0 or b > 0) and math.hypot(a, b) >= 1.5
-        ]
-        if len(candidates) < bits:
-            raise ValueError(
-                f"message_grid {g} with grating_step {step} has only {len(candidates)} "
-                f"usable frequencies for {bits} bits"
-            )
-        candidates.sort(key=lambda ab: (math.hypot(*ab), ab))
-        chosen = [candidates[i] for i in torch.randperm(bits).tolist()]
+        frequencies = grating_frequencies(g, step, bits)
+        chosen = [frequencies[i] for i in torch.randperm(bits).tolist()]
         yy, xx = torch.meshgrid(torch.arange(g), torch.arange(g), indexing="ij")
         weight = torch.empty(c, g, g, bits)
         for k, (a, b) in enumerate(chosen):

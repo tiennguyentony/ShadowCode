@@ -1,0 +1,6 @@
+# Run outputs
+outputs/
+runs/
+checkpoints/
+data/
+export/

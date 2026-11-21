@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import torch.nn as nn
 
+from band import Band, resolve_band
 from constants import MESSAGE_BITS, TILE_PX
 
 from .embedder import Embedder
@@ -20,6 +21,7 @@ class Models:
     embedder: Embedder
     reader: Reader
     locator: Locator | None = None
+    band: Band | None = None
 
     def named(self) -> dict[str, nn.Module]:
         """The models that exist, by name. Used for checkpoints and device moves."""
@@ -34,23 +36,33 @@ def count_parameters(module: nn.Module) -> int:
 
 
 def build_models(cfg: dict) -> Models:
+    """Build the models. The band (see band.py) fixes the sizes that depend on it."""
     m = cfg["model"]
     emb, rd = m["embedder"], m["reader"]
+    band = resolve_band(cfg)
     embedder = Embedder(
         message_bits=MESSAGE_BITS,
         tile_px=TILE_PX,
         base_channels=emb["base_channels"],
-        message_grid=emb["message_grid"],
+        message_grid=band.message_grid,
         message_channels=emb["message_channels"],
         message_init=emb["message_init"],
-        grating_step=emb["grating_step"],
+        grating_step=band.grating_step,
         alpha=emb["alpha"],
     )
-    texture = rd.get("texture")
+    texture = None
+    if rd.get("texture"):
+        texture = {
+            "filters": rd["texture"]["filters"],
+            "stride": rd["texture"]["stride"],
+            "kernel": band.texture_kernel,
+            "downsample": band.texture_downsample,
+        }
     reader = Reader(
         message_bits=MESSAGE_BITS,
         widths=tuple(rd["widths"]),
-        texture=dict(texture) if texture else None,
+        texture=texture,
+        pool_norm=rd["pool_norm"],
     )
     locator = Locator(**m["locator"]) if m.get("locator") else None
-    return Models(embedder=embedder, reader=reader, locator=locator)
+    return Models(embedder=embedder, reader=reader, locator=locator, band=band)

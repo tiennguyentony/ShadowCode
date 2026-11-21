@@ -1,28 +1,39 @@
 # Full stage 1 training run. Paths are relative to the directory you launch from.
 #
-# MESSAGE_BITS, TILE_PX and CAMERA_PX_PER_TILE are fixed in constants.py and
-# are deliberately not settable here.
+# MESSAGE_BITS and TILE_PX are fixed in constants.py and are deliberately not
+# settable here.
+
+# Camera pixels covered by one printed tile at demo distance. MEASURED VALUE.
+# While it is null, the simulation's loss-of-resolution step is skipped (every
+# other step runs) and the starting band falls back to band.fallback_step.
+camera_px_per_tile: null
 
 data:
   train_dir: data/train        # any folder of images, searched recursively
   min_crop_scale: 0.35         # RandomResizedCrop lower bound; crops are resized to TILE_PX
   num_workers: 8
 
+band:                          # where the gratings init puts the code; see band.py
+  grating_step: auto           # auto (derived from camera_px_per_tile) | 2 | 3 | 4 | 6 | 8 | 12
+  fallback_step: 8             # used by auto while camera_px_per_tile is null (8 = 16-51 cycles per tile)
+  max_step: 8                  # auto never picks a step above this
+  min_camera_px_per_cycle: 3.0 # auto keeps the highest starting frequency at least this coarse
+
 model:
   embedder:
     base_channels: 32
-    message_grid: 128          # dense layer output is message_channels x grid x grid, upsampled to TILE_PX
+    message_grid: auto         # dense layer output is message_channels x grid x grid. auto = 16 * grating_step
     message_channels: 16
     message_init: gratings     # gratings (each bit switches one grating on/off) | dense (default init)
-    grating_step: 8            # gratings init only: gratings sit at multiples of this many cycles per tile
     alpha: 0.3                 # strength: residual is alpha * tanh(.)
   reader:
     widths: [32, 64, 128, 192, 256]   # one stride-2 stage per entry
+    pool_norm: running         # running (running statistics) | batch (plain BatchNorm1d)
     texture:                   # pooled filter-pair products; set to null for the plain CNN
       filters: 48
-      kernel: 24
       stride: 4
-      downsample: 2            # window is downsample * kernel input pixels; keep it near TILE_PX / grating_step
+      kernel: auto             # auto: kernel * downsample = TILE_PX / grating_step
+      downsample: auto
   locator: null                # third model, not built yet
 
 train:
@@ -30,7 +41,7 @@ train:
   reader_input: flattened      # flattened | direct
   device: auto                 # auto | cuda | mps | cpu
   seed: 0
-  batch_size: 16
+  batch_size: 8
   total_steps: 140000
   lr: 1.0e-4
   grad_clip: 1.0
@@ -44,7 +55,8 @@ flatten:                       # reader_input: flattened only
 loss:
   bit_weight: 1.0
   l2_weight: 2.0               # multiplied by the image-loss schedule
-  lpips_weight: 1.0            # multiplied by the image-loss schedule
+  lpips_weight: 1.0            # multiplied by the image-loss schedule; 0 disables LPIPS entirely
+  lpips_net: alex              # alex | vgg | squeeze
 
 schedule:
   image_loss:
@@ -56,8 +68,47 @@ schedule:
     ramp_steps: 20000          # linear ramp 0 -> max_strength
     max_strength: 1.0
 
-simulation:
+simulation:                    # every range below is its value at strength 1 and scales with strength
   enabled: true
+  frame_px: 768                # side of the simulated camera frame
+  effects:                     # switch single steps off for experiments
+    perspective: true
+    blur: true
+    colour: true
+    resolution: true           # needs camera_px_per_tile; skipped while that is null
+    noise: true
+    jpeg: true
+  perspective:
+    max_tilt_deg: 30.0
+    distance_tiles: [3.0, 6.0] # camera distance in tile widths; closer means stronger perspective
+  blur:                        # in frame pixels (one tile is TILE_PX frame pixels at scale 1)
+    defocus_radius_px: 2.5     # radius of the defocus disc, uniform in [0, this]
+    motion_length_px: 6.0      # length of the motion streak, uniform in [0, this], random direction
+  colour:
+    brightness: 0.15           # +- added to all channels
+    channel_shift: 0.05        # +- added per channel
+    contrast: 0.3              # contrast factor is 1 +- this, about the image mean
+    gamma: 0.25                # gamma is exp(+- this)
+  resolution:
+    jitter: 0.15               # target is camera_px_per_tile * (1 +- this)
+  noise:
+    sigma: 0.04                # Gaussian noise, standard deviation uniform in [0, this]
+  jpeg:
+    min_quality: 40            # quality uniform in [this, 100]
+    chroma_subsampling: true
+  direct:                      # reader_input: direct only. Applied at any strength unless ramp_with_strength.
+    rotation_deg: 360.0        # rotation uniform in [0, this]
+    scale: [0.8, 1.25]         # scale log-uniform in this range
+    ramp_with_strength: false  # true: rotation and scale ranges grow with the strength knob
 
 log:
+  dir: runs/stage1             # TensorBoard event files
   print_every: 50
+  scalar_every: 50
+  image_every: 1000
+  num_images: 4
+
+checkpoint:
+  dir: checkpoints/stage1      # training resumes from the newest checkpoint here
+  every: 2000
+  keep: 3                      # newest checkpoints kept; 0 keeps all

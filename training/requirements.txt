@@ -3,3 +3,9 @@ torchvision>=0.17
 numpy
 pillow
 pyyaml
+lpips>=0.1.4
+tensorboard
+# export_bundle.py only
+onnx
+onnxruntime
+onnxscript

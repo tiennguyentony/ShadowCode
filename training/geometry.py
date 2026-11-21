@@ -75,30 +75,30 @@ def flatten_random_patch(
     frame: torch.Tensor,
     surface_to_frame: torch.Tensor,
     tile_px: int,
-    surface_repeat: int,
     corner_jitter_px: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Flatten one tile-sized patch of the surface out of ``frame``.
 
-    The patch's top-left corner is drawn uniformly over one full tile period
-    in both directions, so the reader sees every offset within the tile
-    pattern. Its corners are carried into the frame by the true homography
+    The patch is centred on the surface point seen at the middle of the
+    frame, plus an offset drawn uniformly over one full tile period in both
+    directions, so the reader sees every offset within the tile pattern. Its
+    corners are carried into the frame by the true homography
     ``surface_to_frame`` (surface pixels -> frame pixels), each corner is
     then moved by up to ``corner_jitter_px`` frame pixels in x and y, and the
     resulting quadrilateral is flattened to tile_px x tile_px.
 
-    The patch stays inside the middle of the surface: with ``surface_repeat``
-    tiles per side, offsets run over [m, m + tile_px) where m centres that
-    range, leaving half a tile of margin at 3 repeats.
+    The patch reaches at most one tile from the surface point at the middle
+    of the frame, so the frame has to show two tiles' worth of surface around
+    its middle. The simulation guarantees that.
 
     Returns (patch, corners in frame pixels after jitter).
     """
-    b = frame.shape[0]
-    if surface_repeat < 2:
-        raise ValueError("surface_repeat must be at least 2 for a random offset")
-    margin = (surface_repeat - 2) * tile_px / 2.0
-    offset = margin + torch.rand(b, 1, 2, device=frame.device, dtype=frame.dtype) * tile_px
-    corners_surface = offset + square_corners(float(tile_px), b, frame.device, frame.dtype)
+    b, _, h, w = frame.shape
+    middle = torch.tensor([[[w / 2.0, h / 2.0]]], device=frame.device, dtype=frame.dtype).expand(b, -1, -1)
+    frame_to_surface = torch.linalg.inv(surface_to_frame.double().cpu()).to(surface_to_frame)
+    seen_at_middle = apply_homography(frame_to_surface, middle)                      # (B,1,2)
+    top_left = seen_at_middle - torch.rand(b, 1, 2, device=frame.device, dtype=frame.dtype) * tile_px
+    corners_surface = top_left + square_corners(float(tile_px), b, frame.device, frame.dtype)
     corners = apply_homography(surface_to_frame, corners_surface)
     if corner_jitter_px > 0:
         corners = corners + (torch.rand_like(corners) * 2.0 - 1.0) * corner_jitter_px

@@ -52,7 +52,10 @@ class TextureBranch(nn.Module):
         weight = self.weight - self.weight.mean(dim=(2, 3), keepdim=True)
         u = F.conv2d(x, weight, stride=self.stride).flatten(2)   # (B,F,N)
         products = torch.bmm(u, u.transpose(1, 2)) / u.shape[-1]  # (B,F,F), mean over position
-        return products.flatten(1)[:, self.pair_index]
+        # index_select, not products.flatten(1)[:, pair_index]: the same values,
+        # but it exports to ONNX as a plain Gather instead of GatherND, which
+        # ONNX Runtime Web supports less widely (see /docs/model-contract.md).
+        return products.flatten(1).index_select(1, self.pair_index)
 
 
 class RunningNorm(nn.Module):
@@ -97,9 +100,10 @@ class Reader(nn.Module):
     flattened TILE_PX patch (reader_input: flattened) or a centre crop of the
     camera frame (reader_input: direct).
 
-    The pooled output of every stage is concatenated, normalised with running
-    statistics (RunningNorm) and fed to a linear head. ``widths`` gives one stride-2 stage per entry;
-    every stage except the first and the last is followed by a residual
+    The pooled output of every stage is concatenated, normalised and fed to a
+    linear head. ``pool_norm`` is ``running`` (RunningNorm) or ``batch``
+    (plain BatchNorm1d). ``widths`` gives one stride-2 stage per entry; every
+    stage except the first and the last is followed by a residual
     block. With ``texture`` set, a TextureBranch adds its pooled features to
     the same vector.
     """
@@ -109,6 +113,7 @@ class Reader(nn.Module):
         message_bits: int,
         widths: tuple[int, ...] = (32, 64, 128, 192, 256),
         texture: dict | None = None,
+        pool_norm: str = "running",
     ):
         super().__init__()
 
@@ -129,7 +134,12 @@ class Reader(nn.Module):
         self.texture = TextureBranch(**texture) if texture else None
         if self.texture is not None:
             pooled += self.texture.out_features
-        self.pool_norm = RunningNorm(pooled)
+        if pool_norm == "running":
+            self.pool_norm = RunningNorm(pooled)
+        elif pool_norm == "batch":
+            self.pool_norm = nn.BatchNorm1d(pooled)
+        else:
+            raise ValueError(f"unknown pool_norm {pool_norm!r}")
         self.head = nn.Linear(pooled, message_bits)
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
