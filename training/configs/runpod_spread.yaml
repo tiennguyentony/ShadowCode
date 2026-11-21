@@ -33,6 +33,7 @@ spread:
     enabled: true
   hide:
     enabled: true
+  stop_above: 3.0              # at any sample sheet: save and exit if the strongest spot passes this (exit code 4)
 
 log:
   dir: /workspace/runs/spread/logs
@@ -49,3 +50,8 @@ early_stop:                    # one look, 45 minutes of training in
   enabled: true
   after_minutes: 45
   min_bit_acc: 0.75            # mean of the last 1,000 training steps, read with regions blanked
+
+image_loss_check:              # at step 15,000: save and exit if PSNR is still below 14 dB (exit code 5)
+  enabled: true
+  at_step: 15000
+  min_psnr_db: 14.0

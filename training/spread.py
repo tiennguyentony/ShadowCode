@@ -118,3 +118,62 @@ def hide_regions(view: torch.Tensor, cfg: dict) -> tuple[torch.Tensor, float]:
     keep = hide_mask(b, h, w, float(s["max_fraction"]), list(s["cells"])).to(view)
     fill = view.detach().mean(dim=(2, 3), keepdim=True)
     return view * keep + fill * (1.0 - keep), 1.0 - keep.mean().item()
+
+
+# -- the spread check: the same measurement at every sample sheet --------------
+
+SQUARE_PX = 96  # the "one square" of the check: 1/16 of the tile area at TILE_PX 384
+
+
+def fixed_batch(image_dir, count: int = 16, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """``count`` dataset images and messages that are the same in every run and at every step.
+
+    Images are picked by a seeded shuffle of the sorted file list, resized on
+    the short side and centre-cropped to the tile. Returns (tiles, bits) on the CPU.
+    """
+    from PIL import Image
+    from torchvision import transforms
+
+    from constants import MESSAGE_BITS, TILE_PX
+    from data import list_images
+
+    files = list_images(image_dir)
+    generator = torch.Generator().manual_seed(seed)
+    picks = torch.randperm(len(files), generator=generator)[:count].tolist()
+    cut = transforms.Compose(
+        [transforms.Resize(TILE_PX, antialias=True), transforms.CenterCrop(TILE_PX), transforms.ToTensor()]
+    )
+    tiles = []
+    for index in picks:
+        with Image.open(files[index]) as image:
+            tiles.append(cut(image.convert("RGB")))
+    bits = torch.randint(0, 2, (len(picks), MESSAGE_BITS), generator=generator).float()
+    return torch.stack(tiles), bits
+
+
+@torch.no_grad()
+def spread_report(embedder, tiles: torch.Tensor, bits: torch.Tensor, cfg: dict, chunk: int = 4) -> dict[str, float]:
+    """How piled-up the embedder's mark is on the fixed images, in eval mode.
+
+    * ``strongest_spot``: as ``concentration``; 1 is even.
+    * ``square_share``: share of the mark's energy inside its strongest
+      SQUARE_PX square, averaged over the images. An even mark gives the
+      square's share of the tile area (6.25 percent).
+    * ``psnr``: marked against original, over all the images.
+
+    The embedder is left in training mode.
+    """
+    embedder.eval()
+    residual = torch.cat([embedder(tiles[i : i + chunk], bits[i : i + chunk]) for i in range(0, len(tiles), chunk)])
+    embedder.train()
+    mean = residual.pow(2).mean(dim=(1, 2, 3)).clamp_min(1e-12)
+    s = peak_settings(cfg)
+    square = min(SQUARE_PX, residual.shape[-1])
+    in_square = local_energy(residual, square, int(s["stride_px"])).flatten(1).max(dim=1).values
+    area = square * square / (residual.shape[-1] * residual.shape[-2])
+    mse = ((tiles + residual).clamp(0.0, 1.0) - tiles).pow(2).mean().clamp_min(1e-10)
+    return {
+        "strongest_spot": concentration(residual, cfg),
+        "square_share": (in_square * area / mean).mean().item(),
+        "psnr": (-10.0 * torch.log10(mse)).item(),
+    }

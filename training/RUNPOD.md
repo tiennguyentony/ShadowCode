@@ -7,9 +7,11 @@ long run puts the code into one bright patch at the tile corner
 (`/docs/runs.md`, "Corner patch"); this run is the attempt to fix that.
 
 **No training run has used the two options yet.** They were checked on the
-CPU only: they run and gradients flow. The run checks itself 45 minutes in
-and stops if bit accuracy is under 0.75. That check does not tell you whether
-the mark is even. The sample sheets do, one every 2,000 steps; section 6 says
+CPU only: they run and gradients flow. The run stops itself, with a
+checkpoint, in three cases: bit accuracy under 0.75 after 45 minutes; the
+mark piling up (strongest spot above 3 at any sample sheet); PSNR still below
+14 dB at step 15,000, which means the image loss never switched on. The
+sample sheets, one every 2,000 steps, show the mark itself; section 6 says
 how to copy one to the laptop and what to look for.
 
 **This guide has not been run on a pod.** The RunPod facts in it (mount path,
@@ -147,8 +149,8 @@ cd /workspace/ShadowCode/training && export TORCH_HOME=/workspace/cache/torch &&
 
 Then one of the two commands below, with your pod's price in place of `0.00`.
 
-**Stop the pod when the run ends** (finished, stopped by the 45-minute check,
-or crashed). This is the one to use if you will not be watching:
+**Stop the pod when the run ends** (finished, stopped by one of its three
+checks, or crashed). This is the one to use if you will not be watching:
 
 ```bash
 python3 train.py --config configs/runpod_spread.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/spread/console.log; runpodctl pod stop "$RUNPOD_POD_ID" || runpodctl stop pod "$RUNPOD_POD_ID"
@@ -210,15 +212,18 @@ sample sheet: /workspace/runs/spread/logs/samples/step_00004000.png  (strongest 
   perfectly even. Measured on the laptop's checkpoints: 1.0 at step 4,000
   and 1.1 at step 6,000 (even), 3.3 at step 7,001 (starting to pile up),
   20 at steps 20,000 and 22,000 (the corner patch).
+- After each sheet line comes a `[spread]` line: the same two measures on 16
+  fixed images, which is the steadier number. Its rows are also in
+  `logs/spread.csv`.
 - `cost` is `--price-per-hour` times the time `train.py` has been running on
   this run, summed over restarts. It is an estimate of the GPU bill only. It
   leaves out setup and download time, time the pod idles after the run, and
   storage. The RunPod billing page is the real figure.
 - The PSNR stays near 12 dB while the image loss is off, which it is until
   bit accuracy passes 0.95. On the laptop that took about 4,000 steps. With
-  regions blanked it may take longer. **If the PSNR is still near 12 dB after
-  15,000 steps, the image loss never switched on**; that is a failed run even
-  though the 45-minute check passed.
+  regions blanked it may take longer. If the PSNR is still below 14 dB at
+  step 15,000, the image loss never switched on, and the run stops itself
+  (see below).
 
 The 45-minute check prints one of:
 
@@ -234,6 +239,34 @@ check means only that the reader is learning. It says nothing about the
 corner patch.
 
 The thresholds are in `configs/runpod_spread.yaml` under `early_stop`.
+
+The run stops itself in two more cases. Both save a checkpoint first, and
+with the stop-the-pod command the pod stops too.
+
+**The mark piles up** (`spread.stop_above: 3.0`, exit code 4). Checked at
+every sample sheet, on the 16 fixed images of the `[spread]` line:
+
+```
+Stopped: at step 12000 the strongest spot is 3.41 times the tile average, above the limit of 3 (spread.stop_above). 19.0 percent of the mark's energy is in one 96 px square. The same command would resume and stop again at the next sample sheet unless the limit is changed.
+```
+
+That is the result the run exists to find out: the two options did not keep
+the mark even. To go on regardless, add `spread.stop_above=null` to the
+command.
+
+**The image loss never switched on** (`image_loss_check`, exit code 5). One
+look at step 15,000, at the mean PSNR of the last 1,000 steps:
+
+```
+image-loss check at step 15000: mean PSNR over the last 1000 steps is 12.4 dB (required 14) -> image loss never switched on, stopping the run
+image-loss check at step 15000: mean PSNR over the last 1000 steps is 21.7 dB (required 14) -> passed, the run continues
+```
+
+A run stopped this way refuses to resume until you add
+`image_loss_check.enabled=false` or `--fresh`. It means the reader never
+reached 0.95 bit accuracy with regions of its patch blanked, so the mark is
+still at full strength. The 45-minute check does not catch that: 0.75 is
+enough to pass it.
 
 ### After a restart
 

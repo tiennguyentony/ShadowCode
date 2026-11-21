@@ -144,6 +144,9 @@ spread:                        # keep the mark from piling up in one spot (sprea
     enabled: false
     max_fraction: 0.5          # share of the patch blanked, uniform in [0, this] per sample
     cells: [2, 3, 4, 6, 8]     # the patch is cut into n x n cells, n drawn from here; 2 gives large regions
+  # A number: stop the run, with a checkpoint and exit code 4, when the spread
+  # check finds the strongest spot above this many times the tile average.
+  stop_above: null
 
 log:
   dir: runs/stage1            # TensorBoard event files, progress.csv and run_state.json
@@ -154,6 +157,13 @@ log:
   image_every: 1000            # sample images to TensorBoard
   sheet_every: 1000            # sample sheet (original | marked | difference x10) to <log.dir>/samples/
   num_images: 4
+  # The spread check, run with every sample sheet: how piled-up the mark is on
+  # this many fixed dataset images (strongest spot, energy in one 96 px
+  # square). One line on the console and one row in <log.dir>/spread.csv. 0: off.
+  spread_images: 16
+  # {file: path, marker: name}: also keep those rows as a table in a Markdown
+  # file, between its lines <!-- name:start --> and <!-- name:end -->.
+  spread_markdown: null
 
 checkpoint:
   dir: checkpoints/stage1      # training resumes from the newest checkpoint here
@@ -164,3 +174,11 @@ early_stop:                    # the learning check: one look, after_minutes int
   enabled: false
   after_minutes: 30            # training time, summed over restarts
   min_bit_acc: 0.55            # stop if the mean of the last log.report_every steps is below this (chance is 0.50)
+
+image_loss_check:              # one look at at_step: did the image loss ever switch on?
+  enabled: false
+  at_step: 15000
+  # Stop, with a checkpoint and exit code 5, if the mean PSNR of the last
+  # log.report_every steps is below this. The PSNR sits near 12 dB while the
+  # image loss is off and was past 20 dB 3,000 steps after it switched on.
+  min_psnr_db: 14.0

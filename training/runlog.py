@@ -2,8 +2,10 @@
 
 Everything here lives in ``log.dir``, next to the TensorBoard files:
 
-    run_state.json   training time and cost so far, and the result of the learning check
+    run_state.json   training time and cost so far, and the results of the learning check
+                     and the image-loss check
     progress.csv     one row every ``log.report_every`` steps
+    spread.csv       one row per spread check (every sample sheet): how piled-up the mark is
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ class RunClock:
         # Time run without --price-per-hour. It is in elapsed_seconds but not in cost_usd.
         self.unpriced_seconds = float(state.get("unpriced_seconds", 0.0))
         self.learning_check: dict | None = state.get("learning_check")
+        self.image_loss_check: dict | None = state.get("image_loss_check")
         self._last = time.monotonic()
 
     def tick(self) -> None:
@@ -65,6 +68,7 @@ class RunClock:
             "cost_usd": self.cost_usd,
             "unpriced_seconds": self.unpriced_seconds,
             "learning_check": self.learning_check,
+            "image_loss_check": self.image_loss_check,
         }
         temporary = self.path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -106,3 +110,85 @@ class ProgressLog:
             f"[report] step {step:7d}  bit_acc {bit_acc:.3f}  psnr {psnr_db:.1f} dB  "
             f"(mean of last {steps_averaged} steps)  {clock.elapsed_seconds / 3600.0:.2f} h  {clock.cost_text()}"
         )
+
+
+SPREAD_FILE = "spread.csv"
+SPREAD_COLUMNS = ["utc_time", "local_time", "step", "strongest_spot", "square_share", "psnr_fixed_db", "bit_acc", "psnr_db"]
+
+
+class SpreadLog:
+    """One row per spread check in ``spread.csv``; optionally the same rows as a table in a Markdown file.
+
+    ``markdown`` is ``{"file": path, "marker": name}``. The table replaces
+    whatever stands between the lines ``<!-- name:start -->`` and
+    ``<!-- name:end -->`` in that file, so the file has to hold both lines
+    already. A file that cannot be updated costs a warning, never the run.
+    """
+
+    def __init__(self, directory: str | Path, markdown: dict | None = None, fresh: bool = False):
+        self.path = Path(directory) / SPREAD_FILE
+        self.markdown = markdown
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if fresh:
+            self.path.unlink(missing_ok=True)
+        if not self.path.is_file():
+            with open(self.path, "w", encoding="utf-8", newline="") as f:
+                csv.writer(f).writerow(SPREAD_COLUMNS)
+
+    def rows(self) -> list[dict]:
+        with open(self.path, "r", encoding="utf-8", newline="") as f:
+            return list(csv.DictReader(f))
+
+    def has_step(self, step: int) -> bool:
+        return any(int(row["step"]) == step for row in self.rows())
+
+    def write(self, step: int, report: dict, bit_acc: float | None, psnr_db: float | None) -> str:
+        """Write the row, refresh the Markdown table, and return the row as one line of text."""
+        now = datetime.now(timezone.utc)
+        row = [
+            now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            now.astimezone().strftime("%Y-%m-%d %H:%M"),
+            step,
+            f"{report['strongest_spot']:.2f}",
+            f"{report['square_share']:.4f}",
+            f"{report['psnr']:.2f}",
+            "" if bit_acc is None else f"{bit_acc:.4f}",
+            "" if psnr_db is None else f"{psnr_db:.2f}",
+        ]
+        with open(self.path, "a", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerow(row)
+        self.update_markdown()
+        return (
+            f"[spread] step {step:7d}  strongest spot {report['strongest_spot']:.2f} times the tile average  "
+            f"{report['square_share'] * 100:.1f} percent of the mark's energy in one 96 px square  "
+            f"psnr {report['psnr']:.1f} dB on the fixed images"
+        )
+
+    def update_markdown(self) -> None:
+        if not self.markdown:
+            return
+        try:
+            path, marker = Path(self.markdown["file"]), self.markdown["marker"]
+            start, end = f"<!-- {marker}:start -->", f"<!-- {marker}:end -->"
+            text = path.read_text(encoding="utf-8")
+            head, found_start, rest = text.partition(start)
+            _, found_end, tail = rest.partition(end)
+            if not found_start or not found_end:
+                print(f"warning: {path} has no {start} ... {end} lines; the table there was not updated")
+                return
+            lines = [
+                "| Time | Step | Strongest spot | Energy in one 96 px square | PSNR, dB | Bit accuracy |",
+                "|---|---|---|---|---|---|",
+            ]
+            for row in self.rows():
+                share = f"{float(row['square_share']) * 100:.1f} percent"
+                psnr = row["psnr_db"] or f"{row['psnr_fixed_db']} (fixed images)"
+                lines.append(
+                    f"| {row['local_time']} | {int(row['step']):,} | {row['strongest_spot']} | {share} | "
+                    f"{psnr} | {row['bit_acc'] or 'n/a'} |"
+                )
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(head + start + "\n" + "\n".join(lines) + "\n" + end + tail, encoding="utf-8", newline="\n")
+            os.replace(temporary, path)
+        except Exception as error:  # noqa: BLE001 - a document must never stop a training run
+            print(f"warning: could not update the spread table ({type(error).__name__}: {error})")

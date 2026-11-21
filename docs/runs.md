@@ -7,13 +7,86 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
-| Long run (main reader, flattened, laptop) | **Running** since 2026-11-21 03:43, resumed from the sanity run at step 7,001. It reads well (bit accuracy 0.95 to 0.96) but has put the mark into one bright patch at the tile corner. See "Long run" and "Corner patch". |
+| Penalty-only run (laptop) | **Started** 2026-11-21, from the step 6,000 checkpoint, with the penalty on the strongest region on and the hiding off. It logs the mark at every sample sheet and stops itself if the strongest spot goes above 3. See "Penalty-only run". |
+| Long run (main reader, flattened, laptop) | **Cancelled** on 2026-11-21 at about step 26,500 of 140,000. It read well (bit accuracy 0.95 to 0.96) but had put the mark into one bright patch at the tile corner. Last checkpoint: step 26,000, kept as the fallback. See "Long run" and "Corner patch". |
 | Spread run (RunPod) | **Not started.** `configs/runpod_spread.yaml`: the long run's settings with the two options against the corner patch on. Checked on the CPU only. See "Corner patch". |
 | Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
 | Direct reader | **Dropped for the gate.** Every smoke test with rotation ends at chance; no pod run was made. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
 
+## Penalty-only run
+
+The long run's settings with `spread.peak_penalty` on and `spread.hide` off
+(`training/configs/penalty.yaml`), on the laptop's RTX 4070:
+
+```bash
+python train.py --config configs/penalty.yaml --keep-awake
+```
+
+**It resumes from the step 6,000 checkpoint** of the sanity run (the long
+run's own first hour), copied into `training/checkpoints/penalty/`. That is
+the last saved point where the mark was still even: strongest spot 1.1,
+6.7 percent of the energy in one 96 px square. The next one, step 7,001, was
+already at 3.3. The resume was checked before it was used:
+
+- **Optimizer state: valid.** The checkpoint holds Adam's state for 105
+  parameter tensors, all at step 6,000. The penalty is a loss term and adds
+  no parameters, so the state fits as it is. Its running averages were built
+  without the penalty; with these settings they follow a changed loss within
+  about a thousand steps.
+- **Image-loss schedule: valid.** The checkpoint carries where the ramp began
+  (step 3,986) and the smoothed bit accuracy (0.977). At step 6,000 the image
+  loss is at 13.4 percent of its weight and goes on rising to full weight at
+  step 18,986, exactly as in the long run. The simulation is at 30 percent
+  and follows the step count.
+- **Penalty schedule: valid, with one difference from a run started at 0.**
+  The penalty is multiplied by the image-loss schedule. A run from step 0
+  would have had it from step 3,986, rising from nothing. Here it comes in at
+  step 6,000 at 13.4 percent at once. Because the mark is still even, the
+  penalty is then about the size of the mean-square loss (roughly 0.012 added
+  to a loss near 0.1), so there is no jolt. What is missed is 2,014 steps of
+  a slightly stronger pull towards a fainter mark.
+- Not identical to a fresh run in one more way, as for the long run: steps 1
+  to 6,000 saw only the first 2,000 dataset images.
+
+Other settings: sample sheet every 2,000 steps
+(`training/runs/penalty/samples/`), and the learning check 45 minutes into
+this run (bit accuracy under 0.75 stops it; the clock starts at 0 with this
+run, so the check falls near step 11,000). Same GPU checks as before.
+
+**The spread check.** With every sample sheet the run measures the mark on 16
+fixed dataset images with fixed messages, in eval mode, and writes the row
+below. These are the same images and measures as the table in "Corner
+patch", so the numbers compare directly: the unfixed run was at 3.3 by step
+7,001 and near 20 from step 20,000. **The run stops itself, with a
+checkpoint, if the strongest spot goes above 3** (`spread.stop_above`).
+
+PSNR and bit accuracy are training means over the 1,000 steps ending at the
+row's step. The first row is the starting point, before any step of this run.
+The table is written by the run itself.
+
+<!-- penalty-run:start -->
+| Time | Step | Strongest spot | Energy in one 96 px square | PSNR, dB | Bit accuracy |
+|---|---|---|---|---|---|
+| 2026-11-21 15:35 | 6,000 | 1.10 | 6.7 percent | 16.81 (fixed images) | n/a |
+| 2026-11-21 15:52 | 8,000 | 1.34 | 7.7 percent | 24.04 | 0.9638 |
+<!-- penalty-run:end -->
+
 ## Long run
+
+**Cancelled on 2026-11-21.** The last line in its log is step 26,500, written
+at 06:34; it was stopped from outside, so no checkpoint was written at the
+stop. Its last checkpoint is **step 26,000** (06:30). That file was loaded
+afterwards on the CPU, models and optimizer state together, and measured:
+strongest spot 19.3, 86.6 percent of the mark's energy in one 96 px square,
+PSNR 25.9 dB. Training bit accuracy over steps 25,001 to 26,000 was 0.961.
+The three checkpoints in `training/checkpoints/long/` (steps 22,000, 24,000
+and 26,000) are kept as the fallback; nothing writes to that folder now. To
+go on from step 26,000:
+
+```bash
+python train.py --config configs/long.yaml --keep-awake
+```
 
 Started 2026-11-21 03:43 on the laptop's RTX 4070, from commit `6aa5b0b`:
 
@@ -55,6 +128,7 @@ ending at each step):
 | 20,000 | 0.953 | 26.1 | simulation at full strength from here |
 | 22,000 | 0.954 | 26.1 | |
 | 24,000 | 0.958 | 26.1 | |
+| 26,000 | 0.961 | 26.1 | last checkpoint |
 
 The step 25,000 sheet still shows the patch.
 
@@ -135,9 +209,13 @@ The long run kept the GPU throughout.
    | | Bit accuracy, training | Eval, whole patch |
    |---|---|---|
    | both options on (CPU) | 0.821, read with regions blanked | 0.820 |
-   | plain smoke test, for comparison (GPU, from the table further down) | 0.852 | 0.833 |
+   | plain smoke test, both off (CPU, run later the same day) | 0.891 | 0.897 |
+   | plain smoke test (GPU, from the table further down) | 0.852 | 0.833 |
 
-   So the reader still learns from the start with part of its patch hidden.
+   So the reader still learns from the start with part of its patch hidden,
+   but more slowly: on the same device the hiding costs about 7 points at
+   step 300. The CPU and GPU rows differ by 4 points with identical settings,
+   so compare CPU with CPU.
    The image loss stays off in a 300-step test, so this exercises the hiding
    and not the penalty.
 3. 30 real training steps on the CPU from the long run's step 22,000
@@ -171,9 +249,20 @@ in such a run:
   tile. It does not promise a quarter.
 
 The pod config for this is `training/configs/runpod_spread.yaml`: the long
-run's settings with both options on, a sample sheet every 2,000 steps, and a
-check 45 minutes in that stops the run if bit accuracy is under 0.75.
-`training/RUNPOD.md` has the commands.
+run's settings with both options on and a sample sheet every 2,000 steps.
+The run saves a checkpoint and exits by itself in three cases:
+
+| Stop | When | Exit code |
+|---|---|---|
+| Learning check (`early_stop`) | bit accuracy under 0.75 after 45 minutes of training | 3 |
+| Mark piled up (`spread.stop_above: 3.0`) | strongest spot above 3 on the 16 fixed images, at any sample sheet | 4 |
+| Image loss never switched on (`image_loss_check`) | mean PSNR still below 14 dB at step 15,000 | 5 |
+
+The last two are config switches, off by default. The first of them covers
+the first point above without anyone watching the PSNR. Both were dry-run on
+the CPU with a tiny config: each stops with a checkpoint, and the image-loss
+stop refuses to resume until it is switched off. `training/RUNPOD.md` has the
+commands.
 
 Every run started from this code prints the "strongest spot" number with
 each sample sheet and logs it to TensorBoard (`image/concentration`), whether

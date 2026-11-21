@@ -13,7 +13,12 @@ Every ``log.report_every`` steps one line goes to the console and to
 
 Ctrl-C or SIGTERM saves a checkpoint and exits. Exit codes: 0 finished or
 stopped by ``--max-minutes``, 3 stopped by the learning check
-(``early_stop``), 130 interrupted.
+(``early_stop``), 4 stopped because the mark piled up (``spread.stop_above``),
+5 stopped because the image loss never switched on (``image_loss_check``),
+130 interrupted.
+
+With every sample sheet the run measures how piled-up the mark is on 16 fixed
+dataset images (the spread check) and appends a row to ``<log.dir>/spread.csv``.
 
 On a CUDA device the run first prints what the GPU is and how much memory is
 free. ``train.expect_gpu`` names the GPU the run must be on; anything else,
@@ -43,9 +48,17 @@ from constants import MESSAGE_BITS, TILE_PX
 from data import infinite, make_loader
 from geometry import center_crop, flatten_random_patch
 from models import build_models, count_parameters
-from runlog import ProgressLog, RunClock
+from runlog import ProgressLog, RunClock, SpreadLog
 from simulate import simulate, wrap_surface
-from spread import concentration, hide_regions, hide_settings, peak_penalty, peak_settings
+from spread import (
+    concentration,
+    fixed_batch,
+    hide_regions,
+    hide_settings,
+    peak_penalty,
+    peak_settings,
+    spread_report,
+)
 from viz import residual_image, sample_sheet, save_image
 
 READER_INPUTS = ("flattened", "direct")
@@ -403,6 +416,8 @@ DIRECT_NOTICE = (
 )
 
 EXIT_NOT_LEARNING = 3
+EXIT_PILED_UP = 4
+EXIT_IMAGE_LOSS_OFF = 5
 EXIT_INTERRUPTED = 130
 
 
@@ -454,6 +469,10 @@ def main() -> int:
     check_enabled = bool(early.get("enabled", False))
     check_after_s = float(early.get("after_minutes", 30)) * 60.0
     check_min_acc = float(early.get("min_bit_acc", 0.55))
+    image_check = cfg.get("image_loss_check") or {}
+    image_check_enabled = bool(image_check.get("enabled", False))
+    image_check_step = int(image_check.get("at_step", 15000))
+    image_check_min_psnr = float(image_check.get("min_psnr_db", 14.0))
     report_every = int(log_cfg.get("report_every", 1000))
     sheet_every = int(log_cfg.get("sheet_every", log_cfg["image_every"]))
 
@@ -467,6 +486,16 @@ def main() -> int:
             "to start over add --fresh."
         )
         return EXIT_NOT_LEARNING
+
+    if image_check_enabled and clock.image_loss_check and clock.image_loss_check["result"] == "failed":
+        c = clock.image_loss_check
+        print(
+            f"This run was stopped at step {c['step']}: image loss never switched on "
+            f"(PSNR {c['psnr_db']:.1f} dB, below {c['min_psnr_db']:g}).\n"
+            "It will not resume while the check is on. To continue anyway add image_loss_check.enabled=false; "
+            "to start over add --fresh."
+        )
+        return EXIT_IMAGE_LOSS_OFF
 
     torch.manual_seed(cfg["train"]["seed"])
     device = pick_device(cfg["train"]["device"])
@@ -510,6 +539,13 @@ def main() -> int:
             f"note: {clock.unpriced_seconds / 3600.0:.2f} h of this run had no --price-per-hour "
             "and is not in the cost"
         )
+    image_check_pending = image_check_enabled and clock.image_loss_check is None
+    if image_check_pending:
+        print(
+            f"image-loss check: the run stops if mean PSNR is still below {image_check_min_psnr:g} dB "
+            f"at step {image_check_step}"
+        )
+    image_loss_off = False
     check_pending = check_enabled and clock.learning_check is None
     if check_pending:
         print(
@@ -522,6 +558,19 @@ def main() -> int:
     # After a resume, drop only what was logged past the checkpoint.
     writer = SummaryWriter(log_cfg["dir"], purge_step=trainer.step + 1 if newest is not None else 0)
     progress = ProgressLog(log_cfg["dir"], fresh=args.fresh)
+    # The spread check: the same images and messages at every sample sheet.
+    stop_above = (cfg.get("spread") or {}).get("stop_above")
+    check_images = int(log_cfg.get("spread_images", 16))
+    spread_log = None
+    piled_up: dict | None = None
+    if sheet_every and check_images > 0:
+        fixed_tiles, fixed_bits = (t.to(device) for t in fixed_batch(cfg["data"]["train_dir"], check_images))
+        spread_log = SpreadLog(log_cfg["dir"], log_cfg.get("spread_markdown"), fresh=args.fresh)
+        if not spread_log.has_step(trainer.step):
+            start_report = spread_report(trainer.embedder, fixed_tiles, fixed_bits, cfg)
+            print(spread_log.write(trainer.step, start_report, None, None), flush=True)
+        if stop_above is not None:
+            print(f"spread check: the run stops if the strongest spot goes above {float(stop_above):g} times the tile average")
     batches = infinite(make_loader(cfg, device))
     total = int(cfg["train"]["total_steps"])
     t0, start_step = time.time(), trainer.step
@@ -572,6 +621,16 @@ def main() -> int:
                 if clock.price_per_hour is not None:
                     writer.add_scalar("run/cost_usd", clock.cost_usd, step)
                 clock.save()
+            if want_sheet and spread_log is not None:
+                report = spread_report(trainer.embedder, fixed_tiles, fixed_bits, cfg)
+                mean_acc = sum(a for a, _ in recent) / len(recent)
+                mean_psnr = sum(p for _, p in recent) / len(recent)
+                print(spread_log.write(step, report, mean_acc, mean_psnr), flush=True)
+                writer.add_scalar("image/strongest_spot_fixed", report["strongest_spot"], step)
+                writer.add_scalar("image/square_share_fixed", report["square_share"], step)
+                if stop_above is not None and report["strongest_spot"] > float(stop_above):
+                    piled_up = report
+                    break
             if step % ckpt_cfg["every"] == 0 or step == total:
                 checkpoint_now()
             # Wait for 100 steps so that a restart just before the mark is not judged on a handful.
@@ -596,6 +655,27 @@ def main() -> int:
                 )
                 if not_learning:
                     break
+            # One look, at the first step at or past at_step that has 100 steps behind it in this process.
+            if image_check_pending and step >= image_check_step and len(recent) >= min(100, recent.maxlen):
+                mean_psnr = sum(p for _, p in recent) / len(recent)
+                image_loss_off = mean_psnr < image_check_min_psnr
+                clock.image_loss_check = {
+                    "result": "failed" if image_loss_off else "passed",
+                    "step": step,
+                    "psnr_db": mean_psnr,
+                    "min_psnr_db": image_check_min_psnr,
+                    "image_ramp_start": trainer.image_ramp_start,
+                }
+                image_check_pending = False
+                clock.save()
+                print(
+                    f"image-loss check at step {step}: mean PSNR over the last {len(recent)} steps is "
+                    f"{mean_psnr:.1f} dB (required {image_check_min_psnr:g}) -> "
+                    + ("image loss never switched on, stopping the run" if image_loss_off else "passed, the run continues"),
+                    flush=True,
+                )
+                if image_loss_off:
+                    break
             if max_seconds is not None and time.time() - t0 >= max_seconds:
                 out_of_time = True
                 break
@@ -615,6 +695,31 @@ def main() -> int:
             "The machine is still running and still billed; see RUNPOD.md for how to stop it."
         )
         return EXIT_NOT_LEARNING
+    if image_loss_off:
+        checkpoint_now()
+        ramp = trainer.image_ramp_start
+        print(
+            f"Stopped: image loss never switched on. At step {trainer.step} the PSNR is still "
+            f"{clock.image_loss_check['psnr_db']:.1f} dB, below {image_check_min_psnr:g} (image_loss_check). "
+            + (
+                f"Smoothed bit accuracy is {trainer.acc_ema:.3f} and has not passed "
+                f"{cfg['schedule']['image_loss']['acc_threshold']}, which is what switches the image loss on."
+                if ramp is None
+                else f"Strictly, its ramp began at step {ramp}, too late to lift the PSNR by now."
+            )
+            + f" {clock.cost_text()}.\n"
+            "The machine is still running and still billed; see RUNPOD.md for how to stop it."
+        )
+        return EXIT_IMAGE_LOSS_OFF
+    if piled_up is not None:
+        checkpoint_now()
+        print(
+            f"Stopped: at step {trainer.step} the strongest spot is {piled_up['strongest_spot']:.2f} times the tile average, "
+            f"above the limit of {float(stop_above):g} (spread.stop_above). "
+            f"{piled_up['square_share'] * 100:.1f} percent of the mark's energy is in one 96 px square. "
+            "The same command would resume and stop again at the next sample sheet unless the limit is changed."
+        )
+        return EXIT_PILED_UP
     if stop.signal_name is not None:
         checkpoint_now()
         print(f"stopped by {stop.signal_name} at step {trainer.step}; the same command resumes from here")
