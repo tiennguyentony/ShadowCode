@@ -1,3 +1,5 @@
+Total frozen at 64 bits (neural models are trained against it). The split of the 32 non-ID bits may still change through the message-codec spec.
+
 # Tilemark Message Format
 
 ## Status
