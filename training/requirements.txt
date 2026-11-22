@@ -9,3 +9,5 @@ tensorboard
 onnx
 onnxruntime
 onnxscript
+# fetch_labels.py only
+pyarrow

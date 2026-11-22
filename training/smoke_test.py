@@ -30,7 +30,9 @@ from PIL import Image
 
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
-from data import infinite, make_loader, procedural_image
+from torchvision import transforms
+
+from data import ImageFolderDataset, infinite, make_loader, procedural_image
 from geometry import apply_homography, flatten_from_corners, flatten_random_patch, square_corners, warp_periodic
 from models import count_parameters
 from simulate import simulate
@@ -205,6 +207,44 @@ def check_spread(trainer: Trainer) -> None:
     )
 
 
+def check_center_fraction() -> None:
+    """data.center_fraction: crops come from the middle of the image only, and 1.0 changes nothing."""
+    size, low, high = 500, 100, 400  # a red frame around a green middle: the central 60 percent of each side
+    pixels = np.zeros((size, size, 3), dtype=np.uint8)
+    pixels[..., 0] = 255
+    pixels[low:high, low:high] = (0, 255, 0)
+    state = torch.random.get_rng_state()
+    with tempfile.TemporaryDirectory(prefix="tilemark_center_") as tmp:
+        Image.fromarray(pixels).save(Path(tmp) / "frame.png")
+        middle = ImageFolderDataset(tmp, image_size=64, min_crop_scale=0.35, center_fraction=0.6)
+        whole = ImageFolderDataset(tmp, image_size=64, min_crop_scale=0.35)
+        torch.manual_seed(0)
+        red_in_middle = max(middle[0][0].max().item() for _ in range(64))
+        torch.manual_seed(0)
+        whole_crops = [whole[0] for _ in range(64)]
+        old = transforms.Compose(
+            [
+                transforms.RandomResizedCrop(64, scale=(0.35, 1.0), ratio=(0.8, 1.25), antialias=True),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+            ]
+        )
+        torch.manual_seed(0)
+        with Image.open(Path(tmp) / "frame.png") as image:
+            old_crops = [old(image.convert("RGB")) for _ in range(64)]
+        for bad in (0.0, 1.5):
+            try:
+                ImageFolderDataset(tmp, center_fraction=bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"center_fraction {bad} was accepted")
+    torch.random.set_rng_state(state)
+    assert red_in_middle == 0.0, f"a crop with center_fraction 0.6 reached the outer frame (red {red_in_middle:.3f})"
+    assert max(crop[0].max().item() for crop in whole_crops) > 0.0, "no crop of the whole image touched the frame"
+    assert all(torch.equal(a, b) for a, b in zip(whole_crops, old_crops)), "center_fraction 1.0 changed the crops"
+    print("crop checks passed: center_fraction 0.6 keeps every crop inside the middle; 1.0 gives the crops it always gave")
+
+
 def describe_simulation(cfg: dict) -> str:
     sim = cfg["simulation"]
     if not sim["enabled"]:
@@ -244,6 +284,7 @@ def run_smoke(
             "portrait, landscape and square frames, periodic sampling"
         )
         check_spread(trainer)
+        check_center_fraction()
 
         batches = infinite(make_loader(cfg, device))
         history: list[dict[str, float]] = []

@@ -26,6 +26,12 @@ data:
   # then set this to data/open-images-v7-val/images.
   train_dir: data/train
   min_crop_scale: 0.35         # RandomResizedCrop lower bound; crops are resized to TILE_PX
+  # Part of each image the random crop may draw from: this fraction of the
+  # width and of the height, centred. 1.0 is the whole image. 0.6 keeps the
+  # central 60 percent of each side (36 percent of the area), for photos of
+  # packages with a table, a hand or a shelf around them. min_crop_scale then
+  # counts against that part, not the whole image.
+  center_fraction: 1.0
   num_workers: 8
 
 band:                          # where the gratings init puts the code; see band.py
