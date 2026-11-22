@@ -6,8 +6,8 @@ Resumes automatically from the newest checkpoint in ``checkpoint.dir``.
 Pass --fresh to start over; existing checkpoints are moved aside, not deleted.
 
 Every ``log.report_every`` steps one line goes to the console and to
-``<log.dir>/progress.csv``: step, bit accuracy, PSNR and, with
-``--price-per-hour``, the cost so far.
+``<log.dir>/progress.csv``: step, bit accuracy, PSNR, the image-loss weight
+and, with ``--price-per-hour``, the cost so far.
 
     python train.py --config configs/runpod_direct.yaml --price-per-hour 0.69
 
@@ -54,14 +54,14 @@ from simulate import simulate, wrap_surface
 from spread import (
     busy_windows,
     concentration,
-    fixed_batch,
+    fixed_batch_for,
     hide_regions,
     hide_settings,
     peak_penalty,
     peak_settings,
     spread_report,
 )
-from viz import residual_image, sample_sheet, save_image
+from viz import add_footer, residual_image, sample_sheet, save_image
 
 READER_INPUTS = ("flattened", "direct")
 # BCH(63,39) in /docs/message-format.md corrects up to 4 errors in bits 0-62.
@@ -104,7 +104,10 @@ class Trainer:
 
     * ``image_loss``: the image-loss weight is 0 until the smoothed bit
       accuracy first passes ``acc_threshold``, then ramps linearly to 1 over
-      ``ramp_steps`` steps.
+      ``ramp_steps`` steps. With ``follow_accuracy: {floor, band}`` set, the
+      weight instead moves by 1/``ramp_steps`` per step after that trigger:
+      up while the smoothed bit accuracy is at or above ``floor``, down while
+      it is below ``floor - band``, unchanged in between, never outside 0 to 1.
     * ``sim_strength``: the simulation strength is 0 until ``start_step``,
       then ramps linearly to ``max_strength`` over ``ramp_steps`` steps
       (0 steps: full strength from ``start_step``).
@@ -136,16 +139,58 @@ class Trainer:
         self.step = 0
         self.acc_ema = 0.5
         self.image_ramp_start: int | None = None
+        # The image-loss weight while schedule.image_loss.follow_accuracy is set; unused otherwise.
+        self.follow_scale = 0.0
+        self.follow_settings()  # a bad setting fails at start, not at the trigger
 
     # -- schedules ---------------------------------------------------------
 
-    def image_loss_scale(self) -> float:
+    def follow_settings(self) -> dict | None:
+        """``schedule.image_loss.follow_accuracy`` as {floor, band}, or None when it is not set."""
+        follow = self.cfg["schedule"]["image_loss"].get("follow_accuracy")
+        if not follow:
+            return None
+        floor, band = float(follow["floor"]), float(follow.get("band", 0.0))
+        if not 0.0 <= floor <= 1.0 or band < 0.0:
+            raise ValueError(f"schedule.image_loss.follow_accuracy needs floor in 0 to 1 and band at least 0, got {follow}")
+        return {"floor": floor, "band": band}
+
+    def ramp_scale(self) -> float:
+        """The plain schedule: a linear ramp from the trigger step."""
         if self.image_ramp_start is None:
             return 0.0
         steps = int(self.cfg["schedule"]["image_loss"]["ramp_steps"])
         if steps <= 0:
             return 1.0
         return min(1.0, (self.step - self.image_ramp_start) / steps)
+
+    def image_loss_scale(self) -> float:
+        """Weight of the image loss, and of the peak penalty, in the next training step: 0 to 1."""
+        if self.image_ramp_start is None:
+            return 0.0
+        if self.follow_settings() is not None:
+            return self.follow_scale
+        return self.ramp_scale()
+
+    def update_schedule(self, bit_acc: float) -> None:
+        """After a training step: smooth the bit accuracy, trigger the image loss, move its weight."""
+        sched = self.cfg["schedule"]["image_loss"]
+        self.acc_ema = sched["acc_ema"] * self.acc_ema + (1.0 - sched["acc_ema"]) * bit_acc
+        follow = self.follow_settings()
+        steps = int(sched["ramp_steps"])
+        if self.image_ramp_start is None:
+            if self.acc_ema > sched["acc_threshold"]:
+                self.image_ramp_start = self.step
+                # Like the plain ramp: nothing on the trigger step unless there is no ramp at all.
+                self.follow_scale = 1.0 if steps <= 0 else 0.0
+            return
+        if follow is None:
+            return
+        move = 1.0 if steps <= 0 else 1.0 / steps
+        if self.acc_ema >= follow["floor"]:
+            self.follow_scale = min(1.0, self.follow_scale + move)
+        elif self.acc_ema < follow["floor"] - follow["band"]:
+            self.follow_scale = max(0.0, self.follow_scale - move)
 
     def sim_strength(self) -> float:
         if not self.cfg["simulation"]["enabled"]:
@@ -238,10 +283,7 @@ class Trainer:
 
         with torch.no_grad():
             metrics: dict = bit_metrics(out["logits"], bits)
-            sched = self.cfg["schedule"]["image_loss"]
-            self.acc_ema = sched["acc_ema"] * self.acc_ema + (1.0 - sched["acc_ema"]) * metrics["bit_acc"]
-            if self.image_ramp_start is None and self.acc_ema > sched["acc_threshold"]:
-                self.image_ramp_start = self.step
+            self.update_schedule(metrics["bit_acc"])
             metrics.update(
                 loss=loss.item(),
                 bit_loss=bit_loss.item(),
@@ -348,6 +390,7 @@ def final_report(trainer: "Trainer", batches, directory: str | Path, count: int,
     sheet = save_image(
         sample_sheet(outputs["original"][:count], outputs["marked"][:count]),
         Path(directory) / "samples" / f"final_step_{trainer.step:08d}.png",
+        footer=trainer.cfg["data"].get("credit"),
     )
     print(
         f"final, eval mode, {batches_averaged} fresh batches at simulation strength {trainer.sim_strength():.2f}: "
@@ -379,19 +422,22 @@ def keep_awake() -> None:
     print("keeping the computer awake while this run lives (a closed lid still sleeps)")
 
 
-def save_sheet(outputs: dict, step: int, count: int, directory: str | Path) -> Path:
-    """Sample sheet for this step: original | marked | difference x10, one row per sample."""
+def save_sheet(outputs: dict, step: int, count: int, directory: str | Path, credit: str | None = None) -> Path:
+    """Sample sheet for this step: original | marked | difference x10, one row per sample.
+
+    ``credit`` (data.credit) is printed below it.
+    """
     original, marked = (outputs[k][:count].float().cpu() for k in ("original", "marked"))
-    return save_image(sample_sheet(original, marked), Path(directory) / "samples" / f"step_{step:08d}.png")
+    return save_image(sample_sheet(original, marked), Path(directory) / "samples" / f"step_{step:08d}.png", footer=credit)
 
 
-def log_images(writer, outputs: dict, step: int, count: int) -> None:
+def log_images(writer, outputs: dict, step: int, count: int, credit: str | None = None) -> None:
     original, marked, view = (outputs[k][:count].float().cpu() for k in ("original", "marked", "view"))
     writer.add_images("samples/1_original", original, step)
     writer.add_images("samples/2_marked", marked.clamp(0, 1), step)
     writer.add_images("samples/3_residual_x10", residual_image(marked - original), step)
     writer.add_images("samples/4_reader_input", view.clamp(0, 1), step)
-    writer.add_image("samples/sheet_original_marked_residual_x10", sample_sheet(original, marked), step)
+    writer.add_image("samples/sheet_original_marked_residual_x10", add_footer(sample_sheet(original, marked), credit), step)
 
 
 class StopRequest:
@@ -542,6 +588,12 @@ def main() -> int:
     if cfg["train"]["reader_input"] == "direct":
         print(DIRECT_NOTICE)
     print(spread_summary(cfg))
+    follow = trainer.follow_settings()
+    if follow is not None:
+        print(
+            f"image loss: its weight follows bit accuracy after the trigger, up at or above {follow['floor']:g}, "
+            f"down below {follow['floor'] - follow['band']:g}, by 1/{cfg['schedule']['image_loss']['ramp_steps']} per step"
+        )
 
     newest = None
     if args.fresh:
@@ -593,7 +645,7 @@ def main() -> int:
     piled_up: dict | None = None
     if sheet_every and check_images > 0:
         # Kept on the CPU; the check moves them to the device a few at a time.
-        fixed_tiles, fixed_bits = fixed_batch(cfg["data"]["train_dir"], check_images)
+        fixed_tiles, fixed_bits = fixed_batch_for(cfg, check_images)
         fixed_busy = busy_windows(fixed_tiles, cfg)
         spread_log = SpreadLog(log_cfg["dir"], log_cfg.get("spread_markdown"), fresh=args.fresh)
         if not spread_log.has_step(trainer.step):
@@ -635,9 +687,9 @@ def main() -> int:
             if step % log_cfg["scalar_every"] == 0:
                 log_scalars(writer, m, step)
             if want_images:
-                log_images(writer, m["outputs"], step, int(log_cfg["num_images"]))
+                log_images(writer, m["outputs"], step, int(log_cfg["num_images"]), cfg["data"].get("credit"))
             if want_sheet:
-                sheet = save_sheet(m["outputs"], step, int(log_cfg["num_images"]), log_cfg["dir"])
+                sheet = save_sheet(m["outputs"], step, int(log_cfg["num_images"]), log_cfg["dir"], cfg["data"].get("credit"))
                 print(f"sample sheet: {sheet}  (strongest spot is {m['concentration']:.1f} times the tile average)", flush=True)
             if log_cfg["print_every"] and step % log_cfg["print_every"] == 0:
                 rate = (step - start_step) / max(1e-9, time.time() - t0)
@@ -650,7 +702,7 @@ def main() -> int:
             if report_every and step % report_every == 0:
                 mean_acc = sum(a for a, _ in recent) / len(recent)
                 mean_psnr = sum(p for _, p in recent) / len(recent)
-                print(progress.write(step, mean_acc, mean_psnr, len(recent), clock), flush=True)
+                print(progress.write(step, mean_acc, mean_psnr, len(recent), clock, m["image_scale"]), flush=True)
                 if clock.price_per_hour is not None:
                     writer.add_scalar("run/cost_usd", clock.cost_usd, step)
                 clock.save()
