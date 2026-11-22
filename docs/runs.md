@@ -7,6 +7,7 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
+| Generated-label sanity run (laptop) | **Done**, one hour on 2026-11-21/22, step 0 to 6,056, on `labelgen.py` tiles (`configs/labels_generated.yaml`). It learns: bit accuracy 0.863 over the last 1,000 steps and still rising, final eval 0.873. The image loss never switched on (needs 0.95), so PSNR is 12.5 dB. Acceptance fails, as expected after one hour. See "Generated labels". No pod run. |
 | Label run (laptop) | **Done**, two hours on 2026-11-21, from step 0 to 15,087, on Open Food Facts label photos with the image-loss weight following bit accuracy. Bit accuracy held at 0.948; the image-loss weight stopped at 0.22 and PSNR at 24 dB. **Acceptance failed** on reading (0.53 of held-out tiles within reach of the error correction, line 0.80) and the mark is visible. No fixed patch (1.36). See "Label run". |
 | Penalty-only run (laptop) | **Resumed** on 2026-11-21 from its step 10,000 checkpoint. It had stopped itself there on a limit that could not tell the corner patch from a mark that follows the image. The limit is now on the fixed-place measure (4.0, on 256 images); a mark that follows the image is accepted. See "Penalty-only run". |
 | Long run (main reader, flattened, laptop) | **Cancelled** on 2026-11-21 at about step 26,500 of 140,000. It read well (bit accuracy 0.95 to 0.96) but had put the mark into one bright patch at the tile corner. Last checkpoint: step 26,000, kept as the fallback. See "Long run" and "Corner patch". |
@@ -80,6 +81,87 @@ with more than twice to spare, eight were slower than four on this laptop.
 So the tiles are made while training, not saved to disk first, with 4
 loader processes on the laptop. Before any pod run, the same benchmark is to
 be run on the pod's CPU with 1, 4 and 8 processes and the fastest taken.
+
+**Smoke tests, 2026-11-21** (laptop GPU, `configs/smoke.yaml`: 300 steps,
+batch 4, simulation off, half-width embedder):
+
+| Source | Bit accuracy, first 25 steps | Last 25 steps (training) | Eval mode | PSNR |
+|---|---|---|---|---|
+| `python smoke_test.py data.source=generated_labels` | 0.499 | 0.838 | 0.839 | 12.8 dB |
+| `python smoke_test.py` (24 procedural images in a folder, as before) | 0.497 | 0.853 | 0.842 | 12.7 dB |
+
+Both pass (line 0.70). All structure checks pass, including the new one:
+the same seed gives the same tile, and training seeds (1,000,000 to
+1,999,999) and held-out seeds (0 to 99,999) do not overlap. The image loss
+stays at weight 0 in a smoke test, so its PSNR says nothing about how
+visible the mark will be.
+
+**Sanity run, 2026-11-21 23:17 to 2026-11-22 00:17.** Code: commit
+`b689e80` on `training/labels`. `configs/labels_generated.yaml`, from step
+0, on the laptop's RTX 4070:
+
+```bash
+python train.py --config configs/labels_generated.yaml --max-minutes 60 --keep-awake
+```
+
+It **learns**. Stopped on the time limit at step 6,056 after 60 minutes,
+exit code 0. 1.68 steps per second, against about 2.1 in the photo label
+run. The GPU was at 86 to 100 percent and the CPU at 11 to 35 percent
+(sampled at step 100), so the generated tiles kept up and the GPU set the
+pace; this run also has the reader's patch hiding on, which the photo run
+did not. The learning check at 45 minutes (step 4,495) passed with mean bit
+accuracy 0.837 (line 0.75).
+
+| | Measured |
+|---|---|
+| Bit accuracy, mean of the last 1,000 training steps (steps 5,001 to 6,000) | 0.863, rising every 1,000 steps (0.648, 0.770, 0.804, 0.828, 0.845, 0.863) |
+| Final eval, 8 fresh batches, simulation strength 0.30 | bit accuracy 0.873; with regions of the patch blanked as in training 0.856; all 64 bits right 0.000; within reach of the error correction 0.078 |
+| PSNR, marked against original | 12.5 dB (final eval); 12.53 dB mean of the last 1,000 steps |
+| Image-loss weight | 0.000 for the whole run: it only starts rising once smoothed bit accuracy holds 0.95, which this run did not reach |
+| Simulation strength | ramped to 0.30 by the end (schedule) |
+| Spread check at step 6,000 (held-out seeds 256 to 511) | fixed place 1.00, strongest spot 1.03, 6.4 percent of the mark's energy in one 96 px square, 41 percent on the busier half |
+
+What the numbers mean. With the image loss still at weight 0, nothing has
+asked the mark to be invisible yet: PSNR of 12.5 dB is a strong mark, and
+the final sample sheet (`training/runs/labels_generated/samples/
+final_step_00006056.png`, original | marked | difference x10) shows an even
+texture over the whole tile, flat areas included. The spread numbers sit at
+their floor (fixed place 1.00): there is no patch in one place, but at this
+stage that says only that the mark covers everything, not that it hides
+well.
+
+**Acceptance on the step 6,056 checkpoint** (a copy, not the run's file),
+`acceptance.py --config configs/labels_generated.yaml`, on held-out seeds 0
+to 255, one shot per tile, simulation at full strength (1.0, where training
+had reached 0.30):
+
+| Alpha | At most 4 wrong of the first 63 | Bit accuracy | Fixed place | PSNR mean, dB |
+|---|---|---|---|---|
+| 0.30 (trained) | 0.027 FAIL | 0.817 | 1.00 PASS | 12.5 |
+| 0.25 | 0.016 FAIL | 0.805 | 1.00 PASS | 14.0 |
+| 0.20 | 0.008 FAIL | 0.779 | 1.00 PASS | 15.8 |
+| 0.15 | 0.004 FAIL | 0.736 | 1.00 PASS | 18.2 |
+
+Averaging 9 simulated shots raises bit accuracy at alpha 0.30 from 0.817 to
+0.842 and leaves the share within reach at 0.023. This checks that
+acceptance works on the generated source; a one-hour run was not expected
+to pass it. Results: `training/runs/acceptance_generated/00006056/`.
+
+Spread check on held-out seeds 256 to 511, one row per 1,000 steps (PSNR
+and bit accuracy after step 0 are the training means over the 1,000 steps
+before the row):
+
+<!-- labels-generated-run:start -->
+| Time | Step | Fixed place | Strongest spot | Energy in one 96 px square | Energy on the busier half | PSNR, dB | Bit accuracy |
+|---|---|---|---|---|---|---|---|
+| 2026-11-21 23:17 | 0 | 1.01 | 1.04 | 6.5 percent | 41 percent | 21.56 (fixed images) | n/a |
+| 2026-11-21 23:27 | 1,000 | 1.00 | 1.01 | 6.3 percent | 41 percent | 13.82 | 0.6476 |
+| 2026-11-21 23:37 | 2,000 | 1.00 | 1.01 | 6.3 percent | 41 percent | 12.37 | 0.7703 |
+| 2026-11-21 23:46 | 3,000 | 1.00 | 1.01 | 6.3 percent | 41 percent | 12.31 | 0.8042 |
+| 2026-11-21 23:56 | 4,000 | 1.00 | 1.02 | 6.3 percent | 41 percent | 12.36 | 0.8282 |
+| 2026-11-22 00:06 | 5,000 | 1.00 | 1.03 | 6.4 percent | 41 percent | 12.47 | 0.8446 |
+| 2026-11-22 00:16 | 6,000 | 1.00 | 1.03 | 6.4 percent | 41 percent | 12.53 | 0.8628 |
+<!-- labels-generated-run:end -->
 
 ## Label run (laptop)
 
