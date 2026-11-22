@@ -40,7 +40,10 @@ accuracy of at least 0.70 (chance is 0.50) in training and in eval mode,
 prints the PSNR between marked and original tiles, and saves
 `outputs/smoke_samples.png` (original | marked | residual x10). Before
 training it runs structure checks, among them that the two `spread` options
-measure what they claim and pass gradients.
+measure what they claim and pass gradients, that the image-loss weight moves
+both ways with `follow_accuracy`, that `data.center_fraction` keeps crops in
+the middle, that photos load upright, and that held-out images stay out of
+training.
 
 ```bash
 python smoke_test.py
@@ -84,19 +87,50 @@ python smoke_test.py model.embedder.message_init=dense model.reader.texture=null
 
 ## Training
 
-**Dataset.** The chosen dataset is Open Images V7, validation split: first
-16,000 images, 4.94 GB, images listed as CC BY 2.0 (`THIRD_PARTY.md`).
-`fetch_dataset.py` downloads it and can be run again to continue:
+**Dataset.** From 2026-11-21 the models train on product labels: Open Food
+Facts front-of-pack photos, one per product, CC BY-SA 3.0. Read
+`THIRD_PARTY.md` before showing any of them, or anything made from them, to
+someone else: the photos need a credit, and the label artwork in them belongs
+to third parties. `fetch_labels.py` downloads 16,000 (13.7 GB) from the AWS
+bucket Open Food Facts names for bulk use and can be run again to continue.
+It needs `pyarrow`, which `requirements.txt` installs.
 
 ```bash
-python fetch_dataset.py --out data/open-images-v7-val
+python fetch_labels.py --out data/open-food-facts
 ```
 
+```bash
+python fetch_labels.py --out data/open-food-facts --leave-out-over 24
+```
+
+The second command deletes the photos over 24 megapixels (50 of the 16,000)
+and takes them out of `ATTRIBUTION.csv`; 15,950 remain. `/docs/runs.md`,
+"Label run", has the counts.
+
 The dataset path is the config value `data.train_dir`. Any folder of images
-works (searched recursively).
+works (searched recursively). Photos are loaded upright: the rotation tag a
+phone writes is applied. Three more `data` settings, all off by default:
+
+- `data.center_fraction`: the random crop draws only from the middle of each
+  image, this fraction of the width and of the height. `labels.yaml` uses
+  0.6, because the photos show a table, a hand or a shelf around the package.
+- `data.holdout`: this many images are kept back from training, the same ones
+  every time. `acceptance.py` measures on them.
+- `data.credit`: a line printed below every sheet of dataset photos.
+
+To look at what the models will be shown, 64 training crops on one sheet,
+with a list of the files beside it:
 
 ```bash
-python train.py --config configs/default.yaml data.train_dir=data/open-images-v7-val/images
+python data.py --config configs/labels.yaml --sheet runs/labels/crops_preview.png
+```
+
+The runs up to 2026-11-21 used Open Images V7 (validation split, first
+16,000 images, listed as CC BY 2.0). `fetch_dataset.py` still downloads it;
+the copy on the laptop was deleted when the labels replaced it.
+
+```bash
+python train.py --config configs/default.yaml data.train_dir=data/open-food-facts/images
 ```
 
 Anything in the config can be overridden on the command line as
@@ -139,8 +173,8 @@ python train.py --config configs/long.yaml --keep-awake
 
 **Progress and cost.** Every `log.report_every` steps (1,000) one line is
 printed and appended to `<log.dir>/progress.csv`: step, bit accuracy and PSNR
-(means over those steps) and the cost so far. The cost needs the machine's
-price:
+(means over those steps), the image-loss weight at that step, and the cost so
+far. The cost needs the machine's price:
 
 ```bash
 python train.py data.train_dir=D:/path/to/images --price-per-hour 0.50
@@ -183,6 +217,49 @@ python train.py --config configs/penalty.yaml --keep-awake
 ```bash
 python smoke_test.py spread.peak_penalty.enabled=true spread.hide.enabled=true
 ```
+
+**Label run.** `configs/labels.yaml` is the penalty-only run's settings on
+the label photos, from step 0, with one change to the schedule. On its fixed
+ramp the penalty-only run lost bit accuracy (0.964 to 0.895) as the image
+loss went to full weight. With `schedule.image_loss.follow_accuracy:
+{floor: 0.95, band: 0.01}` the weight is no longer tied to the step count:
+after the trigger it goes up by 1/`ramp_steps` per step while the smoothed
+bit accuracy is at or above 0.95, down by the same while it is below 0.94,
+and holds in between. The peak penalty uses the same weight. The weight is
+saved in checkpoints and logged (`schedule/image_loss_scale` in TensorBoard,
+`image_scale` in `progress.csv`). `/docs/runs.md`, "Label run", has the
+results.
+
+```bash
+python train.py --config configs/labels.yaml --max-minutes 120 --keep-awake
+```
+
+**Acceptance.** `acceptance.py` answers two questions about a checkpoint: is
+the mark read, and can it be seen. On the 256 held-out label images, in eval
+mode, with the simulation at full strength and a flattened patch for the
+reader, it reports for alpha 0.30, 0.25, 0.20 and 0.15:
+
+- the share of tiles with at most 4 wrong bits among the first 63, which is
+  what the BCH code corrects (PASS at 0.80 or more), the mean bit accuracy
+  and the share with all 64 bits right;
+- the fixed-place measure (PASS below 2.5);
+- PSNR in dB, mean and worst tenth of the tiles (no pass line).
+
+It counts bit errors; it does not run the message codec. It writes
+`runs/acceptance/<step>/results.md` and `blind.html`: 20 pairs of original
+and marked tile side by side, 50 mm wide each in print, left and right
+shuffled, 10 with busy content and 10 with large flat areas. Which side is
+marked is in `blind_answers.json` and is not printed. Images in
+`data/labels/`, if there are any, are measured and shown as a second section.
+`blind.html` shows dataset photos with their credit line and is for private
+review only.
+
+```bash
+python acceptance.py --config configs/labels.yaml
+```
+
+Never point it at the checkpoint folder of a run that is still training:
+copy the checkpoint elsewhere and pass the copy with `--checkpoint`.
 
 **The pod run and the learning check.** `configs/runpod_spread.yaml` is the
 long run with both switches on and paths on a RunPod network volume; see
@@ -241,8 +318,8 @@ inputs and stops before writing `contract.json` if they differ by more than
 
 Everything is in `configs/default.yaml`; `configs/smoke.yaml`,
 `configs/smoke_blur.yaml`, `configs/smoke_resolution.yaml`, `configs/sanity.yaml`,
-`configs/long.yaml`, `configs/penalty.yaml`, `configs/runpod_spread.yaml` and
-`configs/runpod_direct.yaml` inherit from it.
+`configs/long.yaml`, `configs/penalty.yaml`, `configs/labels.yaml`,
+`configs/runpod_spread.yaml` and `configs/runpod_direct.yaml` inherit from it.
 The parts that need a decision:
 
 | Key | Meaning |
@@ -252,13 +329,17 @@ The parts that need a decision:
 | `band.grating_step` | `auto`: the highest band whose finest stripes still get `band.min_camera_px_per_cycle` camera pixels per cycle at the low end of the range (see `band.py`). With 154 that is step 8, the top band: 16-51 cycles per tile, 3.01 pixels per cycle. One pixel lower and auto drops to step 6. `/docs/runs.md` has the check. |
 | `simulation.frame_px` | The simulated frame: a window onto the surface at 384 pixels per tile, not the camera stream. One number is a square; `[width, height]` gives any shape. |
 | `data.train_dir` | The dataset path. |
+| `data.center_fraction` | Part of each image the random crop may draw from: this fraction of the width and of the height, centred. 1.0 (the whole image) by default; 0.6 in `labels.yaml`. |
+| `data.holdout` | Images kept back from training, picked by a fixed seeded shuffle, for `acceptance.py`. 0 by default; 256 in `labels.yaml`. |
+| `data.credit` | A line of text printed below every sheet of dataset photos. `null` by default; the Open Food Facts credit in `labels.yaml`. |
 | `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the reader gets a 384 pixel square of camera frame with the tile at camera size (`simulation.direct.scale: auto`, 154 to 340 pixels), at a random rotation, position and tilt. Not shown to learn: every smoke test with rotation ends at chance (`/docs/runs.md`, "Direct mode"). `simulation.direct.rotation_near_right_angles_deg` and `ramp_with_strength` restrict or ease in the rotation. |
 | `spread.peak_penalty`, `spread.hide` | The two switches that keep the mark spread over the tile. Off by default, on in `runpod_spread.yaml`. |
-| `early_stop` | The learning check. Off by default, on in the two `runpod_` configs and `penalty.yaml`. |
-| `spread.stop_above` | Stop, with a checkpoint and exit code 4, when the spread check's fixed-place measure goes above this: a patch at the same place in every tile. `null` (off) by default; 4.0 in `penalty.yaml` and `runpod_spread.yaml`. |
+| `early_stop` | The learning check. Off by default, on in the two `runpod_` configs, `penalty.yaml` and `labels.yaml`. |
+| `spread.stop_above` | Stop, with a checkpoint and exit code 4, when the spread check's fixed-place measure goes above this: a patch at the same place in every tile. `null` (off) by default; 4.0 in `penalty.yaml`, `labels.yaml` and `runpod_spread.yaml`. |
 | `image_loss_check` | Stop, with a checkpoint and exit code 5, if the mean PSNR is still below `min_psnr_db` (14) at `at_step` (15,000): the image loss never switched on. Off by default, on in `runpod_spread.yaml`. |
 | `budget` | A limit on the whole run, summed over restarts: stop, with a checkpoint and exit code 6, at `max_hours` of training or at `max_cost_usd` on the cost of the report line (needs `--price-per-hour`). A run stopped this way does not resume until the limit is raised or set to `null`. Both `null` (off) by default; `max_hours: 24` in `runpod_spread.yaml`. It limits what `train.py` counts, not the bill. |
 | `schedule.image_loss` | Image-loss weight is 0 until bit accuracy passes `acc_threshold`, then ramps over `ramp_steps`. |
+| `schedule.image_loss.follow_accuracy` | `null`: that ramp, which never comes back down. `{floor, band}`: after the trigger the weight moves by 1/`ramp_steps` per step, up while smoothed bit accuracy is at or above `floor`, down while it is below `floor - band`. On in `labels.yaml` (0.95, 0.01). |
 | `schedule.sim_strength` | Simulation strength ramps from 0 to `max_strength` over `ramp_steps`. |
 | `simulation.*` | One range per effect, each given at strength 1. `simulation.effects` switches single effects off. |
 | `model.embedder.message_init`, `model.reader.texture`, `model.reader.pool_norm` | The three defaults that go beyond the literal spec, each with its switch (`dense`, `null`, `batch`). |
@@ -281,7 +362,10 @@ band mid-run, resume stops with a message instead of loading mismatched weights.
 | `train.py` | Training step, schedules, logging, checkpoints, learning check |
 | `checkpoint.py` | Save, find newest, resume |
 | `runlog.py` | Run time and cost across restarts, `progress.csv`, `spread.csv` |
-| `fetch_dataset.py` | Downloads the training images |
+| `data.py` | The image loader (upright loading, centre crop, holdout) and the crops preview |
+| `fetch_labels.py` | Downloads the label images (Open Food Facts) and writes their attribution file |
+| `fetch_dataset.py` | Downloads the earlier training images (Open Images) |
+| `acceptance.py` | Acceptance numbers on held-out labels and the blind comparison page |
 | `setup_runpod.sh`, `RUNPOD.md` | Preparing and running a RunPod pod |
 | `viz.py` | Sample sheets |
 | `smoke_test.py` | Smoke test and structure checks |
@@ -291,5 +375,6 @@ band mid-run, resume stops with a message instead of loading mismatched weights.
 ## Not built yet
 
 - The locator and its training stage.
-- Evaluation scripts. They need a Python port of the message codec
-  (CRC-7 and BCH from `/docs/message-format.md`); training only counts bit errors.
+- A Python port of the message codec (CRC-7 and BCH from
+  `/docs/message-format.md`). Training and `acceptance.py` only count bit
+  errors: "at most 4 wrong of the first 63" stands in for a decoded message.

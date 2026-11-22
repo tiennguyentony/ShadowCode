@@ -7,6 +7,7 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
+| Label run (laptop) | **Done**, two hours on 2026-11-21, from step 0 to 15,087, on Open Food Facts label photos with the image-loss weight following bit accuracy. Bit accuracy held at 0.948; the image-loss weight stopped at 0.22 and PSNR at 24 dB. **Acceptance failed** on reading (0.53 of held-out tiles within reach of the error correction, line 0.80) and the mark is visible. No fixed patch (1.36). See "Label run". |
 | Penalty-only run (laptop) | **Resumed** on 2026-11-21 from its step 10,000 checkpoint. It had stopped itself there on a limit that could not tell the corner patch from a mark that follows the image. The limit is now on the fixed-place measure (4.0, on 256 images); a mark that follows the image is accepted. See "Penalty-only run". |
 | Long run (main reader, flattened, laptop) | **Cancelled** on 2026-11-21 at about step 26,500 of 140,000. It read well (bit accuracy 0.95 to 0.96) but had put the mark into one bright patch at the tile corner. Last checkpoint: step 26,000, kept as the fallback. See "Long run" and "Corner patch". |
 | Spread run (RunPod) | **Being started** on 2026-11-21, alongside the penalty-only run, from commit `bf9c7a0`. `configs/runpod_spread.yaml`: the long run's settings with the two options against the corner patch on, from step 0. The options were checked on the CPU only. See "Spread run (RunPod)". |
@@ -70,7 +71,114 @@ while it is below 0.94, and stays where it is in between. The peak penalty
 uses the same weight. Sample sheet and spread check every 1,000 steps.
 
 <!-- labels-run:start -->
+| Time | Step | Fixed place | Strongest spot | Energy in one 96 px square | Energy on the busier half | PSNR, dB | Bit accuracy |
+|---|---|---|---|---|---|---|---|
+| 2026-11-21 19:20 | 0 | 1.01 | 1.05 | 6.5 percent | 50 percent | 21.31 (fixed images) | n/a |
+| 2026-11-21 19:28 | 1,000 | 1.00 | 1.01 | 6.3 percent | 50 percent | 14.23 | 0.6693 |
+| 2026-11-21 19:36 | 2,000 | 1.00 | 1.02 | 6.3 percent | 50 percent | 12.24 | 0.8185 |
+| 2026-11-21 19:44 | 3,000 | 1.00 | 1.03 | 6.4 percent | 50 percent | 12.29 | 0.8790 |
+| 2026-11-21 19:52 | 4,000 | 1.00 | 1.05 | 6.5 percent | 50 percent | 12.39 | 0.9029 |
+| 2026-11-21 20:01 | 5,000 | 1.00 | 1.04 | 6.4 percent | 50 percent | 12.43 | 0.9174 |
+| 2026-11-21 20:09 | 6,000 | 1.00 | 1.05 | 6.5 percent | 50 percent | 12.45 | 0.9290 |
+| 2026-11-21 20:16 | 7,000 | 1.01 | 1.05 | 6.5 percent | 50 percent | 12.46 | 0.9395 |
+| 2026-11-21 20:24 | 8,000 | 1.01 | 1.06 | 6.5 percent | 50 percent | 12.47 | 0.9482 |
+| 2026-11-21 20:32 | 9,000 | 1.02 | 1.19 | 7.0 percent | 51 percent | 15.38 | 0.9567 |
+| 2026-11-21 20:40 | 10,000 | 1.04 | 1.31 | 7.5 percent | 52 percent | 19.42 | 0.9554 |
+| 2026-11-21 20:48 | 11,000 | 1.07 | 1.53 | 8.5 percent | 53 percent | 22.17 | 0.9506 |
+| 2026-11-21 20:56 | 12,000 | 1.11 | 1.77 | 9.8 percent | 54 percent | 23.43 | 0.9496 |
+| 2026-11-21 21:04 | 13,000 | 1.29 | 2.47 | 14.1 percent | 56 percent | 23.84 | 0.9481 |
+| 2026-11-21 21:12 | 14,000 | 1.30 | 2.89 | 16.0 percent | 74 percent | 24.01 | 0.9479 |
+| 2026-11-21 21:19 | 15,000 | 1.36 | 3.17 | 17.6 percent | 76 percent | 24.17 | 0.9479 |
 <!-- labels-run:end -->
+
+**Result, 2026-11-21, 19:20 to 21:20.** Code: commit `1a9c008` on
+`training/labels`. The run stopped at its time limit at step 15,087 with exit
+code 0. Every number below is measured unless it says otherwise. Bit accuracy
+and PSNR are means over the 1,000 training steps before the row; the weight is
+the one at that step; fixed place and strongest spot are the spread check on
+the run's 256 fixed images; speed is over those 1,000 steps and includes the
+sample sheet and the spread check.
+
+| Step | Bit accuracy | PSNR, dB | Image-loss weight | Fixed place | Strongest spot | Steps per second |
+|---|---|---|---|---|---|---|
+| 1,000 | 0.669 | 14.2 | 0.000 | 1.00 | 1.01 | 2.00 |
+| 2,000 | 0.819 | 12.2 | 0.000 | 1.00 | 1.02 | 2.17 |
+| 3,000 | 0.879 | 12.3 | 0.000 | 1.00 | 1.03 | 2.17 |
+| 4,000 | 0.903 | 12.4 | 0.000 | 1.00 | 1.05 | 1.99 |
+| 5,000 | 0.917 | 12.4 | 0.000 | 1.00 | 1.04 | 1.88 |
+| 6,000 | 0.929 | 12.4 | 0.000 | 1.00 | 1.05 | 2.18 |
+| 7,000 | 0.940 | 12.5 | 0.000 | 1.01 | 1.05 | 2.18 |
+| 8,000 | 0.948 | 12.5 | 0.011 | 1.01 | 1.06 | 2.17 |
+| 9,000 | 0.957 | 15.4 | 0.078 | 1.02 | 1.19 | 2.10 |
+| 10,000 | 0.955 | 19.4 | 0.145 | 1.04 | 1.31 | 2.10 |
+| 11,000 | 0.951 | 22.2 | 0.191 | 1.07 | 1.53 | 2.10 |
+| 12,000 | 0.950 | 23.4 | 0.214 | 1.11 | 1.77 | 2.10 |
+| 13,000 | 0.948 | 23.8 | 0.219 | 1.29 | 2.47 | 2.11 |
+| 14,000 | 0.948 | 24.0 | 0.221 | 1.30 | 2.89 | 2.10 |
+| 15,000 | 0.948 | 24.2 | 0.223 | 1.36 | 3.17 | 2.11 |
+
+- **Speed: 2.10 steps per second** over the whole process (`train.py`'s own
+  figure), between 1.88 and 2.18 by 1,000 steps. The earlier runs on Open
+  Images measured 1.85 to 2.1 on the same GPU. The larger label photos did
+  not slow the run. The one slow stretch (steps 3,000 to 5,000) was not
+  explained.
+- **The image loss came on late.** Smoothed bit accuracy passed 0.95 at step
+  7,691; on Open Images it was step 3,986. Labels are harder for the reader
+  at full mark strength, or simply slower; one run does not say which.
+- **The weight stopped at 0.22.** It rose at the full rate until about step
+  10,000, then more and more slowly, and from step 12,500 it barely moved:
+  bit accuracy sat at 0.948 to 0.950, inside the band where the weight holds.
+  At the points logged (every 50 steps) the weight went up 90 times, held 55
+  times and never went down. So the schedule did what it is for, keeping bit
+  accuracy at the floor where the penalty-only run fell to 0.895, and the
+  price is that the image loss never got past a quarter of its weight. Moving
+  down was exercised by the smoke test only, not by this run.
+- **The mark is visible.** PSNR 24 dB; the sample sheets show a dotted
+  texture, strongest on flat colour.
+- **No fixed patch.** Fixed place 1.36 at the end, limit 4. The strongest
+  spot per image rose to 3.2 and 76 percent of the energy sits on the busier
+  half of the image: the mark follows the image content.
+- The simulation had reached 75 percent of its strength when the run stopped
+  (its ramp ends at step 20,000). The run's own closing check at that
+  strength, eval mode, 8 fresh batches of training crops: bit accuracy 0.948,
+  within reach of the error correction 0.781, all 64 bits right 0.062, PSNR
+  23.9 dB.
+
+**Acceptance at step 15,087** (`python acceptance.py --config
+configs/labels.yaml`, results in `training/runs/acceptance/00015087/`). The
+256 held-out label images, one tile from the middle of each, fixed random
+bits, eval mode, simulation at full strength, flattened reader input, one
+simulated shot per tile.
+
+| Alpha | At most 4 wrong of the first 63 | Bit accuracy | All 64 right | Fixed place | PSNR mean, dB | PSNR worst tenth, dB |
+|---|---|---|---|---|---|---|
+| 0.30 | 0.531 FAIL | 0.919 | 0.020 | 1.76 PASS | 24.3 | 21.8 |
+| 0.25 | 0.301 FAIL | 0.887 | 0.000 | 1.76 PASS | 25.8 | 23.4 |
+| 0.20 | 0.082 FAIL | 0.818 | 0.000 | 1.76 PASS | 27.8 | 25.3 |
+| 0.15 | 0.000 FAIL | 0.707 | 0.000 | 1.76 PASS | 30.2 | 27.8 |
+
+**Not accepted: it is neither read well enough nor invisible.** At the
+strength it was trained with (0.30), 53 percent of the tiles are within reach
+of the error correction; the line is 80. Lowering alpha makes the mark
+fainter and the reading worse, so no alpha passes.
+
+How to read the table:
+
+- The read rate here is lower than the run's own closing check (0.781) for
+  two reasons that cannot be separated from these numbers: the simulation is
+  at full strength, which the models had not yet been trained at, and the
+  images are ones they never saw.
+- With 256 tiles and one shot each, a share near 0.5 is uncertain by about
+  0.03 either way (one standard error; an estimate from the count, not a
+  repeated measurement).
+- Fixed place is the same at every alpha by construction: alpha scales the
+  whole mark and the measure divides that out. It differs from the run's own
+  1.36 because these are other images, cut differently.
+- PSNR is the mean over the tiles of each tile's own PSNR.
+- Only alpha 0.30 was trained. The other rows scale the mark of the same
+  embedder down and ask the same reader.
+- `blind.html` shows the alpha 0.30 tiles. It carries dataset photos and
+  their credit line and is for private review only.
 
 ## Spread run (RunPod)
 
