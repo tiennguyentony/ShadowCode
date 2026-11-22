@@ -1,0 +1,21 @@
+# Smoke variant: blur only, at a fixed low strength, from step 0.
+# Used to compare starting bands:
+#   python smoke_test.py --config configs/smoke_blur.yaml band.grating_step=8
+#   python smoke_test.py --config configs/smoke_blur.yaml band.grating_step=4
+base: smoke.yaml
+
+schedule:
+  sim_strength:
+    start_step: 0
+    ramp_steps: 0              # no ramp: strength is max_strength from the first step
+    max_strength: 0.3
+
+simulation:
+  enabled: true
+  effects:
+    perspective: false
+    blur: true
+    colour: false
+    resolution: false
+    noise: false
+    jpeg: false

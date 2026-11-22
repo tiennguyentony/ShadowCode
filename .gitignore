@@ -48,3 +48,10 @@ Thumbs.db
 *.onnx
 !web/public/models/
 !web/public/models/**/*.onnx
+
+# Private settings of the laptop-side training tools (training/podlink.py).
+# They live in ~/.shadowcode, outside the repository; these lines only catch a
+# copy dropped in here by mistake.
+.shadowcode/
+*app_password*
+notify.json

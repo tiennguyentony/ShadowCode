@@ -1,0 +1,22 @@
+# Smoke variant: loss of resolution only, at full strength, from step 0.
+# Used to check a starting band against one camera resolution:
+#   python smoke_test.py --config configs/smoke_resolution.yaml camera_px_per_tile=154
+#   python smoke_test.py --config configs/smoke_resolution.yaml camera_px_per_tile=340
+#   python smoke_test.py --config configs/smoke_resolution.yaml camera_px_per_tile=154 band.grating_step=6
+base: smoke.yaml
+
+schedule:
+  sim_strength:
+    start_step: 0
+    ramp_steps: 0              # no ramp: strength is max_strength from the first step
+    max_strength: 1.0
+
+simulation:
+  enabled: true
+  effects:
+    perspective: false
+    blur: false
+    colour: false
+    resolution: true
+    noise: false
+    jpeg: false

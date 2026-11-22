@@ -1,0 +1,60 @@
+# The long run again on a RunPod pod, with the two options that keep the mark
+# spread over the whole tile both on (spread.py):
+#
+#   peak_penalty   a loss on the strongest local region of the mark
+#   hide           random regions of the reader's patch blanked in training
+#
+# Why: the laptop's long run puts the code into one bright patch at the tile
+# corner once the image loss is on (docs/runs.md, "Corner patch").
+#
+# NO TRAINING RUN HAS USED THESE OPTIONS YET. They were checked on the CPU
+# only: they run and gradients flow. Whether they give an even mark, and
+# whether the reader still reaches the 0.95 bit accuracy that switches the
+# image loss on with part of its patch blanked, is what this run is for.
+#
+# Everything else is the long run (configs/long.yaml, which is default.yaml):
+# flattened reader, phone camera range 154 to 340 px per tile, top band,
+# batch 8, 140,000 steps, same losses, schedules and simulation.
+#
+#   python train.py --config configs/runpod_spread.yaml --price-per-hour <pod price>
+#
+# All paths are on the network volume, which RunPod mounts at /workspace.
+# See RUNPOD.md.
+base: default.yaml
+
+data:
+  train_dir: /workspace/datasets/open-images-v7-val/images   # written by setup_runpod.sh
+
+train:
+  reader_input: flattened
+
+spread:
+  peak_penalty:
+    enabled: true
+  hide:
+    enabled: true
+  stop_above: 4.0              # at any sample sheet: save and exit if the fixed-place measure passes this (exit code 4)
+
+log:
+  dir: /workspace/runs/spread/logs
+  print_every: 0               # report lines only, one per 1,000 steps
+  report_every: 1000
+  sheet_every: 2000            # /workspace/runs/spread/logs/samples/step_XXXXXXXX.png
+
+checkpoint:
+  dir: /workspace/runs/spread/checkpoints
+  every: 2000
+  keep: 3
+
+early_stop:                    # one look, 45 minutes of training in
+  enabled: true
+  after_minutes: 45
+  min_bit_acc: 0.75            # mean of the last 1,000 training steps, read with regions blanked
+
+image_loss_check:              # at step 15,000: save and exit if PSNR is still below 14 dB (exit code 5)
+  enabled: true
+  at_step: 15000
+  min_psnr_db: 14.0
+
+budget:                        # save and exit (exit code 6) once the run has trained this long
+  max_hours: 24

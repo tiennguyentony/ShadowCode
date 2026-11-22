@@ -1,48 +1,200 @@
-# Full training run. Paths are relative to the directory you launch from.
+# Full stage 1 training run. Paths are relative to the directory you launch from.
+#
+# MESSAGE_BITS and TILE_PX are fixed in constants.py and are deliberately not
+# settable here.
+
+# The demo setup: phone only. Not used in training itself; checked against
+# camera_px_per_tile and copied into contract.json (camera.py).
+demo:
+  tile_mm: 50                  # printed size of one tile
+  stream_px: [1080, 1920]      # camera stream, [width, height]: portrait
+  measured:                    # px_per_cm * 5 cm = camera pixels per printed tile
+    - {device: Galaxy S23 Ultra, distance_cm: 20, px_per_cm: 66.3}   # 331.5 px per tile
+    - {device: Galaxy S23 Ultra, distance_cm: 35, px_per_cm: 37.2}   # 186.0 px per tile
+
+# Camera pixels covered by one printed tile, seen straight on: [low, high].
+# Every training sample draws its own value, log-uniform over the range. The
+# range is the two measurements above with room on both sides. One number
+# fixes it; null skips the simulation's loss-of-resolution step (every other
+# step runs) and the starting band falls back to band.fallback_step.
+camera_px_per_tile: [154, 340]
 
 data:
-  train_dir: data/train        # any folder of images, searched recursively
-  image_size: 256              # encoder tile size; must be a multiple of 16
-  min_crop_scale: 0.35         # RandomResizedCrop lower bound
+  # The dataset path. Any folder of images, searched recursively.
+  # fetch_dataset.py downloads the chosen dataset (Open Images V7 validation,
+  # see THIRD_PARTY.md):  python fetch_dataset.py --out data/open-images-v7-val
+  # then set this to data/open-images-v7-val/images.
+  train_dir: data/train
+  min_crop_scale: 0.35         # RandomResizedCrop lower bound; crops are resized to TILE_PX
   num_workers: 8
 
+band:                          # where the gratings init puts the code; see band.py
+  # auto (derived from the low end of camera_px_per_tile) | 2 | 3 | 4 | 6 | 8 | 12
+  # With the range above, auto picks 8, the top band the range can carry:
+  # 16-51 cycles per tile. Its highest frequency gets 3.01 camera px per cycle
+  # at 154 px per tile, just over min_camera_px_per_cycle. That is why the low
+  # end is 154 and not lower: at 153 auto drops to 6 (12-38 cycles). Step 12
+  # sits on the sampling limit (2.01 px per cycle at 154) and auto never
+  # picks it. docs/runs.md has the numbers.
+  grating_step: auto
+  fallback_step: 8             # used by auto while camera_px_per_tile is null (8 = 16-51 cycles per tile)
+  max_step: 8                  # auto never picks a step above this
+  min_camera_px_per_cycle: 3.0 # auto keeps the highest starting frequency at least this coarse
+
 model:
-  message_bits: 64
-  encoder:
+  embedder:
     base_channels: 32
-    message_grid: 16           # dense layer output is message_channels x grid x grid
-    message_upsample: 1        # nearest upsampling of that map before it is tiled to the image size
+    message_grid: auto         # dense layer output is message_channels x grid x grid. auto = 16 * grating_step
     message_channels: 16
-    message_init: gratings     # gratings (each bit switches one grating on/off) | dense (plain init)
-    max_residual: 0.3          # residual is max_residual * tanh(.)
-  decoder:
-    input_size: 224
-    widths: [32, 64, 128, 192]
-    stem_filters: 48           # second-order branch: products of all pairs of these filters are pooled
-    stem_kernel: 8
-    stem_stride: 2
-    head_dim: 0                # 0 = linear from pooled features to logits; >0 adds a hidden layer
+    message_init: gratings     # gratings (each bit switches one grating on/off) | dense (default init)
+    alpha: 0.3                 # strength: residual is alpha * tanh(.)
+  reader:
+    widths: [32, 64, 128, 192, 256]   # one stride-2 stage per entry
+    pool_norm: running         # running (running statistics) | batch (plain BatchNorm1d)
+    texture:                   # pooled filter-pair products; set to null for the plain CNN
+      filters: 48
+      stride: 4
+      kernel: auto             # auto: kernel * downsample = TILE_PX / grating_step
+      downsample: auto
+  locator: null                # third model, not built yet
 
 train:
-  device: auto                 # auto | cuda | mps | cpu
+  stage: 1                     # 1 = embedder + reader. The locator's stage is not written yet.
+  reader_input: flattened      # flattened | direct
+  device: auto                 # auto | cuda | cuda:0 | mps | cpu
+  expect_gpu: null             # part of a GPU name, e.g. "RTX 4070": stop unless the run is on that GPU
   seed: 0
-  batch_size: 32
+  batch_size: 8
   total_steps: 140000
   lr: 1.0e-4
   grad_clip: 1.0
 
+surface:
+  repeat: 3                    # the marked tile is repeated repeat x repeat before the camera
+
+flatten:                       # reader_input: flattened only
+  corner_jitter_px: 3.0        # each corner moves by up to this many frame pixels in x and y
+
 loss:
   bit_weight: 1.0
-  l2_weight: 2.0
-  image_ramp:
-    acc_threshold: 0.95        # image loss stays at 0 until bit accuracy passes this
-    acc_ema: 0.98              # smoothing of the bit accuracy used for the trigger
-    steps: 15000               # linear ramp length once triggered
+  l2_weight: 2.0               # multiplied by the image-loss schedule
+  lpips_weight: 1.0            # multiplied by the image-loss schedule; 0 disables LPIPS entirely
+  lpips_net: alex              # alex | vgg | squeeze
 
-distortion:
+schedule:
+  image_loss:
+    acc_threshold: 0.95        # image-loss weight stays 0 until bit accuracy passes this
+    acc_ema: 0.98              # smoothing of the bit accuracy used for the trigger
+    ramp_steps: 15000          # linear ramp 0 -> 1 once triggered
+  sim_strength:
+    start_step: 0              # strength is 0 before this step
+    ramp_steps: 20000          # linear ramp 0 -> max_strength
+    max_strength: 1.0
+
+simulation:                    # every range below is its value at strength 1 and scales with strength
   enabled: true
-  tile: 3                      # encoded image is tiled tile x tile before the camera
-  ramp_steps: 5000             # distortion strength ramps 0 -> 1 over these steps
+  # The simulated frame: a window onto the surface at TILE_PX pixels per tile,
+  # two tiles across. It is not the 1080x1920 stream; camera resolution is the
+  # resolution step below. One number is a square, [width, height] any shape.
+  frame_px: 768
+  effects:                     # switch single steps off for experiments
+    perspective: true
+    blur: true
+    colour: true
+    resolution: true           # down to camera_px_per_tile and back; skipped while that is null
+    noise: true
+    jpeg: true
+  perspective:
+    max_tilt_deg: 30.0
+    distance_tiles: [3.0, 6.0] # camera distance in tile widths; closer means stronger perspective
+  blur:                        # in frame pixels (one tile is TILE_PX frame pixels at scale 1)
+    defocus_radius_px: 2.5     # radius of the defocus disc, uniform in [0, this]
+    motion_length_px: 6.0      # length of the motion streak, uniform in [0, this], random direction
+  colour:
+    brightness: 0.15           # +- added to all channels
+    channel_shift: 0.05        # +- added per channel
+    contrast: 0.3              # contrast factor is 1 +- this, about the image mean
+    gamma: 0.25                # gamma is exp(+- this)
+  noise:
+    sigma: 0.04                # Gaussian noise, standard deviation uniform in [0, this]
+  jpeg:
+    min_quality: 40            # quality uniform in [this, 100]
+    chroma_subsampling: true
+  direct:                      # reader_input: direct only. Applied at any strength unless ramp_with_strength.
+    rotation_deg: 360.0        # rotation uniform in [0, this]
+    # Set to a number, e.g. 30, to replace the free rotation: the tile is then
+    # upright, on either side or upside down, each within plus or minus this.
+    rotation_near_right_angles_deg: null
+    # Size of a tile in the frame as a fraction of TILE_PX, log-uniform.
+    # auto: camera_px_per_tile / TILE_PX, so the reader sees the tile at the
+    # size the phone shows it (154 to 340 px: 0.40 to 0.89). Or [low, high].
+    # In direct mode the frame is the TILE_PX square the reader gets, in
+    # camera pixels; frame_px and effects.resolution do not apply.
+    scale: auto
+    ramp_with_strength: false  # true: rotation and scale ranges grow with the strength knob
+
+spread:                        # keep the mark from piling up in one spot (spread.py). Both off by default.
+  peak_penalty:                # embedder side: a loss on the strongest local region of the mark
+    enabled: false
+    weight: 4.0                # multiplied by the image-loss schedule, like l2_weight. Not tuned by any run.
+    window_px: 48              # a region is a window this wide; windows wrap around the tile edges
+    stride_px: 8               # one window every this many pixels; must divide TILE_PX
+    top_fraction: 0.02         # the loss is the mean energy of this share of windows, the strongest ones
+  hide:                        # reader side: blank random regions of the patch, in training steps only
+    enabled: false
+    max_fraction: 0.5          # share of the patch blanked, uniform in [0, this] per sample
+    cells: [2, 3, 4, 6, 8]     # the patch is cut into n x n cells, n drawn from here; 2 gives large regions
+  # A number: stop the run, with a checkpoint and exit code 4, when the spread
+  # check's fixed-place measure goes above it. That measure is high only for a
+  # patch at the same place in every tile (the long run's corner patch: 18 to
+  # 20). A mark that follows each image's content stays low (1.4 to 2.7 for
+  # made-up marks of that kind on 256 images; docs/runs.md). 4.0 is the limit
+  # the run configs use. "Strongest spot" is logged but stops nothing.
+  stop_above: null
 
 log:
-  print_every: 50
+  dir: runs/stage1            # TensorBoard event files, progress.csv and run_state.json
+  print_every: 50              # detailed console line; 0 switches it off
+  report_every: 1000           # report line and progress.csv row: step, mean bit accuracy and PSNR
+                               # over the steps since the last one, cost so far (--price-per-hour)
+  scalar_every: 50
+  image_every: 1000            # sample images to TensorBoard
+  sheet_every: 1000            # sample sheet (original | marked | difference x10) to <log.dir>/samples/
+  num_images: 4
+  # The spread check, run with every sample sheet: where the mark sits on this
+  # many fixed dataset images (fixed place, strongest spot, energy in one
+  # 96 px square, energy on the busier half of the image). One line on the
+  # console and one row in <log.dir>/spread.csv. 0: off. The fixed-place
+  # measure needs many images: 16 are too few (docs/runs.md).
+  spread_images: 256
+  # {file: path, marker: name}: also keep those rows as a table in a Markdown
+  # file, between its lines <!-- name:start --> and <!-- name:end -->.
+  spread_markdown: null
+
+checkpoint:
+  dir: checkpoints/stage1      # training resumes from the newest checkpoint here
+  every: 2000
+  keep: 3                      # newest checkpoints kept; 0 keeps all
+
+early_stop:                    # the learning check: one look, after_minutes into the run
+  enabled: false
+  after_minutes: 30            # training time, summed over restarts
+  min_bit_acc: 0.55            # stop if the mean of the last log.report_every steps is below this (chance is 0.50)
+
+image_loss_check:              # one look at at_step: did the image loss ever switch on?
+  enabled: false
+  at_step: 15000
+  # Stop, with a checkpoint and exit code 5, if the mean PSNR of the last
+  # log.report_every steps is below this. The PSNR sits near 12 dB while the
+  # image loss is off and was past 20 dB 3,000 steps after it switched on.
+  min_psnr_db: 14.0
+
+budget:                        # a limit on the whole run, summed over restarts. Both off by default.
+  # Stop, with a checkpoint and exit code 6, once train.py has spent this many
+  # hours on the run: the hours of the report line.
+  max_hours: null
+  # The same on the cost of the report line: --price-per-hour times those
+  # hours. Needs --price-per-hour. It is train.py's estimate of the GPU bill,
+  # not the bill: setup, downloads, a pod idling after the run and storage
+  # are not in it.
+  max_cost_usd: null

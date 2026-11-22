@@ -1,0 +1,2 @@
+# Shell scripts run on Linux pods; CRLF line endings break them.
+*.sh text eol=lf

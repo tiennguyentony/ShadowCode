@@ -1,0 +1,51 @@
+# The long run again on the laptop GPU, with the penalty on the strongest
+# local region of the mark switched on and the random hiding left off:
+#
+#   python train.py --config configs/penalty.yaml --keep-awake
+#
+# Why: the long run put the whole code into one bright patch at the tile
+# corner once the image loss was on (docs/runs.md, "Corner patch"). This run
+# tests whether the penalty alone prevents that.
+#
+# It resumes from the sanity run's step 6,000 checkpoint, copied into
+# checkpoints/penalty: the last saved point where the mark was still even
+# (strongest spot 1.1). docs/runs.md, "Penalty-only run", says why that is valid.
+#
+# Everything else is the long run (configs/long.yaml, which is default.yaml):
+# flattened reader, phone camera range, top band, batch 8, 140,000 steps.
+#
+# With every sample sheet the run measures the mark on 256 fixed images, adds
+# a row to the table in docs/runs.md, and stops itself if the fixed-place
+# measure is above 4: a patch at the same place in every tile. A mark that
+# follows the image content is accepted and does not stop the run.
+base: default.yaml
+
+data:
+  train_dir: data/open-images-v7-val/images
+
+train:
+  device: cuda:0
+  expect_gpu: RTX 4070         # stop unless cuda:0 is this GPU; never fall back to the CPU
+
+spread:
+  peak_penalty:
+    enabled: true
+  hide:
+    enabled: false
+  stop_above: 4.0              # on the fixed-place measure, at every sample sheet
+
+log:
+  dir: runs/penalty
+  print_every: 100
+  sheet_every: 2000            # runs/penalty/samples/step_XXXXXXXX.png
+  spread_markdown:
+    file: ../docs/runs.md
+    marker: penalty-run
+
+checkpoint:
+  dir: checkpoints/penalty
+
+early_stop:                    # one look, 45 minutes of training into this run
+  enabled: true
+  after_minutes: 45
+  min_bit_acc: 0.75
