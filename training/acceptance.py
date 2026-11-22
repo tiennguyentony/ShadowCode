@@ -22,6 +22,13 @@ argument of ``Embedder.forward``; the models were trained at one of them):
     seen     PSNR of the marked tile against the original, in dB: the mean
              over the tiles and the mean of the worst tenth. No pass line.
 
+Then, unless --shots is given empty, a multi-shot table: each marked tile is
+photographed 9 times by the simulation, each time with fresh random draws,
+and read from the first K shots (K = 1, 3, 5, 9) by averaging the reader's
+logits before taking the bits. Share within reach of the error correction
+and mean bit accuracy per K and alpha. This is simulated: real frames of one
+hand-held scan are less independent than these shots.
+
 Writes into runs/acceptance/<step>/:
 
     results.md, results.json   the table above
@@ -73,6 +80,7 @@ BLIND_PAIRS = 10        # of each kind
 # A 48 px window counts as flat when the grey image differs from a 9 px blur
 # of itself by less than this, as a mean square: about 2 grey levels of 255.
 FLAT_LEVEL = 6e-5
+SHOTS = (1, 3, 5, 9)    # multi-shot reading: logits averaged over this many simulated shots
 EXTRA_DIR = HERE / "data" / "labels"
 SEED = 0
 
@@ -102,35 +110,71 @@ def fixed_bits(count: int, seed: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def read_tiles(
-    trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alpha: float, views: int, seed: int, chunk: int = 8
+def read_shots(
+    trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alpha: float, shots: int, seed: int, chunk: int = 8
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Embed at ``alpha``, photograph at full strength, flatten, read.
+    """Embed at ``alpha`` once, photograph it ``shots`` times at full strength, flatten, read.
 
-    Returns (wrong, psnr, marked): wrong bits as (views * N, 64) of bool,
-    PSNR per tile as (N,), and the marked tiles on the CPU. The random draws
-    of the simulation are seeded, so every alpha is photographed the same way.
+    Every shot of a tile photographs the same marked tile with fresh random
+    draws of the simulation (tilt, blur, colour, resolution, noise, JPEG) and
+    a fresh flattened patch. Returns (logits, psnr, marked): the reader's
+    logits as (shots, N, 64), PSNR per tile as (N,), and the marked tiles on
+    the CPU. The draws are seeded, so every alpha is photographed the same way.
     """
     cfg, device = trainer.cfg, trainer.device
     strength = float(cfg["schedule"]["sim_strength"]["max_strength"])
     repeat, jitter = int(cfg["surface"]["repeat"]), float(cfg["flatten"]["corner_jitter_px"])
     trainer.embedder.eval()
     trainer.reader.eval()
-    wrong, marked_all, psnr = [], [], []
+    logits, marked_all, psnr = [], [], []
     torch.manual_seed(seed)
-    for view in range(views):
+    for shot_index in range(shots):
+        this_shot = []
         for start in range(0, len(tiles), chunk):
             tile = tiles[start : start + chunk].to(device)
             message = bits[start : start + chunk].to(device)
             marked = (tile + trainer.embedder(tile, message, alpha=alpha)).clamp(0.0, 1.0)
             shot = simulate(wrap_surface(marked, repeat), cfg, strength)
             patch, _ = flatten_random_patch(shot.frame, shot.homography, tile_px=TILE_PX, corner_jitter_px=jitter)
-            wrong.append(((trainer.reader(patch) > 0).float() != message).cpu())
-            if view == 0:
+            this_shot.append(trainer.reader(patch).float().cpu())
+            if shot_index == 0:
                 mse = (marked - tile).pow(2).mean(dim=(1, 2, 3)).clamp_min(1e-10)
                 psnr.append((-10.0 * torch.log10(mse)).cpu())
                 marked_all.append(marked.cpu())
-    return torch.cat(wrong), torch.cat(psnr), torch.cat(marked_all)
+        logits.append(torch.cat(this_shot))
+    return torch.stack(logits), torch.cat(psnr), torch.cat(marked_all)
+
+
+def read_tiles(
+    trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alpha: float, views: int, seed: int, chunk: int = 8
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """As read_shots, with every shot read on its own: wrong bits as (views * N, 64) of bool."""
+    logits, psnr, marked = read_shots(trainer, tiles, bits, alpha, views, seed, chunk)
+    return ((logits > 0).float() != bits).reshape(-1, MESSAGE_BITS), psnr, marked
+
+
+def vote(logits: torch.Tensor, bits: torch.Tensor, counts: tuple[int, ...] | list[int]) -> list[dict]:
+    """Read each tile from K shots: average the logits of the first K shots, then take the signs.
+
+    ``logits`` is (shots, N, 64), ``bits`` (N, 64). One row per K in ``counts``
+    with the share of tiles within reach of the error correction, the mean bit
+    accuracy and the share with all 64 right. The rows for different K share
+    their shots: K = 3 is the first three of the shots K = 9 uses.
+    """
+    rows = []
+    for count in counts:
+        if not 1 <= count <= len(logits):
+            raise ValueError(f"{count} shots asked for, {len(logits)} taken")
+        wrong = (logits[:count].mean(dim=0) > 0).float() != bits
+        rows.append(
+            {
+                "shots": count,
+                "decoded": (wrong[:, :BCH_CODEWORD_BITS].sum(dim=1) <= BCH_CORRECTABLE).float().mean().item(),
+                "bit_accuracy": 1.0 - wrong.float().mean().item(),
+                "all_64_right": (wrong.sum(dim=1) == 0).float().mean().item(),
+            }
+        )
+    return rows
 
 
 def measure(trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alpha: float, views: int, seed: int) -> dict:
@@ -169,6 +213,35 @@ def table(rows: list[dict]) -> str:
             f"| {r['alpha']:.2f} | {r['decoded']:.3f} {verdict(r['decoded_pass'])} | {r['bit_accuracy']:.3f} | "
             f"{r['all_64_right']:.3f} | {r['fixed_place']:.2f} {verdict(r['fixed_place_pass'])} | "
             f"{r['psnr_mean_db']:.1f} | {r['psnr_worst_tenth_db']:.1f} |"
+        )
+    return "\n".join(lines)
+
+
+MULTI_SHOT_NOTE = (
+    "Simulated: each shot is an independent draw of the camera simulation (tilt, blur, colour, resolution, "
+    "noise and JPEG all drawn afresh, and a fresh flattened patch). Real frames from one hand-held scan share "
+    "the light, the angle, the distance and the camera, so they are less independent than this, and averaging "
+    "them gains less than these rows show."
+)
+
+
+def multi_shot(trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alphas: list[float], counts: list[int], seed: int) -> list[dict]:
+    """vote() rows for every alpha, from max(counts) shots of each tile."""
+    rows = []
+    for alpha in alphas:
+        logits, _, _ = read_shots(trainer, tiles, bits, alpha, max(counts), seed)
+        rows += [{"alpha": alpha, **row} for row in vote(logits, bits, counts)]
+    return rows
+
+
+def multi_table(rows: list[dict]) -> str:
+    lines = [
+        "| Alpha | Shots averaged | At most 4 wrong of the first 63 | Bit accuracy | All 64 right |",
+        "|---|---|---|---|---|",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['alpha']:.2f} | {r['shots']} | {r['decoded']:.3f} | {r['bit_accuracy']:.3f} | {r['all_64_right']:.3f} |"
         )
     return "\n".join(lines)
 
@@ -276,7 +349,11 @@ def main() -> int:
     parser.add_argument("--device", default=None, help="cuda or cpu (default: cuda when there is one)")
     parser.add_argument("--alphas", type=float, nargs="+", default=list(ALPHAS), help="strengths of the mark to measure")
     parser.add_argument("--blind-alpha", type=float, default=None, help="strength shown in blind.html (default: the trained one)")
-    parser.add_argument("--views", type=int, default=1, help="simulated shots per tile (default 1)")
+    parser.add_argument("--views", type=int, default=1, help="simulated shots per tile, each read on its own (default 1)")
+    parser.add_argument(
+        "--shots", type=int, nargs="*", default=list(SHOTS),
+        help="multi-shot reading: shot counts K whose logits are averaged (default 1 3 5 9; none to skip)",
+    )
     parser.add_argument("overrides", nargs="*", help="dotted.key=value config overrides")
     args = parser.parse_args()
 
@@ -316,6 +393,19 @@ def main() -> int:
     rows = [measure(trainer, tiles, bits, alpha, args.views, SEED) for alpha in args.alphas]
     report = [f"## Held-out label images ({len(tiles)})", "", table(rows)]
     results = {"step": step, "checkpoint": str(path), "views": args.views, "trained_alpha": trained_alpha, "held_out": rows}
+    if args.shots:
+        shot_rows = multi_shot(trainer, tiles, bits, args.alphas, sorted(set(args.shots)), SEED)
+        report += [
+            "",
+            f"## Several shots of each tile, logits averaged ({len(tiles)} held-out tiles)",
+            "",
+            multi_table(shot_rows),
+            "",
+            MULTI_SHOT_NOTE
+            + f" The rows share their shots: each K reads the first K of the same {max(args.shots)}, "
+            "and the 1-shot row is the first shot, the one the table above reads.",
+        ]
+        results["multi_shot"] = {"note": MULTI_SHOT_NOTE, "rows": shot_rows}
 
     picks = pick_pairs(tiles, cfg, BLIND_PAIRS)
     chosen = torch.tensor([index for index, _ in picks])

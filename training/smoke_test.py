@@ -345,6 +345,29 @@ def check_rotation_tag() -> None:
     print("rotation checks passed: a photo tagged as turned loads upright; one without the tag is untouched")
 
 
+def check_multi_shot() -> None:
+    """acceptance.vote: K shots are read by averaging the reader's logits over the first K, then taking signs."""
+    from acceptance import vote
+
+    bits = torch.stack([torch.ones(MESSAGE_BITS), (torch.arange(MESSAGE_BITS) % 2).float()])
+    truth = bits * 2.0 - 1.0  # +1 for a 1, -1 for a 0
+    logits = truth.expand(9, -1, -1).clone()
+    logits[0, 0, :10] = -0.5  # shot 1 gets 10 bits of tile 1 wrong, weakly
+    logits[8, 1] = -10.0 * truth[1]  # shot 9 gets every bit of tile 2 wrong, strongly
+    rows = {row["shots"]: row for row in vote(logits, bits, (1, 3, 5, 9))}
+    assert rows[1]["decoded"] == 0.5 and abs(rows[1]["bit_accuracy"] - (1 - 10 / 128)) < 1e-6, f"one shot: {rows[1]}"
+    assert rows[3]["decoded"] == 1.0 and rows[3]["all_64_right"] == 1.0, f"three shots did not outvote the weak errors: {rows[3]}"
+    assert rows[5]["decoded"] == 1.0, f"five shots reached the ninth: {rows[5]}"
+    assert rows[9]["decoded"] == 0.5 and rows[9]["bit_accuracy"] == 0.5, f"nine shots did not include the ninth: {rows[9]}"
+    try:
+        vote(logits[:3], bits, (1, 5))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("asking for 5 shots of 3 was accepted")
+    print("multi-shot checks passed: averaged logits outvote a weak wrong shot; K uses exactly the first K shots")
+
+
 def describe_simulation(cfg: dict) -> str:
     sim = cfg["simulation"]
     if not sim["enabled"]:
@@ -389,6 +412,7 @@ def run_smoke(
         check_center_fraction()
         check_rotation_tag()
         check_holdout()
+        check_multi_shot()
 
         batches = infinite(loader)
         history: list[dict[str, float]] = []

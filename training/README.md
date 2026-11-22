@@ -245,6 +245,13 @@ reader, it reports for alpha 0.30, 0.25, 0.20 and 0.15:
 - the fixed-place measure (PASS below 2.5);
 - PSNR in dB, mean and worst tenth of the tiles (no pass line).
 
+A second table reads each tile from several shots: the same marked tile is
+photographed 9 times by the simulation, each time with fresh random tilt,
+blur, colour, resolution, noise and JPEG, and for K = 1, 3, 5 and 9 the
+reader's logits over the first K shots are averaged before the bits are
+taken (`--shots`, empty to skip). This is simulated: real frames from one
+hand-held scan are less independent than these shots, so they gain less.
+
 It counts bit errors; it does not run the message codec. It writes
 `runs/acceptance/<step>/results.md` and `blind.html`: 20 pairs of original
 and marked tile side by side, 50 mm wide each in print, left and right
