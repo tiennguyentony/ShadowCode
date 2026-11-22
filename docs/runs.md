@@ -7,7 +7,7 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
-| Penalty-only run (laptop) | **Started** 2026-11-21, from the step 6,000 checkpoint, with the penalty on the strongest region on and the hiding off. It logs the mark at every sample sheet and stops itself if the strongest spot goes above 3. See "Penalty-only run". |
+| Penalty-only run (laptop) | **Resumed** on 2026-11-21 from its step 10,000 checkpoint. It had stopped itself there on a limit that could not tell the corner patch from a mark that follows the image. The limit is now on the fixed-place measure (4.0, on 256 images); a mark that follows the image is accepted. See "Penalty-only run". |
 | Long run (main reader, flattened, laptop) | **Cancelled** on 2026-11-21 at about step 26,500 of 140,000. It read well (bit accuracy 0.95 to 0.96) but had put the mark into one bright patch at the tile corner. Last checkpoint: step 26,000, kept as the fallback. See "Long run" and "Corner patch". |
 | Spread run (RunPod) | **Not started.** `configs/runpod_spread.yaml`: the long run's settings with the two options against the corner patch on. Checked on the CPU only. See "Corner patch". |
 | Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
@@ -54,23 +54,135 @@ Other settings: sample sheet every 2,000 steps
 this run (bit accuracy under 0.75 stops it; the clock starts at 0 with this
 run, so the check falls near step 11,000). Same GPU checks as before.
 
-**The spread check.** With every sample sheet the run measures the mark on 16
-fixed dataset images with fixed messages, in eval mode, and writes the row
-below. These are the same images and measures as the table in "Corner
-patch", so the numbers compare directly: the unfixed run was at 3.3 by step
-7,001 and near 20 from step 20,000. **The run stops itself, with a
-checkpoint, if the strongest spot goes above 3** (`spread.stop_above`).
+**The spread check.** With every sample sheet the run measures the mark on
+256 fixed dataset images with fixed messages, in eval mode, and writes the
+row below:
+
+- **Fixed place**: is the mark at the same place in every tile? Each image's
+  map of the mark's energy (48 px windows) is scaled to mean 1, the maps are
+  averaged over the 256 images, and this is the mean of the strongest 2
+  percent of windows of that average. A patch at one place in every tile
+  keeps its full height: the unfixed run's corner patch scores 18 to 20. A
+  mark that follows each image's content mostly averages out.
+- **Strongest spot**: the same, per image, then averaged. 1 is even. It is
+  high for the corner patch and also for a mark that follows the image, so
+  it is logged and stops nothing.
+- **Energy in one 96 px square**: share of the mark's energy in its strongest
+  96 px square, per image, averaged. An even mark gives 6.25 percent.
+- **Energy on the busier half**: share of the mark's energy on the half of
+  each image with more local contrast. 50 percent means the mark ignores the
+  image.
+
+**The run stops itself, with a checkpoint, if "fixed place" goes above 4**
+(`spread.stop_above: 4.0`). A mark that follows the image content is
+accepted; a patch at the same place in every tile is not. The next heading
+says where the 4 comes from.
 
 PSNR and bit accuracy are training means over the 1,000 steps ending at the
 row's step. The first row is the starting point, before any step of this run.
-The table is written by the run itself.
+The table is written by the run itself. The rows up to step 10,000 were
+recomputed on the CPU from the saved checkpoints when the check moved from 16
+to 256 images; the 16-image numbers of the time are in
+`training/runs/penalty/spread_16_images.csv`.
 
 <!-- penalty-run:start -->
-| Time | Step | Strongest spot | Energy in one 96 px square | PSNR, dB | Bit accuracy |
-|---|---|---|---|---|---|
-| 2026-11-21 15:35 | 6,000 | 1.10 | 6.7 percent | 16.81 (fixed images) | n/a |
-| 2026-11-21 15:52 | 8,000 | 1.34 | 7.7 percent | 24.04 | 0.9638 |
+| Time | Step | Fixed place | Strongest spot | Energy in one 96 px square | Energy on the busier half | PSNR, dB | Bit accuracy |
+|---|---|---|---|---|---|---|---|
+| 2026-11-21 15:35 | 6,000 | 1.02 | 1.12 | 6.7 percent | 50 percent | 16.96 (fixed images) | n/a |
+| 2026-11-21 15:52 | 8,000 | 1.05 | 1.43 | 8.2 percent | 53 percent | 24.04 | 0.9638 |
+| 2026-11-21 16:08 | 10,000 | 1.59 | 3.61 | 19.2 percent | 76 percent | 26.51 | 0.9552 |
 <!-- penalty-run:end -->
+
+**First stop, at step 10,000.** The run was first started with the limit on
+"strongest spot" (3, on 16 images). It stopped itself at step 10,000, 16:08,
+33 minutes after its start, with a checkpoint and exit code 4: strongest
+spot 3.99 on those 16 images (3.61 on 256).
+
+What the mark looks like there
+(`training/runs/penalty/samples/step_00010000.png`): there is **no patch at
+the tile corner**. The mark sits on the busy parts of each image (the
+jellyfish, the food, the edges of the smoke) and is nearly absent from the
+flat parts (black background, a smooth leaf, sky). At step 8,000 it still
+covered the whole tile. The numbers agree: fixed place 1.59, with the
+strongest window of the averaged map in the middle of the image (centred at
+x 200, y 192) and the window on the tile corner at 1.11; 76 percent of the
+energy on the busier half of the image, up from 50.
+
+So the limit had been tripped by a mark that follows the image, which was
+then accepted. The penalty did slow the pile-up: the unfixed run was at
+strongest spot 2.8 with the image loss at 20 percent of its weight (step
+7,001, 20.6 dB), this run at 3.6 with it at 40 percent and a PSNR 6 dB
+higher. Whether the penalty alone prevents the corner patch was not answered
+at step 10,000, with the image loss at 40 percent of its weight; that is
+what the resumed run is for.
+
+**Resumed from step 10,000** on 2026-11-21 with the same command, after the
+limit was moved to the fixed-place measure. Nothing else changed: same
+config, same checkpoint folder, same clock (33 minutes of training before
+the resume, so the 45-minute learning check comes about 12 minutes in). The
+rows from step 12,000 on are from the resumed run.
+
+### The fixed-place baseline and the limit of 4
+
+What does "fixed place" read for a mark that only follows the image? Two
+estimates, on the CPU, on the fixed images.
+
+Made-up marks, built from the images alone, that know nothing of the tile:
+all energy on the busier half of each image; energy in proportion to local
+contrast; and to its square and fourth power, which pack it tighter.
+
+| Made-up mark that only follows the image | Strongest spot per image | Fixed place, 16 images | 64 images | 256 images |
+|---|---|---|---|---|
+| evenly on the busier half | 2.0 | 1.82 | 1.48 | 1.40 |
+| in proportion to local contrast | 4.4 | 2.33 | 1.60 | 1.63 |
+| contrast squared | 9.5 | 3.68 | 2.23 | 2.07 |
+| contrast to the fourth power | 20.6 | 6.14 | 3.41 | 2.71 |
+
+Real marks with the place information destroyed: each image's energy map
+shifted around the tile by its own random offset, 200 different draws, the
+highest of them:
+
+| Real mark, shifted at random | Strongest spot per image | 16 images | 64 images | 256 images |
+|---|---|---|---|---|
+| penalty run, step 10,000 | 3.6 | 2.21 | 1.52 | 1.26 |
+| unfixed run, step 26,000 | 18.7 | 5.76 | 2.94 | 1.95 |
+
+And the real marks as they are, 256 images:
+
+| Checkpoint | Fixed place | Strongest spot | Energy on the busier half | Where the averaged map is strongest |
+|---|---|---|---|---|
+| step 6,000, the start | 1.02 | 1.12 | 50 percent | nowhere in particular |
+| unfixed run, step 7,001 | 1.22 | 2.84 | 50 percent | nowhere in particular |
+| penalty run, step 8,000 | 1.05 | 1.43 | 53 percent | nowhere in particular |
+| penalty run, step 10,000 | 1.59 | 3.61 | 76 percent | middle of the image (x 200, y 192) |
+| unfixed run, step 22,000 | 19.76 | 20.55 | | on the tile edge, 24 px from the corner |
+| unfixed run, step 26,000 | 18.33 | 18.69 | 38 percent | on the tile edge, 24 px from the corner |
+
+- **Baseline: 1.4 to 2.7 on 256 images.** It is above 1 even with many
+  images because photographs are busier in the middle, so a mark that
+  follows the image has a mild preferred place of its own. 2.7 is the
+  extreme case, a mark packed as tightly into each image as the corner patch
+  is into the tile. The mark the penalty run actually has at step 10,000
+  reads 1.59, in line with "in proportion to local contrast" (1.63).
+- **Limit: 4.** That is 1.5 times the highest baseline, 2.5 times what the
+  image-following mark of step 10,000 reads, and 4.6 times below the unfixed
+  run's 18.3.
+- **16 images are too few, so the check uses 256.** On 16 the baseline
+  reaches 6.1 and a tightly packed mark shifted at random reaches 5.8, which
+  leaves no clear room under the limit. On 256 the number is steady: the two
+  halves of the images give 1.58 and 1.62 for the penalty run and 18.24 and
+  18.41 for the unfixed one.
+- What the limit does not see, by design: a mark that follows the image,
+  however unevenly. What it would see besides the corner patch: a mark laid
+  along the tile edge in every tile, which is a fixed place too.
+- Not known: how early it trips. The unfixed run read 1.22 at step 7,001 and
+  19.8 at step 22,000, and no checkpoint between them was kept. Its sample
+  sheet at step 10,000 already shows the patch.
+
+A correction to the numbers first written here: the "busier half" shares
+were computed with a blur that made every image look busy along its border.
+With that fixed they are 50, 53 and 76 percent for the penalty run (not 50,
+52, 68) and 38 percent for the unfixed run's corner patch.
 
 ## Long run
 

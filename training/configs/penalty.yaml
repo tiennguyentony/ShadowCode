@@ -14,9 +14,10 @@
 # Everything else is the long run (configs/long.yaml, which is default.yaml):
 # flattened reader, phone camera range, top band, batch 8, 140,000 steps.
 #
-# With every sample sheet the run measures the mark on 16 fixed images, adds
-# a row to the table in docs/runs.md, and stops itself if the strongest spot
-# is above 3 times the tile average.
+# With every sample sheet the run measures the mark on 256 fixed images, adds
+# a row to the table in docs/runs.md, and stops itself if the fixed-place
+# measure is above 4: a patch at the same place in every tile. A mark that
+# follows the image content is accepted and does not stop the run.
 base: default.yaml
 
 data:
@@ -31,7 +32,7 @@ spread:
     enabled: true
   hide:
     enabled: false
-  stop_above: 3.0              # checked at every sample sheet
+  stop_above: 4.0              # on the fixed-place measure, at every sample sheet
 
 log:
   dir: runs/penalty

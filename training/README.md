@@ -161,13 +161,16 @@ put the whole code into one bright patch at the tile corner; the long run did
   regions covering up to half of it are blanked with the patch's mean colour.
 
 The smoke test checks that they run and that gradients flow. With every
-sample sheet a run also measures the mark on 16 fixed dataset images (the
-spread check): one `[spread]` line and one row in `<log.dir>/spread.csv`,
-with the strongest spot as a multiple of the tile average (1 is even, the
-long run's corner patch is 20) and the share of the mark's energy in one
-96 px square. `spread.stop_above` stops the run when the strongest spot
-passes a limit (exit code 4); `log.spread_markdown` keeps the rows as a table
-in a Markdown file.
+sample sheet a run also measures the mark on 256 fixed dataset images (the
+spread check): one `[spread]` line and one row in `<log.dir>/spread.csv`.
+Its main number is "fixed place": high only for a patch at the same place in
+every tile (the long run's corner patch: 18 to 20), low for a mark that
+follows the image content (1.4 to 2.7). It also logs the strongest spot per
+image, the share of the mark's energy in one 96 px square and the share on
+the busier half of the image. `spread.stop_above` stops the run when "fixed
+place" passes a limit (exit code 4); `log.spread_markdown` keeps the rows as
+a table in a Markdown file. `/docs/runs.md` has the baseline behind the
+limit of 4.
 
 `configs/penalty.yaml` is the long run with the penalty on and the hiding
 off, resumed from the step 6,000 checkpoint; `/docs/runs.md`, "Penalty-only
@@ -251,7 +254,7 @@ The parts that need a decision:
 | `train.reader_input` | `flattened`: the reader gets one tile-sized patch flattened with the true homography, random offset, corner jitter. `direct`: no flatten; the reader gets a 384 pixel square of camera frame with the tile at camera size (`simulation.direct.scale: auto`, 154 to 340 pixels), at a random rotation, position and tilt. Not shown to learn: every smoke test with rotation ends at chance (`/docs/runs.md`, "Direct mode"). `simulation.direct.rotation_near_right_angles_deg` and `ramp_with_strength` restrict or ease in the rotation. |
 | `spread.peak_penalty`, `spread.hide` | The two switches that keep the mark spread over the tile. Off by default, on in `runpod_spread.yaml`. |
 | `early_stop` | The learning check. Off by default, on in the two `runpod_` configs and `penalty.yaml`. |
-| `spread.stop_above` | Stop, with a checkpoint and exit code 4, when the spread check finds the strongest spot above this. `null` (off) by default; 3.0 in `penalty.yaml` and `runpod_spread.yaml`. |
+| `spread.stop_above` | Stop, with a checkpoint and exit code 4, when the spread check's fixed-place measure goes above this: a patch at the same place in every tile. `null` (off) by default; 4.0 in `penalty.yaml` and `runpod_spread.yaml`. |
 | `image_loss_check` | Stop, with a checkpoint and exit code 5, if the mean PSNR is still below `min_psnr_db` (14) at `at_step` (15,000): the image loss never switched on. Off by default, on in `runpod_spread.yaml`. |
 | `schedule.image_loss` | Image-loss weight is 0 until bit accuracy passes `acc_threshold`, then ramps over `ramp_steps`. |
 | `schedule.sim_strength` | Simulation strength ramps from 0 to `max_strength` over `ramp_steps`. |
@@ -272,7 +275,7 @@ band mid-run, resume stops with a message instead of loading mismatched weights.
 | `simulate.py` | Print-and-camera simulation; returns the frame and the exact homography |
 | `geometry.py` | Homographies, the flatten step |
 | `losses.py` | LPIPS wrapper |
-| `spread.py` | The peak penalty, the random hiding and the "strongest spot" measure |
+| `spread.py` | The peak penalty, the random hiding and the spread check (fixed place, strongest spot) |
 | `train.py` | Training step, schedules, logging, checkpoints, learning check |
 | `checkpoint.py` | Save, find newest, resume |
 | `runlog.py` | Run time and cost across restarts, `progress.csv`, `spread.csv` |

@@ -113,7 +113,19 @@ class ProgressLog:
 
 
 SPREAD_FILE = "spread.csv"
-SPREAD_COLUMNS = ["utc_time", "local_time", "step", "strongest_spot", "square_share", "psnr_fixed_db", "bit_acc", "psnr_db"]
+SPREAD_COLUMNS = [
+    "utc_time",
+    "local_time",
+    "step",
+    "images",
+    "fixed_place",
+    "strongest_spot",
+    "square_share",
+    "busy_share",
+    "psnr_fixed_db",
+    "bit_acc",
+    "psnr_db",
+]
 
 
 class SpreadLog:
@@ -131,6 +143,14 @@ class SpreadLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if fresh:
             self.path.unlink(missing_ok=True)
+        if self.path.is_file():
+            with open(self.path, "r", encoding="utf-8", newline="") as f:
+                header = next(csv.reader(f), None)
+            if header != SPREAD_COLUMNS:
+                # Written by an earlier version with other columns: keep it, start a new file.
+                aside = self.path.with_name(f"spread_before_{time.strftime('%Y%m%d-%H%M%S')}.csv")
+                os.replace(self.path, aside)
+                print(f"note: {self.path} had other columns; kept as {aside.name}, starting a new one")
         if not self.path.is_file():
             with open(self.path, "w", encoding="utf-8", newline="") as f:
                 csv.writer(f).writerow(SPREAD_COLUMNS)
@@ -142,15 +162,20 @@ class SpreadLog:
     def has_step(self, step: int) -> bool:
         return any(int(row["step"]) == step for row in self.rows())
 
-    def write(self, step: int, report: dict, bit_acc: float | None, psnr_db: float | None) -> str:
+    def write(
+        self, step: int, report: dict, bit_acc: float | None, psnr_db: float | None, local_time: str | None = None
+    ) -> str:
         """Write the row, refresh the Markdown table, and return the row as one line of text."""
         now = datetime.now(timezone.utc)
         row = [
             now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            now.astimezone().strftime("%Y-%m-%d %H:%M"),
+            local_time or now.astimezone().strftime("%Y-%m-%d %H:%M"),
             step,
+            report["images"],
+            f"{report['fixed_place']:.2f}",
             f"{report['strongest_spot']:.2f}",
             f"{report['square_share']:.4f}",
+            f"{report['busy_share']:.4f}",
             f"{report['psnr']:.2f}",
             "" if bit_acc is None else f"{bit_acc:.4f}",
             "" if psnr_db is None else f"{psnr_db:.2f}",
@@ -159,9 +184,11 @@ class SpreadLog:
             csv.writer(f).writerow(row)
         self.update_markdown()
         return (
-            f"[spread] step {step:7d}  strongest spot {report['strongest_spot']:.2f} times the tile average  "
+            f"[spread] step {step:7d}  fixed place {report['fixed_place']:.2f}  "
+            f"strongest spot {report['strongest_spot']:.2f}  "
             f"{report['square_share'] * 100:.1f} percent of the mark's energy in one 96 px square  "
-            f"psnr {report['psnr']:.1f} dB on the fixed images"
+            f"{report['busy_share'] * 100:.0f} percent on the busier half of the image  "
+            f"psnr {report['psnr']:.1f} dB  ({report['images']} fixed images)"
         )
 
     def update_markdown(self) -> None:
@@ -177,15 +204,17 @@ class SpreadLog:
                 print(f"warning: {path} has no {start} ... {end} lines; the table there was not updated")
                 return
             lines = [
-                "| Time | Step | Strongest spot | Energy in one 96 px square | PSNR, dB | Bit accuracy |",
-                "|---|---|---|---|---|---|",
+                "| Time | Step | Fixed place | Strongest spot | Energy in one 96 px square | "
+                "Energy on the busier half | PSNR, dB | Bit accuracy |",
+                "|---|---|---|---|---|---|---|---|",
             ]
             for row in self.rows():
-                share = f"{float(row['square_share']) * 100:.1f} percent"
+                square = f"{float(row['square_share']) * 100:.1f} percent"
+                busy = f"{float(row['busy_share']) * 100:.0f} percent"
                 psnr = row["psnr_db"] or f"{row['psnr_fixed_db']} (fixed images)"
                 lines.append(
-                    f"| {row['local_time']} | {int(row['step']):,} | {row['strongest_spot']} | {share} | "
-                    f"{psnr} | {row['bit_acc'] or 'n/a'} |"
+                    f"| {row['local_time']} | {int(row['step']):,} | {row['fixed_place']} | {row['strongest_spot']} | "
+                    f"{square} | {busy} | {psnr} | {row['bit_acc'] or 'n/a'} |"
                 )
             temporary = path.with_suffix(path.suffix + ".tmp")
             temporary.write_text(head + start + "\n" + "\n".join(lines) + "\n" + end + tail, encoding="utf-8", newline="\n")

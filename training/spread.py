@@ -10,10 +10,14 @@ config section ``spread`` work against that, one on each side:
 * ``hide`` (reader side): random regions of the reader's patch are blanked
   out during training, so no single spot can be relied on.
 
-Both are off by default. ``concentration`` is the number to watch either way.
+Both are off by default. ``spread_report`` is the measurement to watch either
+way: above all its ``fixed_place``, which is high only for a patch at the same
+place in every tile and stays low for a mark that follows the image content.
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 import torch.nn.functional as F
@@ -125,7 +129,7 @@ def hide_regions(view: torch.Tensor, cfg: dict) -> tuple[torch.Tensor, float]:
 SQUARE_PX = 96  # the "one square" of the check: 1/16 of the tile area at TILE_PX 384
 
 
-def fixed_batch(image_dir, count: int = 16, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+def fixed_batch(image_dir, count: int = 256, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
     """``count`` dataset images and messages that are the same in every run and at every step.
 
     Images are picked by a seeded shuffle of the sorted file list, resized on
@@ -151,29 +155,79 @@ def fixed_batch(image_dir, count: int = 16, seed: int = 0) -> tuple[torch.Tensor
     return torch.stack(tiles), bits
 
 
-@torch.no_grad()
-def spread_report(embedder, tiles: torch.Tensor, bits: torch.Tensor, cfg: dict, chunk: int = 4) -> dict[str, float]:
-    """How piled-up the embedder's mark is on the fixed images, in eval mode.
+def busy_windows(tiles: torch.Tensor, cfg: dict) -> torch.Tensor:
+    """For each image, which windows are its busier half: (B, rows, cols) of bool.
 
-    * ``strongest_spot``: as ``concentration``; 1 is even.
+    Busy means local contrast (the image minus a 9 px blur of itself, squared,
+    averaged over the window) above that image's median. The blur is padded by
+    reflection, so the tile edge does not count as contrast.
+    """
+    s = peak_settings(cfg)
+    grey = tiles.mean(dim=1, keepdim=True)
+    blurred = F.avg_pool2d(F.pad(grey, (4, 4, 4, 4), mode="reflect"), 9, 1)
+    contrast = local_energy(grey - blurred, int(s["window_px"]), int(s["stride_px"]))
+    return contrast > contrast.flatten(1).median(dim=1).values[:, None, None]
+
+
+@torch.no_grad()
+def spread_report(
+    embedder, tiles: torch.Tensor, bits: torch.Tensor, cfg: dict, busy: torch.Tensor | None = None, chunk: int = 8
+) -> dict[str, float]:
+    """Where the embedder's mark sits on the fixed images, in eval mode.
+
+    * ``fixed_place``: is the mark at the same place in every tile? Each
+      image's local-energy map is scaled to mean 1, the maps are averaged
+      over the images, and this is the mean of the strongest windows of that
+      average. A patch at one place in every tile keeps its full height (the
+      long run's corner patch: 18 to 20). A mark that only follows each
+      image's content mostly averages out (1.4 to 2.7 for made-up marks of
+      that kind on 256 images; docs/runs.md has the baseline). It needs many
+      images: on 16 the same marks reach 6.
+    * ``strongest_spot``: as ``concentration``, per image, averaged. 1 is
+      even. It cannot tell a fixed patch from a mark that follows the image.
     * ``square_share``: share of the mark's energy inside its strongest
       SQUARE_PX square, averaged over the images. An even mark gives the
       square's share of the tile area (6.25 percent).
+    * ``busy_share``: share of the mark's energy on the busier half of each
+      image (``busy`` from ``busy_windows``). 0.5 means the mark ignores the image.
     * ``psnr``: marked against original, over all the images.
 
-    The embedder is left in training mode.
+    ``tiles`` and ``bits`` may stay on the CPU; they are moved to the
+    embedder's device a chunk at a time. The embedder is left in training mode.
     """
-    embedder.eval()
-    residual = torch.cat([embedder(tiles[i : i + chunk], bits[i : i + chunk]) for i in range(0, len(tiles), chunk)])
-    embedder.train()
-    mean = residual.pow(2).mean(dim=(1, 2, 3)).clamp_min(1e-12)
     s = peak_settings(cfg)
-    square = min(SQUARE_PX, residual.shape[-1])
-    in_square = local_energy(residual, square, int(s["stride_px"])).flatten(1).max(dim=1).values
-    area = square * square / (residual.shape[-1] * residual.shape[-2])
-    mse = ((tiles + residual).clamp(0.0, 1.0) - tiles).pow(2).mean().clamp_min(1e-10)
+    window, stride, top = int(s["window_px"]), int(s["stride_px"]), float(s["top_fraction"])
+    device = next(embedder.parameters()).device
+    square = min(SQUARE_PX, tiles.shape[-1])
+    area = square * square / (tiles.shape[-1] * tiles.shape[-2])
+    count = len(tiles)
+    totals = {"strongest_spot": 0.0, "square_share": 0.0, "busy_share": 0.0, "squared_error": 0.0}
+    map_sum = None
+    embedder.eval()
+    for i in range(0, count, chunk):
+        tile = tiles[i : i + chunk].to(device)
+        residual = embedder(tile, bits[i : i + chunk].to(device))
+        mean = residual.pow(2).mean(dim=(1, 2, 3)).clamp_min(1e-12)
+        energy = local_energy(residual, window, stride)
+        flat = energy.flatten(1)
+        strongest = flat.topk(max(1, round(top * flat.shape[1])), dim=1).values.mean(dim=1)
+        totals["strongest_spot"] += (strongest / mean).sum().item()
+        in_square = local_energy(residual, square, stride).flatten(1).max(dim=1).values
+        totals["square_share"] += (in_square * area / mean).sum().item()
+        if busy is not None:
+            on_busy = (energy * busy[i : i + chunk].to(device)).sum(dim=(1, 2)) / energy.sum(dim=(1, 2)).clamp_min(1e-12)
+            totals["busy_share"] += on_busy.sum().item()
+        totals["squared_error"] += ((tile + residual).clamp(0.0, 1.0) - tile).pow(2).mean(dim=(1, 2, 3)).sum().item()
+        scaled = (energy / mean[:, None, None]).sum(dim=0)
+        map_sum = scaled if map_sum is None else map_sum + scaled
+    embedder.train()
+    mean_map = (map_sum / count).flatten()
+    fixed = mean_map.topk(max(1, round(top * mean_map.numel()))).values.mean() / mean_map.mean()
     return {
-        "strongest_spot": concentration(residual, cfg),
-        "square_share": (in_square * area / mean).mean().item(),
-        "psnr": (-10.0 * torch.log10(mse)).item(),
+        "images": count,
+        "fixed_place": fixed.item(),
+        "strongest_spot": totals["strongest_spot"] / count,
+        "square_share": totals["square_share"] / count,
+        "busy_share": totals["busy_share"] / count if busy is not None else float("nan"),
+        "psnr": -10.0 * math.log10(max(totals["squared_error"] / count, 1e-10)),
     }

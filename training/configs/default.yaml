@@ -145,7 +145,11 @@ spread:                        # keep the mark from piling up in one spot (sprea
     max_fraction: 0.5          # share of the patch blanked, uniform in [0, this] per sample
     cells: [2, 3, 4, 6, 8]     # the patch is cut into n x n cells, n drawn from here; 2 gives large regions
   # A number: stop the run, with a checkpoint and exit code 4, when the spread
-  # check finds the strongest spot above this many times the tile average.
+  # check's fixed-place measure goes above it. That measure is high only for a
+  # patch at the same place in every tile (the long run's corner patch: 18 to
+  # 20). A mark that follows each image's content stays low (1.4 to 2.7 for
+  # made-up marks of that kind on 256 images; docs/runs.md). 4.0 is the limit
+  # the run configs use. "Strongest spot" is logged but stops nothing.
   stop_above: null
 
 log:
@@ -157,10 +161,12 @@ log:
   image_every: 1000            # sample images to TensorBoard
   sheet_every: 1000            # sample sheet (original | marked | difference x10) to <log.dir>/samples/
   num_images: 4
-  # The spread check, run with every sample sheet: how piled-up the mark is on
-  # this many fixed dataset images (strongest spot, energy in one 96 px
-  # square). One line on the console and one row in <log.dir>/spread.csv. 0: off.
-  spread_images: 16
+  # The spread check, run with every sample sheet: where the mark sits on this
+  # many fixed dataset images (fixed place, strongest spot, energy in one
+  # 96 px square, energy on the busier half of the image). One line on the
+  # console and one row in <log.dir>/spread.csv. 0: off. The fixed-place
+  # measure needs many images: 16 are too few (docs/runs.md).
+  spread_images: 256
   # {file: path, marker: name}: also keep those rows as a table in a Markdown
   # file, between its lines <!-- name:start --> and <!-- name:end -->.
   spread_markdown: null

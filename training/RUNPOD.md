@@ -9,7 +9,8 @@ long run puts the code into one bright patch at the tile corner
 **No training run has used the two options yet.** They were checked on the
 CPU only: they run and gradients flow. The run stops itself, with a
 checkpoint, in three cases: bit accuracy under 0.75 after 45 minutes; the
-mark piling up (strongest spot above 3 at any sample sheet); PSNR still below
+mark piling up at the same place in every tile (fixed-place measure above 4
+at any sample sheet); PSNR still below
 14 dB at step 15,000, which means the image loss never switched on. The
 sample sheets, one every 2,000 steps, show the mark itself; section 6 says
 how to copy one to the laptop and what to look for.
@@ -207,14 +208,17 @@ sample sheet: /workspace/runs/spread/logs/samples/step_00004000.png  (strongest 
 - `bit_acc` and `psnr` are means over the last 1,000 training steps. Chance
   is 0.500. The reader's patch has regions blanked in those steps, so expect
   `bit_acc` to run below the laptop's numbers at the same step.
-- `strongest spot` is the number for the corner patch: the mark's energy in
-  its strongest 48 pixel windows, divided by the average over the tile. 1 is
-  perfectly even. Measured on the laptop's checkpoints: 1.0 at step 4,000
-  and 1.1 at step 6,000 (even), 3.3 at step 7,001 (starting to pile up),
-  20 at steps 20,000 and 22,000 (the corner patch).
-- After each sheet line comes a `[spread]` line: the same two measures on 16
-  fixed images, which is the steadier number. Its rows are also in
-  `logs/spread.csv`.
+- `strongest spot` on the sheet line is the mark's energy in its strongest
+  48 pixel windows, divided by the average over the tile, on one training
+  batch. 1 is perfectly even. It is high for the corner patch (20 in the
+  laptop's long run) and also for a mark that follows the image content
+  (about 4), so it is only a number to look at.
+- After each sheet line comes a `[spread]` line, measured on 256 fixed
+  images; its rows are also in `logs/spread.csv`. Its first number, `fixed
+  place`, is the one that matters: it is high only for a patch at the same
+  place in every tile. A mark that follows the image reads 1.4 to 2.7, the
+  laptop's corner patch 18 to 20 (`/docs/runs.md`, "The fixed-place baseline
+  and the limit of 4").
 - `cost` is `--price-per-hour` times the time `train.py` has been running on
   this run, summed over restarts. It is an estimate of the GPU bill only. It
   leaves out setup and download time, time the pod idles after the run, and
@@ -243,16 +247,18 @@ The thresholds are in `configs/runpod_spread.yaml` under `early_stop`.
 The run stops itself in two more cases. Both save a checkpoint first, and
 with the stop-the-pod command the pod stops too.
 
-**The mark piles up** (`spread.stop_above: 3.0`, exit code 4). Checked at
-every sample sheet, on the 16 fixed images of the `[spread]` line:
+**The mark piles up at the same place in every tile**
+(`spread.stop_above: 4.0`, exit code 4). Checked at every sample sheet, on
+the `fixed place` number of the `[spread]` line:
 
 ```
-Stopped: at step 12000 the strongest spot is 3.41 times the tile average, above the limit of 3 (spread.stop_above). 19.0 percent of the mark's energy is in one 96 px square. The same command would resume and stop again at the next sample sheet unless the limit is changed.
+Stopped: at step 12000 the fixed-place measure is 4.62, above the limit of 4 (spread.stop_above): the mark is piling up at the same place in every tile. Strongest spot 6.10, 31.0 percent of the mark's energy in one 96 px square. The same command would resume and stop again at the next sample sheet unless the limit is changed.
 ```
 
-That is the result the run exists to find out: the two options did not keep
-the mark even. To go on regardless, add `spread.stop_above=null` to the
-command.
+That is the result the run exists to find out: the two options did not
+prevent a fixed patch. A mark that follows the image content does not trip
+this; it is accepted. To go on regardless, add `spread.stop_above=null` to
+the command.
 
 **The image loss never switched on** (`image_loss_check`, exit code 5). One
 look at step 15,000, at the mean PSNR of the last 1,000 steps:
@@ -323,14 +329,14 @@ Copying does not disturb the run.
 - The laptop run's patch showed between steps 6,000 and 10,000, two to six
   thousand steps after its image loss switched on. Judge this run the same
   distance after its PSNR starts to rise.
-- Good: the difference column shows a fine texture over the whole tile and no
-  bright corner, and `strongest spot` stays below about 2 well after the PSNR
-  has risen past 20 dB.
-- Bad: the difference column goes grey with a bright patch at the corners, as
-  in the laptop's `runs/long/samples/step_00020000.png`, and `strongest spot`
-  climbs: the laptop run was at 3.3 by 20 dB and at 20 by 26 dB.
-- The number on the sheet line is from one training batch of 8, so it moves
-  a little from sheet to sheet. The trend is what counts.
+- Good: no bright patch at the same place in every row, and `fixed place`
+  on the `[spread]` line stays under about 2.
+- Accepted: the mark sits on the busy parts of each image and leaves the
+  flat parts nearly clean, differently in every row. The laptop's
+  penalty-only run did this from step 10,000 (`fixed place` 1.59).
+- Bad: the difference column goes grey with a bright patch at the corners in
+  every row, as in the laptop's `runs/long/samples/step_00020000.png`
+  (`fixed place` 18 to 20). The run stops itself at 4.
 
 The images are dataset images under CC BY 2.0: credit the authors from
 `ATTRIBUTION.csv` before publishing a sheet.

@@ -13,11 +13,12 @@ Every ``log.report_every`` steps one line goes to the console and to
 
 Ctrl-C or SIGTERM saves a checkpoint and exits. Exit codes: 0 finished or
 stopped by ``--max-minutes``, 3 stopped by the learning check
-(``early_stop``), 4 stopped because the mark piled up (``spread.stop_above``),
+(``early_stop``), 4 stopped because the mark piled up at a fixed place in the
+tile (``spread.stop_above``),
 5 stopped because the image loss never switched on (``image_loss_check``),
 130 interrupted.
 
-With every sample sheet the run measures how piled-up the mark is on 16 fixed
+With every sample sheet the run measures where the mark sits on 256 fixed
 dataset images (the spread check) and appends a row to ``<log.dir>/spread.csv``.
 
 On a CUDA device the run first prints what the GPU is and how much memory is
@@ -51,6 +52,7 @@ from models import build_models, count_parameters
 from runlog import ProgressLog, RunClock, SpreadLog
 from simulate import simulate, wrap_surface
 from spread import (
+    busy_windows,
     concentration,
     fixed_batch,
     hide_regions,
@@ -560,17 +562,22 @@ def main() -> int:
     progress = ProgressLog(log_cfg["dir"], fresh=args.fresh)
     # The spread check: the same images and messages at every sample sheet.
     stop_above = (cfg.get("spread") or {}).get("stop_above")
-    check_images = int(log_cfg.get("spread_images", 16))
+    check_images = int(log_cfg.get("spread_images", 256))
     spread_log = None
     piled_up: dict | None = None
     if sheet_every and check_images > 0:
-        fixed_tiles, fixed_bits = (t.to(device) for t in fixed_batch(cfg["data"]["train_dir"], check_images))
+        # Kept on the CPU; the check moves them to the device a few at a time.
+        fixed_tiles, fixed_bits = fixed_batch(cfg["data"]["train_dir"], check_images)
+        fixed_busy = busy_windows(fixed_tiles, cfg)
         spread_log = SpreadLog(log_cfg["dir"], log_cfg.get("spread_markdown"), fresh=args.fresh)
         if not spread_log.has_step(trainer.step):
-            start_report = spread_report(trainer.embedder, fixed_tiles, fixed_bits, cfg)
+            start_report = spread_report(trainer.embedder, fixed_tiles, fixed_bits, cfg, fixed_busy)
             print(spread_log.write(trainer.step, start_report, None, None), flush=True)
         if stop_above is not None:
-            print(f"spread check: the run stops if the strongest spot goes above {float(stop_above):g} times the tile average")
+            print(
+                f"spread check: the run stops if the fixed-place measure goes above {float(stop_above):g} "
+                "(a patch at the same place in every tile; a mark that follows the image stays below it)"
+            )
     batches = infinite(make_loader(cfg, device))
     total = int(cfg["train"]["total_steps"])
     t0, start_step = time.time(), trainer.step
@@ -622,13 +629,15 @@ def main() -> int:
                     writer.add_scalar("run/cost_usd", clock.cost_usd, step)
                 clock.save()
             if want_sheet and spread_log is not None:
-                report = spread_report(trainer.embedder, fixed_tiles, fixed_bits, cfg)
+                report = spread_report(trainer.embedder, fixed_tiles, fixed_bits, cfg, fixed_busy)
                 mean_acc = sum(a for a, _ in recent) / len(recent)
                 mean_psnr = sum(p for _, p in recent) / len(recent)
                 print(spread_log.write(step, report, mean_acc, mean_psnr), flush=True)
+                writer.add_scalar("image/fixed_place", report["fixed_place"], step)
+                writer.add_scalar("image/busy_share_fixed", report["busy_share"], step)
                 writer.add_scalar("image/strongest_spot_fixed", report["strongest_spot"], step)
                 writer.add_scalar("image/square_share_fixed", report["square_share"], step)
-                if stop_above is not None and report["strongest_spot"] > float(stop_above):
+                if stop_above is not None and report["fixed_place"] > float(stop_above):
                     piled_up = report
                     break
             if step % ckpt_cfg["every"] == 0 or step == total:
@@ -714,9 +723,10 @@ def main() -> int:
     if piled_up is not None:
         checkpoint_now()
         print(
-            f"Stopped: at step {trainer.step} the strongest spot is {piled_up['strongest_spot']:.2f} times the tile average, "
-            f"above the limit of {float(stop_above):g} (spread.stop_above). "
-            f"{piled_up['square_share'] * 100:.1f} percent of the mark's energy is in one 96 px square. "
+            f"Stopped: at step {trainer.step} the fixed-place measure is {piled_up['fixed_place']:.2f}, "
+            f"above the limit of {float(stop_above):g} (spread.stop_above): the mark is piling up at the same "
+            f"place in every tile. Strongest spot {piled_up['strongest_spot']:.2f}, "
+            f"{piled_up['square_share'] * 100:.1f} percent of the mark's energy in one 96 px square. "
             "The same command would resume and stop again at the next sample sheet unless the limit is changed."
         )
         return EXIT_PILED_UP

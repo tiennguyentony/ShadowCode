@@ -110,7 +110,8 @@ if early.get("enabled"):
     print(f"  below {early['min_bit_acc']}. The pod keeps billing after that unless you use the")
     print("  stop-when-done command or stop it yourself.")
 if spread.get("stop_above") is not None:
-    print(f"  It also stops if the mark piles up: strongest spot above {spread['stop_above']:g} at a sample sheet.")
+    print(f"  It also stops if the mark piles up at the same place in every tile: fixed-place measure")
+    print(f"  above {spread['stop_above']:g} at a sample sheet.")
 image_check = cfg.get("image_loss_check") or {}
 if image_check.get("enabled"):
     print(f"  It also stops if PSNR is still below {image_check['min_psnr_db']:g} dB at step {image_check['at_step']}:")

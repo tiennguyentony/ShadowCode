@@ -33,7 +33,7 @@ spread:
     enabled: true
   hide:
     enabled: true
-  stop_above: 3.0              # at any sample sheet: save and exit if the strongest spot passes this (exit code 4)
+  stop_above: 4.0              # at any sample sheet: save and exit if the fixed-place measure passes this (exit code 4)
 
 log:
   dir: /workspace/runs/spread/logs
