@@ -280,7 +280,7 @@ Worked values, traced by hand from the pseudocode:
 - **ID 1 → 0x76.** Bits 31..1 are 0, so `reg` stays 0x00. At b = 0, `fb` = 0 XOR 1 = 1, `reg` = 0x00 then XOR 0x09 = 0x09. 0x09 XOR 0x7F = 0x76.
 - **ID 2 → 0x6D.** `reg` stays 0x00 through b = 2. At b = 1, `fb` = 1, `reg` = 0x09. At b = 0, `fb` = bit 6 of 0x09 (0) XOR 0 = 0, `reg` = 0x12. 0x12 XOR 0x7F = 0x6D.
 
-The CRC_Field hex for every Clean_Test_Vector appears in the generated Vector_Block table. The values in the preliminary table below are from the prototype; the generator output is authoritative.
+The CRC_Field hex for every Clean_Test_Vector appears in the generated Vector_Block table. The table below matches the generator output; the generator output is authoritative.
 
 Why the final XOR (approved rationale, kept for the record):
 - The BCH code is linear, so the all-zero 63-bit word is always a codeword. With catalogued CRC-7/MMC, crc7(0) = 0x00, and the all-zero Message would be exactly `encodeMessage(0)`. A blank, all-white, or fully under-exposed read would then decode to Product_ID 0, along with every read within 4 bit errors of blank.
@@ -329,9 +329,9 @@ for j = 0 to 23:
 - `Uint8Array(64)`, values 0/1, index 0 = Message bit 0.
 - Codeword = indices 0–62. The decoder works on a 63-element copy.
 
-### Test vectors (preliminary values from the prototype)
+### Test vectors
 
-These are the vector inputs the generator holds as constants, with the outputs the prototype computed for them. The committed Vector_Generator recomputes every output; if any differs from this table, the generator's output is used and this table is corrected. Bit strings list Message indices 0 to 63, left to right.
+These are the vector inputs the generator holds as constants, with their outputs. The committed Vector_Generator output was compared with this table and matched at every value; the Vector_Block in `/docs/message-format.md` remains the authoritative copy. Bit strings list Message indices 0 to 63, left to right.
 
 | Product_ID (dec) | Hex | CRC_Field | Parity_Field | Message bits 0–63 |
 |---|---|---|---|---|
@@ -573,7 +573,7 @@ The measurement tests run in about 1.2 s total for Requirements 7 and 8 (prototy
 
 ## Correction_Limit_Comparison
 
-**Status: preliminary, to be confirmed by the Property_Test_Suite.** The numbers come from the throwaway prototype, which used the exact draw procedure in Data Models: seed 0x2545F491 (mulberry32), 25,000 trials per k, 175,000 trials per m value (100,000 with k ≥ 8), and 100,000 random-input trials per m. The same per-k counts and seed apply to both columns. Classification is by `id` alone. After the Property_Test_Suite runs, this table is replaced with the values from its output (Requirement 9.4).
+**Status: measured by the Property_Test_Suite** (`message.measure.test.ts`, tests `false-accept m=4`, `false-accept m=3`, `random-input m=4`, `random-input m=3`). Seed 0x2545F491 (mulberry32), 25,000 trials per k, 175,000 trials per m value (100,000 with k ≥ 8), and 100,000 random-input trials per m. The same per-k counts and seed apply to both columns. Classification is by `id` alone. Every count printed by the suite equals the earlier prototype count, so the table values are unchanged.
 
 ### False accepts under heavy corruption (Requirement 7 procedure)
 
@@ -587,7 +587,7 @@ The measurement tests run in about 1.2 s total for Requirements 7 and 8 (prototy
 | 16 | 25,000 | 0 / 24,997 / 3 | 1.2 × 10⁻⁴ | 0 / 25,000 / 0 | 0 |
 | 32 | 25,000 | 0 / 24,993 / 7 | 2.8 × 10⁻⁴ | 0 / 25,000 / 0 | 0 |
 | k ≥ 8 | 100,000 | 0 / 99,971 / 29 | 2.9 × 10⁻⁴ | 0 / 99,999 / 1 | 1.0 × 10⁻⁵ |
-| all | 175,000 | 2,017 / 172,940 / 43 | 2.5 × 10⁻⁴ | 0 / 174,999 / 1 | 5.7 × 10⁻⁶ |
+| all | 175,000 | 2,017 / 172,940 / 43 | 2.46 × 10⁻⁴ | 0 / 174,999 / 1 | 5.7 × 10⁻⁶ |
 
 The 2,017 "correct" results at k = 5, m = 4 are trials where the spare index 63 was one of the 5 flips, leaving 4 Codeword errors (expected 25,000 × 5/64 ≈ 1,953). Those results have `correctedBits` 4.
 
@@ -605,7 +605,7 @@ A random 63-bit word lies within distance m of some codeword with probability 2^
 ### Conclusion
 
 - The default Max_Correctable_Errors of **4 is kept** (Requirement 9.7).
-- m = 4, preliminary: the combined k ≥ 8 False_Accept_Rate is 2.9 × 10⁻⁴, **within** the 1 × 10⁻³ bound of Requirement 7.4. The Rejection_Rate is 99.969%, **meeting** the 99.9% bound of Requirement 8.3.
+- m = 4, measured: m = 4 meets both bounds. The combined k ≥ 8 False_Accept_Rate is 2.9 × 10⁻⁴, **within** the 1 × 10⁻³ bound of Requirement 7.4. The Rejection_Rate is 99.969%, **meeting** the 99.9% bound of Requirement 8.3.
 - m = 3 lowers false accepts by roughly 15× in exchange for rejecting every read with exactly 4 Codeword errors. How often real reads have exactly 4 errors depends on the print and camera channel, which this spec does not measure. Whether to switch is left for later, once tile-level error statistics exist. A caller can also apply a stricter limit per read by inspecting `correctedBits`.
 
 ## Spare-bit analysis
@@ -617,7 +617,7 @@ A random 63-bit word lies within distance m of some codeword with probability 2^
 
 **Decision: Spare_Bit_Option_B, approved by the user.** The decoder ignores the Spare_Field, and Spare_Bit_Option_A will not be implemented. The tables below are kept as the record of why.
 
-**Table status: preliminary, to be confirmed by the Property_Test_Suite.** The numbers come from the throwaway prototype (outside the repo). It uses the Requirement 7 and 8 draw procedures from Data Models (D6) and the Genuine_Read procedure below. Max_Correctable_Errors is 4 throughout. Option A is never implemented in the codec. Each trial calls `decode` once: the Option B result is that call's result, and the Option A result is `null` if the trial's Spare_Field is 1 and otherwise the same result (Requirement 15.1). The Option B columns equal the m = 4 columns of the Correction_Limit_Comparison, because the draws are the same. After the Property_Test_Suite runs, these tables are replaced with the values from its output (Requirement 15.3).
+**Table status: measured by the Property_Test_Suite** (`message.spare.test.ts`, tests `spare-bit analysis m=4` and `genuine-read p=0.01/0.03/0.05`). Every count printed by the suite equals the earlier prototype count, so the table values are unchanged; the recommendation below cites these measured values. The suite uses the Requirement 7 and 8 draw procedures from Data Models (D6) and the Genuine_Read procedure below. Max_Correctable_Errors is 4 throughout. Option A is never implemented in the codec. Each trial calls `decode` once: the Option B result is that call's result, and the Option A result is `null` if the trial's Spare_Field is 1 and otherwise the same result (Requirement 15.1). The Option B columns equal the m = 4 columns of the Correction_Limit_Comparison, because the draws are the same.
 
 ### Genuine_Read draw procedure (Requirement 15.8)
 
@@ -640,7 +640,7 @@ Seed 0x2545F491, 25,000 trials per k, 175,000 in total (100,000 with k ≥ 8), m
 | 16 | 25,000 | 0 / 24,998 / 2 | 8.0 × 10⁻⁵ | 0 / 24,997 / 3 | 1.2 × 10⁻⁴ |
 | 32 | 25,000 | 0 / 24,997 / 3 | 1.2 × 10⁻⁴ | 0 / 24,993 / 7 | 2.8 × 10⁻⁴ |
 | k ≥ 8 | 100,000 | 0 / 99,977 / 23 | 2.3 × 10⁻⁴ | 0 / 99,971 / 29 | 2.9 × 10⁻⁴ |
-| all | 175,000 | 0 / 174,964 / 36 | 2.1 × 10⁻⁴ | 2,017 / 172,940 / 43 | 2.5 × 10⁻⁴ |
+| all | 175,000 | 0 / 174,964 / 36 | 2.06 × 10⁻⁴ | 2,017 / 172,940 / 43 | 2.46 × 10⁻⁴ |
 
 Option A removes only the False_Accepts whose trial flipped index 63, which happens with probability k/64. That is why the reduction grows with k: none at k = 8, about half at k = 32.
 

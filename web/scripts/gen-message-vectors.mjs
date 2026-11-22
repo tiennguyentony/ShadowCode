@@ -9,6 +9,7 @@
 //
 // Usage (from /web): node scripts/gen-message-vectors.mjs [--check]
 
+import fs from 'node:fs'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -320,20 +321,177 @@ export function computeVectors() {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point (output, write mode and --check are added in task 4.3)
+// Deterministic emitter (Requirement 14.6): fixed key order, one vector per
+// line, LF endings, no timestamps, paths or random values.
 // ---------------------------------------------------------------------------
 
+const BEGIN_MARKER = '<!-- tilemark-test-vectors:begin -->'
+const END_MARKER = '<!-- tilemark-test-vectors:end -->'
+const DOC_DISPLAY_PATH = 'docs/message-format.md'
+
+function jsonExpected(e) {
+  return e === null ? 'null' : `{ "id": ${e.id}, "correctedBits": ${e.correctedBits} }`
+}
+
+function jsonClean(v) {
+  return (
+    `{ "id": ${v.id}, "idHex": "${v.idHex}", "crcHex": "${v.crcHex}", "parityHex": "${v.parityHex}", ` +
+    `"bits": "${v.bits}", "expected": ${jsonExpected(v.expected)} }`
+  )
+}
+
+function jsonCorrupted(v) {
+  return (
+    `{ "originalId": ${v.originalId}, "originalIdHex": "${v.originalIdHex}", ` +
+    `"flipped": [${v.flipped.join(', ')}], "bits": "${v.bits}", "expected": ${jsonExpected(v.expected)} }`
+  )
+}
+
+function formatExpected(e) {
+  return e === null ? '`null`' : `\`{ id: ${e.id}, correctedBits: ${e.correctedBits} }\``
+}
+
+/** The full Vector_Block content (between the marker lines), ending with LF. */
+export function renderBlock(vectors) {
+  const lines = []
+  lines.push('### Clean test vectors', '')
+  lines.push('| Product_ID (dec) | Hex | CRC_Field | Parity_Field | Message bits 0–63 | Expected |')
+  lines.push('|---|---|---|---|---|---|')
+  for (const v of vectors.clean) {
+    lines.push(
+      `| ${v.id} | ${v.idHex} | ${v.crcHex} | ${v.parityHex} | \`${v.bits}\` | ${formatExpected(v.expected)} |`,
+    )
+  }
+  lines.push('', '### Corrupted test vectors', '')
+  lines.push('| Original ID (dec) | Hex | Flipped indices | Received Message bits 0–63 | Expected |')
+  lines.push('|---|---|---|---|---|')
+  for (const v of vectors.corrupted) {
+    lines.push(
+      `| ${v.originalId} | ${v.originalIdHex} | ${v.flipped.join(', ')} | \`${v.bits}\` | ${formatExpected(v.expected)} |`,
+    )
+  }
+  lines.push('', '```json tilemark-test-vectors', '{')
+  lines.push(`  "formatVersion": ${vectors.formatVersion},`)
+  lines.push('  "clean": [')
+  vectors.clean.forEach((v, i) => lines.push(`    ${jsonClean(v)}${i < vectors.clean.length - 1 ? ',' : ''}`))
+  lines.push('  ],')
+  lines.push('  "corrupted": [')
+  vectors.corrupted.forEach((v, i) =>
+    lines.push(`    ${jsonCorrupted(v)}${i < vectors.corrupted.length - 1 ? ',' : ''}`),
+  )
+  lines.push('  ]')
+  lines.push('}', '```')
+  return lines.join('\n') + '\n'
+}
+
+// ---------------------------------------------------------------------------
+// Document handling
+// ---------------------------------------------------------------------------
+
+class UsageError extends Error {
+  constructor(message, exitCode = 2) {
+    super(message)
+    this.exitCode = exitCode
+  }
+}
+
+/**
+ * Locate the Vector_Block. Returns byte offsets [start, end) of the content
+ * strictly between the end of the begin-marker line and the start of the
+ * end-marker line.
+ */
+export function locateBlock(text) {
+  const lineStarts = [0]
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') lineStarts.push(i + 1)
+  const begins = []
+  const ends = []
+  for (let n = 0; n < lineStarts.length; n++) {
+    const s = lineStarts[n]
+    const e = n + 1 < lineStarts.length ? lineStarts[n + 1] : text.length
+    let line = text.slice(s, e)
+    if (line.endsWith('\n')) line = line.slice(0, -1)
+    if (line.endsWith('\r')) line = line.slice(0, -1)
+    if (line === BEGIN_MARKER) begins.push({ s, e })
+    else if (line === END_MARKER) ends.push({ s, e })
+  }
+  if (begins.length === 0 || ends.length === 0) throw new UsageError('no Vector_Block found')
+  if (begins.length > 1 || ends.length > 1) {
+    throw new UsageError(`expected exactly one Vector_Block, found ${Math.max(begins.length, ends.length)}`)
+  }
+  if (ends[0].s < begins[0].e) throw new UsageError('expected exactly one Vector_Block, found 0')
+  return { start: begins[0].e, end: ends[0].s }
+}
+
+function firstDifference(existing, computed, vectors) {
+  const m = /```json tilemark-test-vectors\n([\s\S]*?)\n```/.exec(existing)
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[1])
+      for (const [kind, key] of [
+        ['clean', 'id'],
+        ['corrupted', 'originalId'],
+      ]) {
+        const want = vectors[kind]
+        const have = Array.isArray(parsed[kind]) ? parsed[kind] : []
+        for (let i = 0; i < want.length; i++) {
+          if (JSON.stringify(have[i]) !== JSON.stringify(want[i])) {
+            return `first differing vector: ${kind}[${i}] (id 0x${hex(want[i][key], 8)})`
+          }
+        }
+      }
+    } catch {
+      // fall through to the line report
+    }
+  }
+  const a = existing.split('\n')
+  const b = computed.split('\n')
+  let line = 0
+  while (line < Math.max(a.length, b.length) && a[line] === b[line]) line++
+  return `difference lies outside every Test_Vector; first differing line ${line + 1} of the Vector_Block`
+}
+
 function main() {
+  const args = process.argv.slice(2)
   try {
-    computeVectors()
+    if (args.length > 1 || (args.length === 1 && args[0] !== '--check')) {
+      throw new UsageError(`unknown argument: ${args.find((a) => a !== '--check') ?? args[1]}`)
+    }
+    const checkMode = args.length === 1
+
+    const vectors = computeVectors()
+    const block = renderBlock(vectors)
+
+    const docPath = fileURLToPath(new URL('../../docs/message-format.md', import.meta.url))
+    let text
+    try {
+      text = fs.readFileSync(docPath, 'utf8')
+    } catch {
+      throw new UsageError(`Format_Document not found: ${DOC_DISPLAY_PATH}`)
+    }
+    const { start, end } = locateBlock(text)
+    const existing = text.slice(start, end)
+
+    if (checkMode) {
+      const normalized = existing.replace(/\r\n/g, '\n')
+      if (normalized === block) {
+        process.stdout.write('Vector_Block matches the generator output\n')
+        process.exit(0)
+      }
+      process.stderr.write(`Vector_Block differs from the generator output\n${firstDifference(normalized, block, vectors)}\n`)
+      process.exit(1)
+    }
+
+    const updated = text.slice(0, start) + block + text.slice(end)
+    if (updated !== text) fs.writeFileSync(docPath, updated, 'utf8')
+    process.stdout.write(`wrote ${vectors.clean.length} clean and ${vectors.corrupted.length} corrupted vectors to ${DOC_DISPLAY_PATH}\n`)
+    process.exit(0)
   } catch (err) {
-    if (err instanceof SelfCheckError) {
+    if (err instanceof SelfCheckError || err instanceof UsageError) {
       process.stderr.write(`${err.message}\n`)
       process.exit(err.exitCode)
     }
     throw err
   }
-  process.exit(0)
 }
 
 const invokedDirectly =

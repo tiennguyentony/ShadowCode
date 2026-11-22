@@ -20,5 +20,7 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* Codec tests run in Node under Vitest and use node: built-ins; the browser build does not type-check them. */
+  "exclude": ["src/**/__tests__"]
 }

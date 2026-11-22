@@ -149,6 +149,41 @@ The test vectors below are written by the generator script `/web/scripts/gen-mes
 Bit strings list Message indices 0 to 63, left to right. Every expected result is for the default `maxCorrectableErrors` of 4.
 
 <!-- tilemark-test-vectors:begin -->
+### Clean test vectors
+
+| Product_ID (dec) | Hex | CRC_Field | Parity_Field | Message bits 0–63 | Expected |
+|---|---|---|---|---|---|
+| 0 | 0x00000000 | 0x7F | 0x7C7BA4 | `0000000000000000000000000000000011111110111110001111011101001000` | `{ id: 0, correctedBits: 0 }` |
+| 1 | 0x00000001 | 0x76 | 0x96765B | `0000000000000000000000000000000111101101001011001110110010110110` | `{ id: 1, correctedBits: 0 }` |
+| 305419896 | 0x12345678 | 0x7B | 0x41EDEF | `0001001000110100010101100111100011110110100000111101101111011110` | `{ id: 305419896, correctedBits: 0 }` |
+| 2147483648 | 0x80000000 | 0x64 | 0x9425C4 | `1000000000000000000000000000000011001001001010000100101110001000` | `{ id: 2147483648, correctedBits: 0 }` |
+| 3735928559 | 0xDEADBEEF | 0x13 | 0xA772A1 | `1101111010101101101111101110111100100111010011101110010101000010` | `{ id: 3735928559, correctedBits: 0 }` |
+| 4294967295 | 0xFFFFFFFF | 0x6A | 0x23099C | `1111111111111111111111111111111111010100010001100001001100111000` | `{ id: 4294967295, correctedBits: 0 }` |
+
+### Corrupted test vectors
+
+| Original ID (dec) | Hex | Flipped indices | Received Message bits 0–63 | Expected |
+|---|---|---|---|---|
+| 305419896 | 0x12345678 | 3, 17, 35, 58 | `0000001000110100000101100111100011100110100000111101101111111110` | `{ id: 305419896, correctedBits: 4 }` |
+| 3735928559 | 0xDEADBEEF | 0, 9, 21, 33, 44, 52, 60, 63 | `0101111011101101101110101110111101100111010001101110110101001011` | `null` |
+
+```json tilemark-test-vectors
+{
+  "formatVersion": 1,
+  "clean": [
+    { "id": 0, "idHex": "0x00000000", "crcHex": "0x7F", "parityHex": "0x7C7BA4", "bits": "0000000000000000000000000000000011111110111110001111011101001000", "expected": { "id": 0, "correctedBits": 0 } },
+    { "id": 1, "idHex": "0x00000001", "crcHex": "0x76", "parityHex": "0x96765B", "bits": "0000000000000000000000000000000111101101001011001110110010110110", "expected": { "id": 1, "correctedBits": 0 } },
+    { "id": 305419896, "idHex": "0x12345678", "crcHex": "0x7B", "parityHex": "0x41EDEF", "bits": "0001001000110100010101100111100011110110100000111101101111011110", "expected": { "id": 305419896, "correctedBits": 0 } },
+    { "id": 2147483648, "idHex": "0x80000000", "crcHex": "0x64", "parityHex": "0x9425C4", "bits": "1000000000000000000000000000000011001001001010000100101110001000", "expected": { "id": 2147483648, "correctedBits": 0 } },
+    { "id": 3735928559, "idHex": "0xDEADBEEF", "crcHex": "0x13", "parityHex": "0xA772A1", "bits": "1101111010101101101111101110111100100111010011101110010101000010", "expected": { "id": 3735928559, "correctedBits": 0 } },
+    { "id": 4294967295, "idHex": "0xFFFFFFFF", "crcHex": "0x6A", "parityHex": "0x23099C", "bits": "1111111111111111111111111111111111010100010001100001001100111000", "expected": { "id": 4294967295, "correctedBits": 0 } }
+  ],
+  "corrupted": [
+    { "originalId": 305419896, "originalIdHex": "0x12345678", "flipped": [3, 17, 35, 58], "bits": "0000001000110100000101100111100011100110100000111101101111111110", "expected": { "id": 305419896, "correctedBits": 4 } },
+    { "originalId": 3735928559, "originalIdHex": "0xDEADBEEF", "flipped": [0, 9, 21, 33, 44, 52, 60, 63], "bits": "0101111011101101101110101110111101100111010001101110110101001011", "expected": null }
+  ]
+}
+```
 <!-- tilemark-test-vectors:end -->
 
 ## Residual risk
@@ -159,10 +194,10 @@ Measured values, from the codec test suite at `maxCorrectableErrors` = 4:
 
 | Measurement | Measured value | Pass bound |
 |---|---|---|
-| False_Accept_Rate, combined trials with k ≥ 8 flipped bits | not yet measured | at most 1 × 10⁻³ |
-| Random_Input_Acceptance_Rate (non-null results on uniformly random 64-bit input) | not yet measured | at most 0.1% |
+| False_Accept_Rate, combined trials with k ≥ 8 flipped bits | 2.9 × 10⁻⁴ (29 False_Accepts in 100,000 trials: k = 8, 12, 16, 32 at 25,000 each; mulberry32 seed 0x2545F491) | at most 1 × 10⁻³ |
+| Random_Input_Acceptance_Rate (non-null results on uniformly random 64-bit input) | 0.031% (31 non-null in 100,000 trials; mulberry32 seed 0x2545F491) | at most 0.1% |
 
-Each measured value will be given with its count, trial count, and random seed, copied from the test output.
+Both values are copied from the output of `web/src/codec/__tests__/message.measure.test.ts` (tests `false-accept m=4` and `random-input m=4`). Both are within their bounds.
 
 These are single-decode rates: they apply to one decode attempt. The scanner's Confirmation_Count N (obligation (b) below) is applied on top of them.
 
