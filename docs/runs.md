@@ -9,10 +9,68 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 |---|---|
 | Penalty-only run (laptop) | **Resumed** on 2026-11-21 from its step 10,000 checkpoint. It had stopped itself there on a limit that could not tell the corner patch from a mark that follows the image. The limit is now on the fixed-place measure (4.0, on 256 images); a mark that follows the image is accepted. See "Penalty-only run". |
 | Long run (main reader, flattened, laptop) | **Cancelled** on 2026-11-21 at about step 26,500 of 140,000. It read well (bit accuracy 0.95 to 0.96) but had put the mark into one bright patch at the tile corner. Last checkpoint: step 26,000, kept as the fallback. See "Long run" and "Corner patch". |
-| Spread run (RunPod) | **Not started.** `configs/runpod_spread.yaml`: the long run's settings with the two options against the corner patch on. Checked on the CPU only. See "Corner patch". |
+| Spread run (RunPod) | **Being started** on 2026-11-21, alongside the penalty-only run, from commit `bf9c7a0`. `configs/runpod_spread.yaml`: the long run's settings with the two options against the corner patch on, from step 0. The options were checked on the CPU only. See "Spread run (RunPod)". |
 | Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
 | Direct reader | **Dropped for the gate.** Every smoke test with rotation ends at chance; no pod run was made. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
+
+## Spread run (RunPod)
+
+The long run's settings with `spread.peak_penalty` and `spread.hide` both on
+(`training/configs/runpod_spread.yaml`), from step 0, on a RunPod pod. It
+runs at the same time as the laptop's penalty-only run and shares nothing
+with it. Commands: `training/RUNPOD.md`.
+
+| | |
+|---|---|
+| Commit | `bf9c7a0` on `training/pipeline` (the laptop run's code is the same commit) |
+| Options | penalty on (weight 4), hiding on (up to 50 percent of the reader's patch) |
+| Stops | fixed place above 4 on 256 fixed images, at any sample sheet (exit code 4); bit accuracy under 0.75 after 45 minutes (3); PSNR under 14 dB at step 15,000 (5) |
+| Sample sheets and table rows | every 2,000 steps |
+| GPU | to fill in |
+| Price per hour | to fill in |
+| Started | to fill in |
+
+The commit after `bf9c7a0` adds a fourth stop to the config: 24 hours of
+training (`budget.max_hours`, exit code 6), the only one that limits time. A
+pod started from `bf9c7a0` itself does not have it.
+
+The table has the same columns as the penalty-only run's, and "The spread
+check" under that heading says what each one is. Three things differ when
+the two tables are read side by side:
+
+- **Bit accuracy is read with regions of the patch blanked** in this run, so
+  it runs below the penalty-only run's at the same step. That is expected
+  and is not the mark reading worse.
+- **This run starts at step 0.** The penalty-only run starts at step 6,000,
+  from a checkpoint trained without either option. Up to the step where the
+  image loss switches on, the mark covers the whole tile at full strength
+  and the rows say nothing yet.
+- **Time is the pod's clock.** That is UTC, 8 hours ahead of the laptop
+  rows, unless `TZ` was set on the pod before the run started.
+
+The 256 images are picked by the same seeded shuffle of the sorted file
+list, so they are the same images as on the laptop if the pod holds the
+same 16,000 files. That was not checked on the pod.
+
+<!-- spread-run:start -->
+| Time | Step | Fixed place | Strongest spot | Energy in one 96 px square | Energy on the busier half | PSNR, dB | Bit accuracy |
+|---|---|---|---|---|---|---|---|
+<!-- spread-run:end -->
+
+**How the rows get here.** The pod does not write this file. It writes
+`/workspace/runs/spread/logs/spread.csv`, one row per sample sheet. Copy
+that file to `training/runs/spread/spread.csv` on the laptop
+(`training/RUNPOD.md`, section 6, has the two ways to copy), then in
+`training`:
+
+```bash
+python -c "from runlog import SpreadLog; SpreadLog('runs/spread', {'file': '../docs/runs.md', 'marker': 'spread-run'}).update_markdown()"
+```
+
+It rebuilds the table above from the whole file, with the code the
+penalty-only run uses for its own table, so it can be run again after every
+copy. It loads no model and does not use the GPU.
 
 ## Penalty-only run
 
@@ -91,6 +149,12 @@ to 256 images; the 16-image numbers of the time are in
 | 2026-11-21 15:35 | 6,000 | 1.02 | 1.12 | 6.7 percent | 50 percent | 16.96 (fixed images) | n/a |
 | 2026-11-21 15:52 | 8,000 | 1.05 | 1.43 | 8.2 percent | 53 percent | 24.04 | 0.9638 |
 | 2026-11-21 16:08 | 10,000 | 1.59 | 3.61 | 19.2 percent | 76 percent | 26.51 | 0.9552 |
+| 2026-11-21 16:43 | 12,000 | 1.58 | 3.65 | 19.7 percent | 79 percent | 27.34 | 0.9511 |
+| 2026-11-21 16:59 | 14,000 | 1.64 | 2.75 | 15.6 percent | 75 percent | 27.52 | 0.9441 |
+| 2026-11-21 17:15 | 16,000 | 1.61 | 2.81 | 15.9 percent | 75 percent | 27.67 | 0.9313 |
+| 2026-11-21 17:33 | 18,000 | 1.79 | 2.86 | 16.2 percent | 74 percent | 27.95 | 0.9158 |
+| 2026-11-21 17:51 | 20,000 | 2.01 | 3.26 | 18.2 percent | 76 percent | 28.07 | 0.8939 |
+| 2026-11-21 18:10 | 22,000 | 1.73 | 2.71 | 15.6 percent | 72 percent | 28.08 | 0.8953 |
 <!-- penalty-run:end -->
 
 **First stop, at step 10,000.** The run was first started with the limit on
@@ -121,6 +185,29 @@ limit was moved to the fixed-place measure. Nothing else changed: same
 config, same checkpoint folder, same clock (33 minutes of training before
 the resume, so the 45-minute learning check comes about 12 minutes in). The
 rows from step 12,000 on are from the resumed run.
+
+**Up to step 20,000: a mild drift to the tile edge and corner.** The fixed
+place number sat at 1.6 from step 10,000 to 16,000, then rose to 1.79 and
+2.01. Measured on the CPU from the checkpoints (256 images): the averaged
+map's energy in the band within 24 px of a tile edge (27 percent of the
+tile) and in the corner region (2 percent), as multiples of the tile average.
+
+| Checkpoint | Edge band | Corner region | Strongest window |
+|---|---|---|---|
+| penalty run, step 10,000 | 0.92 | 1.01 | 1.64, in the middle of the image |
+| step 14,000 | 1.09 | 1.63 | 1.81, on the tile corner |
+| step 16,000 | 1.11 | 1.60 | 1.77, on the tile corner |
+| step 18,000 | 1.18 | 1.77 | 1.97, on the tile corner |
+| step 20,000 | 1.25 | 1.99 | 2.22, on the tile corner |
+| unfixed run, step 26,000 | 2.84 | 11.77 | 22.39 |
+
+So the corner is forming here too, slowly: twice the average at step 20,000
+against twelve times in the unfixed run. In the step 20,000 sheet one image
+that is busy all over has its mark as a frame along the tile edges. Training
+bit accuracy fell over the same stretch, from 0.955 at step 10,000 to 0.894
+at 20,000 (unfixed run: 0.953 at 20,000), while PSNR rose to 28.1 dB (unfixed:
+26.1). The image loss reached full weight near step 19,000 and the
+simulation full strength at 20,000, so from here neither pushes harder.
 
 ### The fixed-place baseline and the limit of 4
 
@@ -367,7 +454,7 @@ The run saves a checkpoint and exits by itself in three cases:
 | Stop | When | Exit code |
 |---|---|---|
 | Learning check (`early_stop`) | bit accuracy under 0.75 after 45 minutes of training | 3 |
-| Mark piled up (`spread.stop_above: 3.0`) | strongest spot above 3 on the 16 fixed images, at any sample sheet | 4 |
+| Mark piled up (`spread.stop_above: 4.0`) | fixed place above 4 on the 256 fixed images, at any sample sheet (first written here as strongest spot above 3 on 16 images; changed in commit `bf9c7a0`) | 4 |
 | Image loss never switched on (`image_loss_check`) | mean PSNR still below 14 dB at step 15,000 | 5 |
 
 The last two are config switches, off by default. The first of them covers

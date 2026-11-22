@@ -188,9 +188,10 @@ python smoke_test.py spread.peak_penalty.enabled=true spread.hide.enabled=true
 long run with both switches on and paths on a RunPod network volume; see
 `RUNPOD.md`. It turns on `early_stop`: 45 minutes into the run, if mean bit
 accuracy is below 0.75, the run saves a checkpoint and exits with code 3. It
-also turns on the two other stops in the table below: the mark piling up
-(`spread.stop_above`, exit code 4) and the image loss never switching on
-(`image_loss_check`, exit code 5).
+also turns on the three other stops in the table below: the mark piling up
+(`spread.stop_above`, exit code 4), the image loss never switching on
+(`image_loss_check`, exit code 5) and 24 hours of training
+(`budget.max_hours`, exit code 6).
 
 **Direct reader.** `configs/runpod_direct.yaml` trains with
 `train.reader_input: direct`. Dropped for the gate: every test with rotation
@@ -256,6 +257,7 @@ The parts that need a decision:
 | `early_stop` | The learning check. Off by default, on in the two `runpod_` configs and `penalty.yaml`. |
 | `spread.stop_above` | Stop, with a checkpoint and exit code 4, when the spread check's fixed-place measure goes above this: a patch at the same place in every tile. `null` (off) by default; 4.0 in `penalty.yaml` and `runpod_spread.yaml`. |
 | `image_loss_check` | Stop, with a checkpoint and exit code 5, if the mean PSNR is still below `min_psnr_db` (14) at `at_step` (15,000): the image loss never switched on. Off by default, on in `runpod_spread.yaml`. |
+| `budget` | A limit on the whole run, summed over restarts: stop, with a checkpoint and exit code 6, at `max_hours` of training or at `max_cost_usd` on the cost of the report line (needs `--price-per-hour`). A run stopped this way does not resume until the limit is raised or set to `null`. Both `null` (off) by default; `max_hours: 24` in `runpod_spread.yaml`. It limits what `train.py` counts, not the bill. |
 | `schedule.image_loss` | Image-loss weight is 0 until bit accuracy passes `acc_threshold`, then ramps over `ramp_steps`. |
 | `schedule.sim_strength` | Simulation strength ramps from 0 to `max_strength` over `ramp_steps`. |
 | `simulation.*` | One range per effect, each given at strength 1. `simulation.effects` switches single effects off. |

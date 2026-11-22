@@ -16,7 +16,7 @@ stopped by ``--max-minutes``, 3 stopped by the learning check
 (``early_stop``), 4 stopped because the mark piled up at a fixed place in the
 tile (``spread.stop_above``),
 5 stopped because the image loss never switched on (``image_loss_check``),
-130 interrupted.
+6 stopped at its limit on hours or cost (``budget``), 130 interrupted.
 
 With every sample sheet the run measures where the mark sits on 256 fixed
 dataset images (the spread check) and appends a row to ``<log.dir>/spread.csv``.
@@ -420,6 +420,7 @@ DIRECT_NOTICE = (
 EXIT_NOT_LEARNING = 3
 EXIT_PILED_UP = 4
 EXIT_IMAGE_LOSS_OFF = 5
+EXIT_OVER_BUDGET = 6
 EXIT_INTERRUPTED = 130
 
 
@@ -475,6 +476,10 @@ def main() -> int:
     image_check_enabled = bool(image_check.get("enabled", False))
     image_check_step = int(image_check.get("at_step", 15000))
     image_check_min_psnr = float(image_check.get("min_psnr_db", 14.0))
+    budget = cfg.get("budget") or {}
+    max_hours, max_cost = budget.get("max_hours"), budget.get("max_cost_usd")
+    if max_cost is not None and args.price_per_hour is None:
+        parser.error("budget.max_cost_usd needs --price-per-hour: without a price there is no cost to limit")
     report_every = int(log_cfg.get("report_every", 1000))
     sheet_every = int(log_cfg.get("sheet_every", log_cfg["image_every"]))
 
@@ -498,6 +503,23 @@ def main() -> int:
             "to start over add --fresh."
         )
         return EXIT_IMAGE_LOSS_OFF
+
+    def over_budget() -> str | None:
+        """What the run has used, if that is at or past a limit in ``budget``; else None."""
+        if max_hours is not None and clock.elapsed_seconds >= float(max_hours) * 3600.0:
+            return f"{clock.elapsed_seconds / 3600.0:.2f} h of training, the limit is {float(max_hours):g} h (budget.max_hours)"
+        if max_cost is not None and clock.cost_usd >= float(max_cost):
+            return f"${clock.cost_usd:.2f} at the price given, the limit is ${float(max_cost):g} (budget.max_cost_usd)"
+        return None
+
+    spent = over_budget()
+    if spent:
+        print(
+            f"This run has reached its limit: {spent}.\n"
+            "It will not resume at this limit. To continue, raise it (budget.max_hours=..., budget.max_cost_usd=...) "
+            "or switch it off (=null); to start over add --fresh."
+        )
+        return EXIT_OVER_BUDGET
 
     torch.manual_seed(cfg["train"]["seed"])
     device = pick_device(cfg["train"]["device"])
@@ -547,6 +569,10 @@ def main() -> int:
             f"image-loss check: the run stops if mean PSNR is still below {image_check_min_psnr:g} dB "
             f"at step {image_check_step}"
         )
+    if max_hours is not None or max_cost is not None:
+        limits = [f"{float(max_hours):g} h of training"] if max_hours is not None else []
+        limits += [f"${float(max_cost):g} at ${args.price_per_hour:g} per hour"] if max_cost is not None else []
+        print(f"budget: the run stops, with a checkpoint, at {' or '.join(limits)}, summed over restarts")
     image_loss_off = False
     check_pending = check_enabled and clock.learning_check is None
     if check_pending:
@@ -685,6 +711,9 @@ def main() -> int:
                 )
                 if image_loss_off:
                     break
+            spent = over_budget()
+            if spent:
+                break
             if max_seconds is not None and time.time() - t0 >= max_seconds:
                 out_of_time = True
                 break
@@ -730,6 +759,14 @@ def main() -> int:
             "The same command would resume and stop again at the next sample sheet unless the limit is changed."
         )
         return EXIT_PILED_UP
+    if spent:
+        checkpoint_now()
+        print(
+            f"Stopped: the run reached its limit at step {trainer.step}: {spent}. {clock.cost_text()}.\n"
+            "The same command will not resume at this limit; raise it or set it to null to continue.\n"
+            "The machine is still running and still billed; see RUNPOD.md for how to stop it."
+        )
+        return EXIT_OVER_BUDGET
     if stop.signal_name is not None:
         checkpoint_now()
         print(f"stopped by {stop.signal_name} at step {trainer.step}; the same command resumes from here")

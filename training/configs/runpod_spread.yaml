@@ -55,3 +55,6 @@ image_loss_check:              # at step 15,000: save and exit if PSNR is still 
   enabled: true
   at_step: 15000
   min_psnr_db: 14.0
+
+budget:                        # save and exit (exit code 6) once the run has trained this long
+  max_hours: 24

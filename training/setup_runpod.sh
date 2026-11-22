@@ -116,6 +116,13 @@ image_check = cfg.get("image_loss_check") or {}
 if image_check.get("enabled"):
     print(f"  It also stops if PSNR is still below {image_check['min_psnr_db']:g} dB at step {image_check['at_step']}:")
     print("  the image loss never switched on.")
+budget = cfg.get("budget") or {}
+limits = [f"{budget['max_hours']:g} hours of training"] if budget.get("max_hours") is not None else []
+limits += [f"${budget['max_cost_usd']:g} (needs --price-per-hour)"] if budget.get("max_cost_usd") is not None else []
+if limits:
+    print(f"  It also stops at {' or '.join(limits)}, summed over restarts.")
+else:
+    print("  Nothing in this config limits hours or cost: the run goes on to its last step.")
 PY
 cat <<EOF
 

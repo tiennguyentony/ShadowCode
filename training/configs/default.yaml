@@ -188,3 +188,13 @@ image_loss_check:              # one look at at_step: did the image loss ever sw
   # log.report_every steps is below this. The PSNR sits near 12 dB while the
   # image loss is off and was past 20 dB 3,000 steps after it switched on.
   min_psnr_db: 14.0
+
+budget:                        # a limit on the whole run, summed over restarts. Both off by default.
+  # Stop, with a checkpoint and exit code 6, once train.py has spent this many
+  # hours on the run: the hours of the report line.
+  max_hours: null
+  # The same on the cost of the report line: --price-per-hour times those
+  # hours. Needs --price-per-hour. It is train.py's estimate of the GPU bill,
+  # not the bill: setup, downloads, a pod idling after the run and storage
+  # are not in it.
+  max_cost_usd: null
