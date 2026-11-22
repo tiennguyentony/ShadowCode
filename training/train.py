@@ -54,7 +54,7 @@ from simulate import simulate, wrap_surface
 from spread import (
     busy_windows,
     concentration,
-    fixed_batch,
+    fixed_batch_for,
     hide_regions,
     hide_settings,
     peak_penalty,
@@ -645,7 +645,7 @@ def main() -> int:
     piled_up: dict | None = None
     if sheet_every and check_images > 0:
         # Kept on the CPU; the check moves them to the device a few at a time.
-        fixed_tiles, fixed_bits = fixed_batch(cfg["data"]["train_dir"], check_images)
+        fixed_tiles, fixed_bits = fixed_batch_for(cfg, check_images)
         fixed_busy = busy_windows(fixed_tiles, cfg)
         spread_log = SpreadLog(log_cfg["dir"], log_cfg.get("spread_markdown"), fresh=args.fresh)
         if not spread_log.has_step(trainer.step):

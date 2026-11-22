@@ -1,0 +1,50 @@
+# The label run on generated label art instead of label photos, on the
+# laptop GPU, from step 0:
+#
+#   python train.py --config configs/labels_generated.yaml --max-minutes 60 --keep-awake
+#
+# configs/labels.yaml with these changes:
+#
+# - Tiles come from labelgen.py (data.source: generated_labels): made-up
+#   labels drawn from seeds 1,000,000 to 1,999,999, sharp, no photo noise.
+#   About 1 label in 6 is mostly flat colour. See docs/runs.md,
+#   "Generated labels".
+# - Held out: acceptance.py measures on seeds 0 to 255, the spread check on
+#   seeds 256 to 511. Training never draws a seed below 1,000,000.
+# - center_fraction 1.0 (it does not apply to generated tiles; set so the
+#   config does not suggest otherwise), no photo credit.
+# - 4 loader processes: on this laptop 4 make 44.7 tiles per second and 8
+#   were slower than 4 (docs/runs.md). On a pod, benchmark first
+#   (python labelgen.py --bench 300 --workers 1 4 8) and take the fastest.
+# - Both options against a mark piled up in one spot: the peak penalty (as in
+#   labels.yaml) and hiding regions of the reader's patch (spread.hide), on.
+#
+# Kept from labels.yaml: the image-loss weight follows bit accuracy (floor
+# 0.95), stop if the fixed-place measure goes above 4.0, the learning check
+# at 45 minutes (bit accuracy at least 0.75, read with regions blanked).
+#
+# Spread-check and PSNR numbers from this run are measured on generated
+# labels and are not comparable with the photo runs'.
+base: labels.yaml
+
+data:
+  source: generated_labels
+  center_fraction: 1.0
+  holdout: 0
+  credit: null
+  num_workers: 4
+
+spread:
+  peak_penalty:
+    enabled: true
+  hide:
+    enabled: true
+
+log:
+  dir: runs/labels_generated
+  spread_markdown:
+    file: ../docs/runs.md
+    marker: labels-generated-run
+
+checkpoint:
+  dir: checkpoints/labels_generated

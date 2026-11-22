@@ -8,7 +8,9 @@ named. Do not point it at the folder of a run that is still training: copy
 the checkpoint somewhere else first and name the copy.
 
 Measured on 256 label images that training never saw (``data.holdout``), each
-cut to one tile from the middle of the photo, with random bits that are the
+cut to one tile from the middle of the photo; with ``data.source:
+generated_labels``, on the tiles of labelgen.ACCEPTANCE_SEEDS (held-out seeds
+0 to 255) instead. Either way, with random bits that are the
 same every time. Both models in eval mode, the camera simulation at full
 strength, the reader given a flattened patch. One simulated shot per tile
 unless --views says more. For each strength of the mark (the ``alpha``
@@ -64,7 +66,7 @@ from torchvision import transforms
 from checkpoint import latest_checkpoint, load_checkpoint
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
-from data import CenterFraction, holdout_images, list_images, load_rgb
+from data import CenterFraction, data_source, generated_tiles, holdout_images, list_images, load_rgb
 from geometry import flatten_random_patch
 from simulate import simulate, wrap_surface
 from spread import busy_windows, local_energy, spread_report
@@ -361,10 +363,20 @@ def main() -> int:
     if cfg["train"]["reader_input"] != "flattened" or not cfg["simulation"]["enabled"]:
         print("acceptance needs train.reader_input: flattened and simulation.enabled: true")
         return 2
-    held_out = holdout_images(cfg["data"]["train_dir"], int(cfg["data"].get("holdout", 0)))
-    if len(held_out) < IMAGES:
-        print(f"acceptance needs {IMAGES} images kept back from training; data.holdout gives {len(held_out)}")
-        return 2
+    generated = data_source(cfg) == "generated_labels"
+    if generated:
+        from labelgen import ACCEPTANCE_SEEDS
+
+        seeds = ACCEPTANCE_SEEDS[:IMAGES]
+        names = [f"seed {seed}" for seed in seeds]
+        source_text = f"{IMAGES} held-out generated labels (labelgen.py seeds {seeds.start} to {seeds.stop - 1})"
+    else:
+        held_out = holdout_images(cfg["data"]["train_dir"], int(cfg["data"].get("holdout", 0)))
+        if len(held_out) < IMAGES:
+            print(f"acceptance needs {IMAGES} images kept back from training; data.holdout gives {len(held_out)}")
+            return 2
+        names = [path.name for path in held_out[:IMAGES]]
+        source_text = f"{IMAGES} held-out images from {cfg['data']['train_dir']}"
     path = Path(args.checkpoint) if args.checkpoint else latest_checkpoint(cfg["checkpoint"]["dir"])
     if path is None or not path.is_file():
         print(f"no checkpoint found ({args.checkpoint or cfg['checkpoint']['dir']})")
@@ -382,16 +394,19 @@ def main() -> int:
     directory.mkdir(parents=True, exist_ok=True)
     print(f"checkpoint {path}, step {step}, image-loss weight {trainer.image_loss_scale():.3f}, device {device}")
     print(
-        f"{IMAGES} held-out images from {cfg['data']['train_dir']}, simulation at strength "
+        f"{source_text}, simulation at strength "
         f"{float(cfg['schedule']['sim_strength']['max_strength']):g}, flattened reader input, "
         f"{args.views} simulated shot{'s' if args.views != 1 else ''} per tile; trained at alpha {trained_alpha:g}"
     )
 
-    files = held_out[:IMAGES]
-    tiles = tiles_from(files, float(cfg["data"].get("center_fraction", 1.0)))
+    if generated:
+        tiles = generated_tiles(seeds)
+    else:
+        tiles = tiles_from(held_out[:IMAGES], float(cfg["data"].get("center_fraction", 1.0)))
     bits = fixed_bits(len(tiles), SEED)
     rows = [measure(trainer, tiles, bits, alpha, args.views, SEED) for alpha in args.alphas]
-    report = [f"## Held-out label images ({len(tiles)})", "", table(rows)]
+    heading = "Held-out generated labels" if generated else "Held-out label images"
+    report = [f"## {heading} ({len(tiles)})", "", table(rows)]
     results = {"step": step, "checkpoint": str(path), "views": args.views, "trained_alpha": trained_alpha, "held_out": rows}
     if args.shots:
         shot_rows = multi_shot(trainer, tiles, bits, args.alphas, sorted(set(args.shots)), SEED)
@@ -412,11 +427,11 @@ def main() -> int:
     _, _, marked = read_tiles(trainer, tiles[chosen], bits[chosen], blind_alpha, 1, SEED)
     sections = [
         {
-            "title": "Label photos",
+            "title": "Generated labels" if generated else "Label photos",
             "originals": tiles[chosen],
             "marked": marked,
             "kinds": [kind for _, kind in picks],
-            "sources": [files[index].name for index, _ in picks],
+            "sources": [names[index] for index, _ in picks],
         }
     ]
 

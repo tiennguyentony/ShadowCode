@@ -50,6 +50,14 @@ MIN_CROP = 256          # smallest tile side in layout units: a 50 mm tile then 
 SUPERSAMPLE = 2         # drawn at this many times the tile size, then averaged down
 FLAT_SHARE = 1 / 6      # labels that are mostly flat colour
 
+# Seeds. Training draws only from TRAIN_SEEDS; HELDOUT_SEEDS are never trained
+# on. The two ranges do not overlap (smoke_test.py checks it). The sheets of
+# seeds 0 to 63 show held-out labels.
+HELDOUT_SEEDS = range(0, 100_000)
+TRAIN_SEEDS = range(1_000_000, 2_000_000)
+ACCEPTANCE_SEEDS = HELDOUT_SEEDS[:256]      # acceptance.py measures on these
+SPREAD_SEEDS = HELDOUT_SEEDS[256:512]       # the spread check's fixed tiles during training
+
 # (file, style). Styles: sans, serif, mono, script; "bold" in the name for weight.
 FONTS = {
     "sans": "DejaVuSans.ttf",

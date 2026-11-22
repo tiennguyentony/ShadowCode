@@ -42,11 +42,13 @@ prints the PSNR between marked and original tiles, and saves
 training it runs structure checks, among them that the two `spread` options
 measure what they claim and pass gradients, that the image-loss weight moves
 both ways with `follow_accuracy`, that `data.center_fraction` keeps crops in
-the middle, that photos load upright, and that held-out images stay out of
-training.
+the middle, that photos load upright, that held-out images stay out of
+training, and that a generated label seed always gives the same tile and
+the training and held-out seeds never meet.
 
 ```bash
 python smoke_test.py
+python smoke_test.py data.source=generated_labels   # the same on labelgen.py tiles
 ```
 
 It uses CUDA if present, then MPS, then CPU. About 45 s on an RTX 4070
@@ -117,6 +119,21 @@ phone writes is applied. Three more `data` settings, all off by default:
 - `data.holdout`: this many images are kept back from training, the same ones
   every time. `acceptance.py` measures on them.
 - `data.credit`: a line printed below every sheet of dataset photos.
+
+**Generated labels instead of photos.** `data.source: generated_labels`
+(default `folder`) trains on label art drawn by `labelgen.py`: made-up
+labels, one per seed, cut at a random zoom and drawn straight at the tile's
+scale, so they are sharp. Training uses seeds 1,000,000 to 1,999,999; seeds
+0 to 99,999 are held out, `acceptance.py` measures on 0 to 255 and the
+spread check uses 256 to 511. `train_dir`, `min_crop_scale`,
+`center_fraction` and `holdout` do not apply. `configs/labels_generated.yaml`
+is the label run on this source. `/docs/runs.md`, "Generated labels", has
+the flatness and speed measurements.
+
+```bash
+python labelgen.py --sheet outputs/labelgen_sheet.png --labels-sheet outputs/labelgen_labels_sheet.png
+python labelgen.py --bench 300 --workers 1 4 8     # tiles per second; pick data.num_workers from it
+```
 
 To look at what the models will be shown, 64 training crops on one sheet,
 with a list of the files beside it:
@@ -335,6 +352,7 @@ The parts that need a decision:
 | `camera_px_per_tile` | Camera pixels per printed tile, seen straight on: `[154, 340]`, from measurements on a Galaxy S23 Ultra. Every sample draws its own value. One number fixes it. `null` skips the loss-of-resolution step and the starting band uses `band.fallback_step`. |
 | `band.grating_step` | `auto`: the highest band whose finest stripes still get `band.min_camera_px_per_cycle` camera pixels per cycle at the low end of the range (see `band.py`). With 154 that is step 8, the top band: 16-51 cycles per tile, 3.01 pixels per cycle. One pixel lower and auto drops to step 6. `/docs/runs.md` has the check. |
 | `simulation.frame_px` | The simulated frame: a window onto the surface at 384 pixels per tile, not the camera stream. One number is a square; `[width, height]` gives any shape. |
+| `data.source` | `folder` (images in `data.train_dir`, the default) or `generated_labels` (`labelgen.py`). |
 | `data.train_dir` | The dataset path. |
 | `data.center_fraction` | Part of each image the random crop may draw from: this fraction of the width and of the height, centred. 1.0 (the whole image) by default; 0.6 in `labels.yaml`. |
 | `data.holdout` | Images kept back from training, picked by a fixed seeded shuffle, for `acceptance.py`. 0 by default; 256 in `labels.yaml`. |
@@ -369,7 +387,9 @@ band mid-run, resume stops with a message instead of loading mismatched weights.
 | `train.py` | Training step, schedules, logging, checkpoints, learning check |
 | `checkpoint.py` | Save, find newest, resume |
 | `runlog.py` | Run time and cost across restarts, `progress.csv`, `spread.csv` |
-| `data.py` | The image loader (upright loading, centre crop, holdout) and the crops preview |
+| `data.py` | The image loader (upright loading, centre crop, holdout), the generated-label dataset, and the crops preview |
+| `labelgen.py` | Generated label art: one made-up label per seed, its tile, the sheets and the speed benchmark |
+| `fonts/` | The fonts `labelgen.py` draws with, each beside its licence (`THIRD_PARTY.md`, "Fonts") |
 | `fetch_labels.py` | Downloads the label images (Open Food Facts) and writes their attribution file |
 | `fetch_dataset.py` | Downloads the earlier training images (Open Images) |
 | `acceptance.py` | Acceptance numbers on held-out labels and the blind comparison page |

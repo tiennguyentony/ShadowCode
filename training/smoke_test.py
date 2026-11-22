@@ -11,6 +11,7 @@ with original, marked and residual x10 side by side.
     python smoke_test.py                 # fastest device available
     python smoke_test.py --device cpu
     python smoke_test.py --config configs/smoke_blur.yaml band.grating_step=4
+    python smoke_test.py data.source=generated_labels    # on labelgen.py tiles
     pytest smoke_test.py -s
 """
 
@@ -325,6 +326,48 @@ def check_holdout() -> None:
     print("holdout checks passed: 5 of 12 images kept back, none of them in the training set, the same 5 every time")
 
 
+def check_generated_labels() -> None:
+    """labelgen.py: a seed always gives the same tile; training and held-out seeds never meet."""
+    import labelgen
+    from data import GeneratedLabelDataset, data_source, label_tile, make_dataset
+
+    for seed in (0, 7, 1_234_567):
+        first, second = labelgen.render_tile(seed), labelgen.render_tile(seed)
+        assert first.shape == (TILE_PX, TILE_PX, 3) and first.dtype == np.uint8, f"seed {seed}: shape {first.shape}"
+        assert np.array_equal(first, second), f"seed {seed} gave two different tiles"
+    assert not np.array_equal(labelgen.render_tile(0), labelgen.render_tile(1)), "seeds 0 and 1 gave the same tile"
+
+    train, held = labelgen.TRAIN_SEEDS, labelgen.HELDOUT_SEEDS
+    assert train.step == 1 and held.step == 1, "seed ranges must be contiguous"
+    assert max(train.start, held.start) >= min(train.stop, held.stop), f"training seeds {train} overlap held-out seeds {held}"
+    for name, seeds in (("acceptance", labelgen.ACCEPTANCE_SEEDS), ("spread check", labelgen.SPREAD_SEEDS)):
+        assert held.start <= seeds.start and seeds.stop <= held.stop and len(seeds) == 256, f"{name} seeds {seeds} are not 256 held-out seeds"
+    assert not set(labelgen.ACCEPTANCE_SEEDS) & set(labelgen.SPREAD_SEEDS), "acceptance and spread-check seeds overlap"
+
+    dataset = make_dataset({"data": {"source": "generated_labels"}})
+    assert isinstance(dataset, GeneratedLabelDataset) and dataset.seeds == train, "the generated source does not use the training seeds"
+    tile = dataset[0]
+    assert tile.shape == (3, TILE_PX, TILE_PX) and 0.0 <= float(tile.min()) and float(tile.max()) <= 1.0, "a generated tile is not (3, 384, 384) in [0,1]"
+    assert torch.equal(tile, label_tile(train.start)), "dataset item 0 is not the tile of the first training seed"
+    try:
+        GeneratedLabelDataset(range(held.stop - 10, held.stop + 10))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a training set reaching into the held-out seeds was accepted")
+    assert data_source({"data": {}}) == "folder", "a config without data.source no longer reads the folder"
+    try:
+        data_source({"data": {"source": "photos"}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown data.source was accepted")
+    print(
+        f"generated-label checks passed: the same seed gives the same tile; training seeds {train.start:,} to "
+        f"{train.stop - 1:,} and held-out seeds {held.start:,} to {held.stop - 1:,} do not overlap"
+    )
+
+
 def check_rotation_tag() -> None:
     """Photos load upright: the rotation tag a phone writes (EXIF orientation) is applied."""
     stored = np.zeros((20, 40, 3), dtype=np.uint8)  # 40 wide, 20 high as stored
@@ -412,6 +455,7 @@ def run_smoke(
         check_center_fraction()
         check_rotation_tag()
         check_holdout()
+        check_generated_labels()
         check_multi_shot()
 
         batches = infinite(loader)

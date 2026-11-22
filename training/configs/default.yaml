@@ -20,6 +20,12 @@ demo:
 camera_px_per_tile: [154, 340]
 
 data:
+  # Where training tiles come from:
+  #   folder            images in train_dir, cropped as set below (the behaviour before this key)
+  #   generated_labels  label art drawn by labelgen.py from its training seeds;
+  #                     train_dir, min_crop_scale, center_fraction and holdout do not
+  #                     apply, and the held-out seeds are labelgen.HELDOUT_SEEDS
+  source: folder
   # The dataset path. Any folder of images, searched recursively.
   # fetch_dataset.py downloads the chosen dataset (Open Images V7 validation,
   # see THIRD_PARTY.md):  python fetch_dataset.py --out data/open-images-v7-val

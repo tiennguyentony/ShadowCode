@@ -1,4 +1,8 @@
-"""Dataset: any folder of images, searched recursively."""
+"""Datasets: any folder of images, searched recursively, or generated label art.
+
+data.source picks one: "folder" (default) reads data.train_dir;
+"generated_labels" draws tiles with labelgen.py from its training seeds.
+"""
 
 from __future__ import annotations
 
@@ -143,15 +147,70 @@ class ImageFolderDataset(Dataset):
         return self.transform(self.load(index))
 
 
-def make_loader(cfg: dict, device: torch.device) -> DataLoader:
+SOURCES = ("folder", "generated_labels")
+
+
+def data_source(cfg: dict) -> str:
+    """data.source: "folder" (images from data.train_dir) or "generated_labels" (labelgen.py)."""
+    source = str(cfg["data"].get("source", "folder"))
+    if source not in SOURCES:
+        raise ValueError(f"data.source must be one of {', '.join(SOURCES)}, got {source!r}")
+    return source
+
+
+def label_tile(seed: int) -> torch.Tensor:
+    """Tile ``seed`` of labelgen.py as a float RGB tensor in [0,1], shape (3, TILE_PX, TILE_PX)."""
+    from labelgen import render_tile
+
+    return torch.from_numpy(render_tile(seed, TILE_PX).copy()).permute(2, 0, 1).float().div_(255.0)
+
+
+def generated_tiles(seeds) -> torch.Tensor:
+    """The tiles of ``seeds``, stacked: (N, 3, TILE_PX, TILE_PX)."""
+    return torch.stack([label_tile(int(seed)) for seed in seeds])
+
+
+class GeneratedLabelDataset(Dataset):
+    """Generated label tiles (labelgen.py): item i is the tile of seed ``seeds[i]``.
+
+    Each seed always gives the same tile (its label and its crop are drawn
+    from the seed), so an epoch is a fixed set of tiles in a new order. No
+    mirror: text on a label does not read backwards. ``data.min_crop_scale``,
+    ``center_fraction`` and ``holdout`` do not apply; the held-out seeds are
+    labelgen.HELDOUT_SEEDS, which never appear here.
+    """
+
+    def __init__(self, seeds: range | None = None):
+        from labelgen import HELDOUT_SEEDS, TRAIN_SEEDS
+
+        self.seeds = TRAIN_SEEDS if seeds is None else seeds
+        if max(self.seeds.start, HELDOUT_SEEDS.start) < min(self.seeds.stop, HELDOUT_SEEDS.stop):
+            raise ValueError(f"seeds {self.seeds} overlap the held-out seeds {HELDOUT_SEEDS}")
+
+    def __len__(self) -> int:
+        return len(self.seeds)
+
+    def __getitem__(self, index: int) -> torch.Tensor:
+        return label_tile(int(self.seeds[index]))
+
+
+def make_dataset(cfg: dict) -> Dataset:
+    """The training dataset that data.source names."""
     data_cfg = cfg["data"]
-    dataset = ImageFolderDataset(
+    if data_source(cfg) == "generated_labels":
+        return GeneratedLabelDataset()
+    return ImageFolderDataset(
         data_cfg["train_dir"],
         image_size=TILE_PX,
         min_crop_scale=data_cfg["min_crop_scale"],
         center_fraction=float(data_cfg.get("center_fraction", 1.0)),
         holdout=int(data_cfg.get("holdout", 0)),
     )
+
+
+def make_loader(cfg: dict, device: torch.device) -> DataLoader:
+    data_cfg = cfg["data"]
+    dataset = make_dataset(cfg)
     workers = int(data_cfg["num_workers"])
     return DataLoader(
         dataset,
@@ -178,6 +237,32 @@ def crops_preview(cfg: dict, count: int = 64, seed: int = 0, columns: int = 8, g
     file and the size in source pixels of the part that became the tile.
     """
     data_cfg = cfg["data"]
+    if data_source(cfg) == "generated_labels":
+        from labelgen import build_label, crop_box
+
+        generated = GeneratedLabelDataset()
+        picks = torch.randperm(len(generated), generator=torch.Generator().manual_seed(seed))[:count].tolist()
+        tiles, rows = [], []
+        for position, index in enumerate(picks):
+            label_seed = int(generated.seeds[index])
+            label = build_label(label_seed)
+            tiles.append(generated[index])
+            rows.append(
+                {
+                    "row": position // columns + 1,
+                    "column": position % columns + 1,
+                    "seed": label_seed,
+                    "label_units": f"{label.width}x{label.height}",
+                    "crop_units": round(crop_box(label, label_seed)[2]),
+                    "kind": label.kind,
+                }
+            )
+        lines = -(-len(tiles) // columns)
+        sheet = torch.ones(3, lines * TILE_PX + (lines - 1) * gap, columns * TILE_PX + (columns - 1) * gap)
+        for position, tile in enumerate(tiles):
+            top, left = (position // columns) * (TILE_PX + gap), (position % columns) * (TILE_PX + gap)
+            sheet[:, top : top + TILE_PX, left : left + TILE_PX] = tile
+        return sheet, rows
     fraction = float(data_cfg.get("center_fraction", 1.0))
     dataset = ImageFolderDataset(
         data_cfg["train_dir"], TILE_PX, data_cfg["min_crop_scale"], fraction, int(data_cfg.get("holdout", 0))
@@ -235,6 +320,10 @@ if __name__ == "__main__":
         writer = csv.DictWriter(f, fieldnames=list(listing[0]))
         writer.writeheader()
         writer.writerows(listing)
+    if data_source(config) == "generated_labels":
+        print(f"{len(listing)} generated label tiles from the training seeds")
+        print(f"sheet: {target}\nlist:  {target.with_suffix('.csv')}")
+        raise SystemExit(0)
     enlarged = sum(row["enlarged"] > 1.0 for row in listing)
     print(
         f"{len(listing)} crops from {config['data']['train_dir']}, center_fraction "

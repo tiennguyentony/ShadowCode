@@ -153,6 +153,27 @@ def fixed_batch(image_dir, count: int = 256, seed: int = 0) -> tuple[torch.Tenso
     return torch.stack(tiles), bits
 
 
+def fixed_batch_for(cfg: dict, count: int = 256, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """The spread check's fixed tiles and messages for the config's data.source.
+
+    "folder": fixed_batch on data.train_dir. "generated_labels": the tiles of
+    labelgen.SPREAD_SEEDS (held-out seeds, never trained on), with messages
+    from a generator seeded with ``seed``.
+    """
+    from constants import MESSAGE_BITS
+    from data import data_source, generated_tiles
+
+    if data_source(cfg) != "generated_labels":
+        return fixed_batch(cfg["data"]["train_dir"], count, seed)
+    from labelgen import SPREAD_SEEDS
+
+    if count > len(SPREAD_SEEDS):
+        raise ValueError(f"log.spread_images is {count}; generated labels have {len(SPREAD_SEEDS)} spread-check seeds")
+    tiles = generated_tiles(SPREAD_SEEDS[:count])
+    bits = torch.randint(0, 2, (count, MESSAGE_BITS), generator=torch.Generator().manual_seed(seed)).float()
+    return tiles, bits
+
+
 def busy_windows(tiles: torch.Tensor, cfg: dict) -> torch.Tensor:
     """For each image, which windows are its busier half: (B, rows, cols) of bool.
 
