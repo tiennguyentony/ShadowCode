@@ -135,11 +135,10 @@ def fixed_batch(image_dir, count: int = 256, seed: int = 0) -> tuple[torch.Tenso
     Images are picked by a seeded shuffle of the sorted file list, resized on
     the short side and centre-cropped to the tile. Returns (tiles, bits) on the CPU.
     """
-    from PIL import Image
     from torchvision import transforms
 
     from constants import MESSAGE_BITS, TILE_PX
-    from data import list_images
+    from data import list_images, load_rgb
 
     files = list_images(image_dir)
     generator = torch.Generator().manual_seed(seed)
@@ -149,8 +148,7 @@ def fixed_batch(image_dir, count: int = 256, seed: int = 0) -> tuple[torch.Tenso
     )
     tiles = []
     for index in picks:
-        with Image.open(files[index]) as image:
-            tiles.append(cut(image.convert("RGB")))
+        tiles.append(cut(load_rgb(files[index])))
     bits = torch.randint(0, 2, (len(picks), MESSAGE_BITS), generator=generator).float()
     return torch.stack(tiles), bits
 

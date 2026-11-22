@@ -28,11 +28,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 
+from checkpoint import load_checkpoint, save_checkpoint
 from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from torchvision import transforms
 
-from data import ImageFolderDataset, infinite, make_loader, procedural_image
+from data import ImageFolderDataset, holdout_images, infinite, load_rgb, make_loader, procedural_image
 from geometry import apply_homography, flatten_from_corners, flatten_random_patch, square_corners, warp_periodic
 from models import count_parameters
 from simulate import simulate
@@ -207,6 +208,64 @@ def check_spread(trainer: Trainer) -> None:
     )
 
 
+def check_follow_accuracy(trainer: Trainer) -> None:
+    """schedule.image_loss.follow_accuracy: the image-loss weight rises while the mark reads and falls when it does not.
+
+    Drives the schedule alone, with made-up bit accuracies, on copies that
+    share the models; no optimisation step is taken.
+    """
+    base = copy.deepcopy(trainer.cfg)
+    base["schedule"]["image_loss"].update(acc_threshold=0.95, acc_ema=0.0, ramp_steps=10, follow_accuracy=None)
+    following = copy.deepcopy(base)
+    following["schedule"]["image_loss"]["follow_accuracy"] = {"floor": 0.95, "band": 0.01}
+
+    def drive(cfg: dict, accuracies: list[float]) -> tuple[list[float], Trainer]:
+        """The scale each step would train with. acc_ema 0 makes the smoothed accuracy the step's own."""
+        probe = copy.copy(trainer)
+        probe.cfg, probe.step, probe.acc_ema, probe.image_ramp_start, probe.follow_scale = cfg, 0, 0.5, None, 0.0
+        scales = []
+        for accuracy in accuracies:
+            scales.append(probe.image_loss_scale())
+            probe.step += 1
+            probe.update_schedule(accuracy)
+        return scales, probe
+
+    def close(a: list[float], b: list[float]) -> bool:
+        return len(a) == len(b) and all(abs(x - y) < 1e-9 for x, y in zip(a, b))
+
+    # Off until the trigger, whatever the accuracy does below it.
+    scales, _ = drive(following, [0.90, 0.94, 0.90])
+    assert scales == [0.0, 0.0, 0.0], f"the image loss came on before the trigger: {scales}"
+    # Up while at or above the floor, held inside the band, down below it, up again; never outside 0 to 1.
+    story = [0.96] + [0.96] * 4 + [0.945] * 3 + [0.93] * 2 + [0.95] * 3 + [0.5] * 20 + [0.99] * 15
+    scales, probe = drive(following, story)
+    wanted = [0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.4, 0.4, 0.4, 0.3, 0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1] + [0.0] * 16
+    wanted += [0.1 * n for n in range(1, 11)] + [1.0] * 4
+    assert close(scales, wanted), f"follow_accuracy moved the scale wrongly:\n{[round(s, 3) for s in scales]}"
+    assert max(scales) <= 1.0 and min(scales) >= 0.0 and abs(probe.image_loss_scale() - 1.0) < 1e-9
+    # While accuracy never drops it is the plain ramp, step for step.
+    steady = [0.96] * 16
+    assert close(drive(following, steady)[0], drive(base, steady)[0]), "with accuracy above the floor it must be the plain ramp"
+    # Without the setting, a drop in accuracy changes nothing (the behaviour before this option).
+    assert close(drive(base, story)[0], [0.0] + [min(1.0, n / 10) for n in range(len(story) - 1)]), "the plain ramp changed"
+
+    # The scale is in the checkpoint and comes back from it.
+    scales, probe = drive(following, [0.96] * 5 + [0.5] * 2)
+    assert abs(probe.image_loss_scale() - 0.2) < 1e-9
+    with tempfile.TemporaryDirectory(prefix="tilemark_follow_") as tmp:
+        path = save_checkpoint(probe, tmp, keep=0)
+        state = torch.load(path, map_location=trainer.device, weights_only=True)
+        assert abs(state["image_scale"] - 0.2) < 1e-9, "the scale is not in the checkpoint"
+        other = copy.copy(probe)
+        other.follow_scale, other.step = 0.9, 0
+        load_checkpoint(other, path)
+        assert other.step == probe.step and abs(other.image_loss_scale() - 0.2) < 1e-9, "the scale did not come back"
+    print(
+        "schedule checks passed: with follow_accuracy the image-loss weight rises at or above the floor, holds in "
+        "the band, falls below it, stays within 0 to 1, and is saved and restored; without it the ramp is unchanged"
+    )
+
+
 def check_center_fraction() -> None:
     """data.center_fraction: crops come from the middle of the image only, and 1.0 changes nothing."""
     size, low, high = 500, 100, 400  # a red frame around a green middle: the central 60 percent of each side
@@ -245,6 +304,47 @@ def check_center_fraction() -> None:
     print("crop checks passed: center_fraction 0.6 keeps every crop inside the middle; 1.0 gives the crops it always gave")
 
 
+def check_holdout() -> None:
+    """data.holdout: the images kept back never reach training, and 0 keeps none back."""
+    with tempfile.TemporaryDirectory(prefix="tilemark_holdout_") as tmp:
+        make_tiny_dataset(Path(tmp), count=12, size=32)
+        everything = ImageFolderDataset(tmp, image_size=16)
+        train = ImageFolderDataset(tmp, image_size=16, holdout=5)
+        again = ImageFolderDataset(tmp, image_size=16, holdout=5)
+        held = holdout_images(tmp, 5)
+        try:
+            ImageFolderDataset(tmp, image_size=16, holdout=12)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("a holdout as large as the dataset was accepted")
+    assert len(everything) == 12 and len(train) == 7 and len(held) == 5, "the split does not add up"
+    assert not set(train.files) & set(held), "an image is both trained on and held out"
+    assert set(train.files) | set(held) == set(everything.files), "the split lost an image"
+    assert train.files == again.files, "the split is not the same every time"
+    print("holdout checks passed: 5 of 12 images kept back, none of them in the training set, the same 5 every time")
+
+
+def check_rotation_tag() -> None:
+    """Photos load upright: the rotation tag a phone writes (EXIF orientation) is applied."""
+    stored = np.zeros((20, 40, 3), dtype=np.uint8)  # 40 wide, 20 high as stored
+    stored[:10, :10] = (255, 0, 0)  # red at the stored top left
+    with tempfile.TemporaryDirectory(prefix="tilemark_rotation_") as tmp:
+        tag = Image.Exif()
+        tag[0x0112] = 6  # "turn a quarter clockwise to show": the stored top left belongs at the top right
+        Image.fromarray(stored).save(Path(tmp) / "turned.png", exif=tag)
+        Image.fromarray(stored).save(Path(tmp) / "plain.png")
+        turned = load_rgb(Path(tmp) / "turned.png")
+        plain = load_rgb(Path(tmp) / "plain.png")
+        dataset = ImageFolderDataset(tmp, image_size=16)
+        sizes = {path.name: dataset.load(index).size for index, path in enumerate(dataset.files)}
+    assert turned.size == (20, 40), f"a photo tagged as turned loaded as {turned.size}, wanted (20, 40)"
+    assert turned.getpixel((15, 5)) == (255, 0, 0) and turned.getpixel((5, 5)) == (0, 0, 0), "turned the wrong way"
+    assert plain.size == (40, 20) and plain.getpixel((5, 5)) == (255, 0, 0), "a photo without the tag was changed"
+    assert sizes == {"plain.png": (40, 20), "turned.png": (20, 40)}, f"the dataset does not load upright: {sizes}"
+    print("rotation checks passed: a photo tagged as turned loads upright; one without the tag is untouched")
+
+
 def describe_simulation(cfg: dict) -> str:
     sim = cfg["simulation"]
     if not sim["enabled"]:
@@ -268,8 +368,9 @@ def run_smoke(
         trainer = Trainer(cfg, device)
         steps = cfg["train"]["total_steps"]
         every = cfg["log"]["print_every"]
+        loader = make_loader(cfg, device)
         print(
-            f"smoke test: {steps} steps, batch {cfg['train']['batch_size']}, {NUM_IMAGES} images, "
+            f"smoke test: {steps} steps, batch {cfg['train']['batch_size']}, {len(loader.dataset)} images, "
             f"device={device}, {describe_simulation(cfg)}, reader_input={cfg['train']['reader_input']}"
         )
         print(trainer.models.band.describe())
@@ -284,9 +385,12 @@ def run_smoke(
             "portrait, landscape and square frames, periodic sampling"
         )
         check_spread(trainer)
+        check_follow_accuracy(trainer)
         check_center_fraction()
+        check_rotation_tag()
+        check_holdout()
 
-        batches = infinite(make_loader(cfg, device))
+        batches = infinite(loader)
         history: list[dict[str, float]] = []
         t0 = time.time()
         while trainer.step < steps:
@@ -310,7 +414,7 @@ def run_smoke(
         eval_correctable = sum(m["message_correctable"] for m in evals) / len(evals)
         eval_psnr = sum(m["psnr"] for m in evals) / len(evals)
         sheet = sample_sheet(evals[0]["outputs"]["original"], evals[0]["outputs"]["marked"])
-        sheet_path = save_image(sheet, sheet_path or HERE / "outputs" / "smoke_samples.png")
+        sheet_path = save_image(sheet, sheet_path or HERE / "outputs" / "smoke_samples.png", footer=cfg["data"].get("credit"))
 
     print(f"\nfirst {every} steps:  bit_acc {first:.3f}")
     print(f"last {every} steps:   bit_acc {final:.3f}")

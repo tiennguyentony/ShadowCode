@@ -32,6 +32,13 @@ data:
   # packages with a table, a hand or a shelf around them. min_crop_scale then
   # counts against that part, not the whole image.
   center_fraction: 1.0
+  # Images kept back from training, picked by a fixed seeded shuffle of the
+  # file list. acceptance.py measures on exactly these. 0 trains on all.
+  holdout: 0
+  # A line of text printed below every sheet of dataset photos (sample sheets,
+  # the crops preview, the acceptance pages): the credit the photos' licence
+  # asks for. null prints nothing.
+  credit: null
   num_workers: 8
 
 band:                          # where the gratings init puts the code; see band.py
@@ -92,6 +99,13 @@ schedule:
     acc_threshold: 0.95        # image-loss weight stays 0 until bit accuracy passes this
     acc_ema: 0.98              # smoothing of the bit accuracy used for the trigger
     ramp_steps: 15000          # linear ramp 0 -> 1 once triggered
+    # null: the ramp above, which never comes back down. Or {floor: 0.95, band: 0.01}:
+    # after the trigger the weight moves by 1/ramp_steps per step, up while the
+    # smoothed bit accuracy is at or above floor, down while it is below
+    # floor - band, unchanged in between, and stays within 0 to 1. The peak
+    # penalty (spread.peak_penalty) uses the same weight. The weight is saved in
+    # checkpoints and logged (schedule/image_loss_scale, progress.csv).
+    follow_accuracy: null
   sim_strength:
     start_step: 0              # strength is 0 before this step
     ramp_steps: 20000          # linear ramp 0 -> max_strength

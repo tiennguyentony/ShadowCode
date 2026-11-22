@@ -40,6 +40,9 @@ def save_checkpoint(trainer, directory: str | Path, keep: int) -> Path:
         "optimizer": trainer.optimizer.state_dict(),
         "acc_ema": trainer.acc_ema,
         "image_ramp_start": trainer.image_ramp_start,
+        # The image-loss weight the next step trains with. With
+        # schedule.image_loss.follow_accuracy it is state of its own; without, the step count gives it.
+        "image_scale": trainer.image_loss_scale(),
         "band": trainer.models.band.as_dict(),
         "reader_input": trainer.cfg["train"]["reader_input"],
         "config": trainer.cfg,
@@ -113,3 +116,5 @@ def _restore(trainer, state: dict, path: str | Path) -> None:
     trainer.step = int(state["step"])
     trainer.acc_ema = float(state["acc_ema"])
     trainer.image_ramp_start = state["image_ramp_start"]
+    # A checkpoint from before the weight was saved continues from where the plain ramp stood.
+    trainer.follow_scale = float(state["image_scale"]) if "image_scale" in state else trainer.ramp_scale()

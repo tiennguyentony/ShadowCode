@@ -14,6 +14,64 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 | Direct reader | **Dropped for the gate.** Every smoke test with rotation ends at chance; no pod run was made. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
 
+## Label run (laptop)
+
+From 2026-11-21 the models train on product labels, not general photos.
+
+**The dataset.** Open Food Facts front-of-pack photos, fetched by
+`training/fetch_labels.py` into `training/data/open-food-facts/images`
+(licence, credit and open points: `training/THIRD_PARTY.md`).
+
+| | |
+|---|---|
+| Fetched | 16,000 photos, one per product, shorter side at least 600 px; 13.68 GB in 22.7 minutes (measured) |
+| Left out afterwards | the 50 photos over 24 megapixels, deleted with `fetch_labels.py --leave-out-over 24`; no replacements were fetched. They are listed in `left_out.csv` in the dataset folder. |
+| **Final count** | **15,950 photos**, 13.37 GB. `ATTRIBUTION.csv` has the same 15,950 rows. |
+| Kept back from training | 256 of them (`data.holdout: 256`), picked by a fixed seeded shuffle; `acceptance.py` measures on these. Training uses the other 15,694. |
+| Crops | from the central 60 percent of the width and of the height (`data.center_fraction: 0.6`), then as before: 35 to 100 percent of that part, resized to 384 px, random mirror. |
+| Upright | the loader now applies the rotation tag a phone writes (EXIF orientation). A photo without the tag, or tagged wrongly, can still be sideways. |
+
+Of 64 crops looked at by eye (`training/runs/labels/crops_preview.png`),
+about 50 were mostly printed label, 6 about half, 8 mostly something else
+(clear packaging showing the food, a hand, a table). That is one person's
+judgement of one sheet, not a measurement.
+
+**The old dataset is gone.** `training/data/open-images-v7-val/images`
+(16,000 photos, 4.7 GB) was deleted on 2026-11-21 after the label download
+was checked. Its `ATTRIBUTION.csv` and `image_list.csv` are kept, and so is
+every checkpoint and every `runs/` folder. The folder's `COMPLETE` file is
+still there and still says 16,000, so `fetch_dataset.py` would call the
+dataset complete: delete that file before fetching Open Images again.
+
+**Numbers from earlier runs are not comparable with new ones.** The spread
+check and its PSNR are measured on 256 fixed images picked from the training
+folder. For every run above the label run in time (sanity, long, penalty-only,
+spread) those were 256 Open Images photos; from the label run on they are 256
+label photos. Fixed place, strongest spot, energy shares and PSNR all depend
+on the images, so a difference between an old row and a new row says nothing
+by itself. Training bit accuracy and PSNR differ for the same reason.
+
+**The run.** `training/configs/labels.yaml`, from step 0, on the laptop's RTX
+4070, two hours:
+
+```bash
+python train.py --config configs/labels.yaml --max-minutes 120 --keep-awake
+```
+
+The penalty-only run's settings (peak penalty on, hiding off, stop when fixed
+place goes above 4) with the label images and one change to the schedule:
+**the image-loss weight follows bit accuracy**
+(`schedule.image_loss.follow_accuracy: {floor: 0.95, band: 0.01}`). The
+penalty-only run kept the mark spread (fixed place at most 2.01) but bit
+accuracy fell from 0.964 to 0.895 as the image loss went to full weight on
+its fixed ramp. Here, after the trigger, the weight goes up by 1/15,000 per
+step while the smoothed bit accuracy is at or above 0.95, down by the same
+while it is below 0.94, and stays where it is in between. The peak penalty
+uses the same weight. Sample sheet and spread check every 1,000 steps.
+
+<!-- labels-run:start -->
+<!-- labels-run:end -->
+
 ## Spread run (RunPod)
 
 The long run's settings with `spread.peak_penalty` and `spread.hide` both on

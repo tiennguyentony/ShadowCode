@@ -19,7 +19,9 @@ from pathlib import Path
 
 STATE_FILE = "run_state.json"
 PROGRESS_FILE = "progress.csv"
-PROGRESS_COLUMNS = ["utc_time", "step", "bit_acc", "psnr_db", "steps_averaged", "elapsed_hours", "cost_usd"]
+# image_scale: the image-loss weight (0 to 1) the report's last step trained with. Last, so that
+# readers of the earlier columns are not disturbed.
+PROGRESS_COLUMNS = ["utc_time", "step", "bit_acc", "psnr_db", "steps_averaged", "elapsed_hours", "cost_usd", "image_scale"]
 
 
 class RunClock:
@@ -88,11 +90,21 @@ class ProgressLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if fresh:
             self.path.unlink(missing_ok=True)
+        if self.path.is_file():
+            with open(self.path, "r", encoding="utf-8", newline="") as f:
+                header = next(csv.reader(f), None)
+            if header != PROGRESS_COLUMNS:
+                # Written by an earlier version with other columns: keep it, start a new file.
+                aside = self.path.with_name(f"progress_before_{time.strftime('%Y%m%d-%H%M%S')}.csv")
+                os.replace(self.path, aside)
+                print(f"note: {self.path} had other columns; kept as {aside.name}, starting a new one")
         if not self.path.is_file():
             with open(self.path, "w", encoding="utf-8", newline="") as f:
                 csv.writer(f).writerow(PROGRESS_COLUMNS)
 
-    def write(self, step: int, bit_acc: float, psnr_db: float, steps_averaged: int, clock: RunClock) -> str:
+    def write(
+        self, step: int, bit_acc: float, psnr_db: float, steps_averaged: int, clock: RunClock, image_scale: float | None = None
+    ) -> str:
         """Write the row and return the same information as one line of text."""
         priced = clock.price_per_hour is not None
         row = [
@@ -103,12 +115,15 @@ class ProgressLog:
             steps_averaged,
             f"{clock.elapsed_seconds / 3600.0:.4f}",
             f"{clock.cost_usd:.4f}" if priced else "",
+            "" if image_scale is None else f"{image_scale:.4f}",
         ]
         with open(self.path, "a", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(row)
         return (
             f"[report] step {step:7d}  bit_acc {bit_acc:.3f}  psnr {psnr_db:.1f} dB  "
-            f"(mean of last {steps_averaged} steps)  {clock.elapsed_seconds / 3600.0:.2f} h  {clock.cost_text()}"
+            f"(mean of last {steps_averaged} steps)  "
+            + ("" if image_scale is None else f"image-loss weight {image_scale:.3f}  ")
+            + f"{clock.elapsed_seconds / 3600.0:.2f} h  {clock.cost_text()}"
         )
 
 

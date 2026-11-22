@@ -1,0 +1,58 @@
+# A run on product labels, on the laptop GPU, from step 0:
+#
+#   python train.py --config configs/labels.yaml --max-minutes 120 --keep-awake
+#
+# The settings of the penalty-only run (configs/penalty.yaml: peak penalty on,
+# hiding off, stop when the fixed-place measure goes above 4), with three
+# changes:
+#
+# - The images are Open Food Facts front-of-pack photos, not general photos
+#   (fetch_labels.py; licence and credit in THIRD_PARTY.md). Crops are drawn
+#   from the central 60 percent of each side, where the label is.
+# - The image-loss weight follows bit accuracy (schedule.image_loss.
+#   follow_accuracy). In the penalty-only run bit accuracy fell from 0.964 to
+#   0.895 as the image loss went to full weight on a fixed ramp. Here the
+#   weight only rises while the smoothed bit accuracy holds 0.95, and comes
+#   back down if it falls below 0.94. The peak penalty uses the same weight.
+# - 256 images are kept back from training for acceptance.py.
+#
+# Spread-check and PSNR numbers from this run are measured on label images and
+# are not comparable with the earlier runs' (docs/runs.md, "Label run").
+base: default.yaml
+
+data:
+  train_dir: data/open-food-facts/images
+  center_fraction: 0.6
+  holdout: 256
+  credit: "Photos: Open Food Facts contributors, CC BY-SA 3.0. For private review only."
+
+train:
+  device: cuda:0
+  expect_gpu: RTX 4070         # stop unless cuda:0 is this GPU; never fall back to the CPU
+
+schedule:
+  image_loss:
+    follow_accuracy: {floor: 0.95, band: 0.01}
+
+spread:
+  peak_penalty:
+    enabled: true
+  hide:
+    enabled: false
+  stop_above: 4.0              # on the fixed-place measure, at every sample sheet
+
+log:
+  dir: runs/labels
+  print_every: 100
+  sheet_every: 1000            # sample sheet and spread check: runs/labels/samples/step_XXXXXXXX.png
+  spread_markdown:
+    file: ../docs/runs.md
+    marker: labels-run
+
+checkpoint:
+  dir: checkpoints/labels
+
+early_stop:                    # one look, 45 minutes of training into this run, as in penalty.yaml
+  enabled: true
+  after_minutes: 45
+  min_bit_acc: 0.75

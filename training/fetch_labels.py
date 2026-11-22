@@ -4,6 +4,7 @@
     python fetch_labels.py --out data/open-food-facts --count 2000
     python fetch_labels.py --out data/open-food-facts --list-only
     python fetch_labels.py --out data/open-food-facts --check
+    python fetch_labels.py --out data/open-food-facts --leave-out-over 24
 
 Images are CC BY-SA 3.0; see THIRD_PARTY.md for the licence position and the
 open points (label artwork belongs to third parties; share-alike and weights).
@@ -31,12 +32,18 @@ Writes into --out:
     ATTRIBUTION.csv    product page, uploader, licence and source URL of every image kept
     candidates.csv     the sampled products, in the order they are tried
     skipped.csv        candidates that could not be used, and why
+    left_out.csv       images removed afterwards with --leave-out-over, and why
     source.json        which export the list came from, the seed and the date
     data_keys.gz       the bucket's file list as published
     COMPLETE           written last; holds the number of images
 
 Safe to run again: files already there are skipped, an unfinished file is
 never left under its final name, and the product list is only sampled once.
+
+--leave-out-over N works on a finished download: it deletes every image of
+more than N megapixels (width times height), lists them in left_out.csv,
+takes them out of ATTRIBUTION.csv and lowers the number in COMPLETE. No
+replacements are fetched, then or on a later run.
 Needs pyarrow (for the product list) and Pillow (to check each image).
 """
 
@@ -336,9 +343,56 @@ def get_image(row: dict, images: Path, min_side: int) -> int:
     return written
 
 
+def read_left_out(out: Path) -> dict[str, str]:
+    path = out / "left_out.csv"
+    if not path.is_file():
+        return {}
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        return {row["File"]: row["Reason"] for row in csv.DictReader(f)}
+
+
 def is_complete(out: Path, count: int) -> bool:
+    """All ``count`` images were fetched; those left out afterwards do not count as missing."""
     marker = out / "COMPLETE"
-    return marker.is_file() and marker.read_text(encoding="utf-8").strip() == str(count)
+    return marker.is_file() and marker.read_text(encoding="utf-8").strip() == str(count - len(read_left_out(out)))
+
+
+def leave_out_over(out: Path, megapixels: float) -> int:
+    """Delete the images above ``megapixels`` and keep the dataset's own records in step."""
+    from PIL import Image
+
+    Image.MAX_IMAGE_PIXELS = None  # only the header is read here, and the largest files are the point
+    images, attribution = out / "images", out / "ATTRIBUTION.csv"
+    if not (out / "COMPLETE").is_file() or not attribution.is_file():
+        print(f"no finished download in {out}; fetch the images first")
+        return 1
+    with open(attribution, "r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    left_out = read_left_out(out)
+    kept = []
+    for row in rows:
+        with Image.open(images / row["File"]) as image:
+            width, height = image.size
+        if width * height > megapixels * 1e6:
+            left_out[row["File"]] = f"over {megapixels:g} megapixels ({width}x{height}, {width * height / 1e6:.1f})"
+        else:
+            kept.append(row)
+    # Records first, files last: stopped halfway, a second run finishes the job.
+    with open(out / "left_out.csv", "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["File", "Reason"])
+        writer.writerows(sorted(left_out.items()))
+    with open(attribution, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=ATTRIBUTION_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(kept)
+    (out / "COMPLETE").write_text(f"{len(kept)}\n", encoding="utf-8")
+    for name in left_out:
+        (images / name).unlink(missing_ok=True)
+    on_disk = sum(1 for _ in images.iterdir())
+    print(f"left out {len(rows) - len(kept)} images over {megapixels:g} megapixels ({len(left_out)} in left_out.csv)")
+    print(f"{len(kept)} images remain in ATTRIBUTION.csv, {on_disk} files in {images}")
+    return 0 if on_disk == len(kept) else 1
 
 
 def main() -> int:
@@ -350,12 +404,20 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0, help="seed of the product sample (default 0)")
     parser.add_argument("--list-only", action="store_true", help="sample the product list and stop before the images")
     parser.add_argument("--check", action="store_true", help="only report whether the dataset is already complete")
+    parser.add_argument(
+        "--leave-out-over", type=float, default=None, metavar="MEGAPIXELS",
+        help="on a finished download: delete images above this size and update the records; fetches nothing",
+    )
     args = parser.parse_args()
 
     out = Path(args.out)
     images = out / "images"
+    if args.leave_out_over is not None:
+        return leave_out_over(out, args.leave_out_over)
+    left_out = read_left_out(out)
     if is_complete(out, args.count):
-        print(f"dataset already complete: {args.count} images in {images}")
+        note = f" ({len(left_out)} left out)" if left_out else ""
+        print(f"dataset already complete: {args.count - len(left_out)} images in {images}{note}")
         return 0
     if args.check:
         print(f"dataset not complete in {out}")
@@ -396,10 +458,11 @@ def main() -> int:
         if len(chosen) < args.count:
             print(f"ran out of candidates: {len(chosen)} usable of {args.count} wanted")
             return 1
+        chosen = [row for row in chosen if row["File"] not in left_out]  # left out on purpose: not replaced
         todo = [row for row in chosen if not (images / row["File"]).is_file()]
         if not todo:
             break
-        print(f"{args.count - len(todo)} images present, {len(todo)} to download with {args.workers} workers", flush=True)
+        print(f"{len(chosen) - len(todo)} images present, {len(todo)} to download with {args.workers} workers", flush=True)
         newly_skipped = 0
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             jobs = {pool.submit(get_image, row, images, args.min_side): row for row in todo}
@@ -450,9 +513,9 @@ def main() -> int:
     extra = sorted(p.name for p in images.iterdir() if p.name not in {row["File"] for row in chosen})
     if extra:
         print(f"note: {len(extra)} files in {images} are not on the list, for example {extra[:3]}")
-    (out / "COMPLETE").write_text(f"{args.count}\n", encoding="utf-8")
+    (out / "COMPLETE").write_text(f"{len(chosen)}\n", encoding="utf-8")
     minutes = (time.time() - started) / 60
-    print(f"done: {args.count} images, {total / 1e9:.2f} GB in {images}")
+    print(f"done: {len(chosen)} images, {total / 1e9:.2f} GB in {images}")
     print(f"this run: {fetched_files} images, {downloaded / 1e9:.2f} GB downloaded in {minutes:.1f} min")
     print(f"attribution for every image: {out / 'ATTRIBUTION.csv'}")
     return 0
