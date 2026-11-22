@@ -9,8 +9,9 @@ for hiding a mark. All words and numbers are made up; no real brand appears.
 
 A label is laid out on a canvas whose long side is 1024 units. A tile is a
 square of that canvas, chosen at a random zoom: from the whole short side of
-the label down to 96 units, a close-up of one letter of the title or of one
-flat panel. The tile is not cut from a rendered 1024 px picture and resized.
+the label down to 256 units (a quarter of the long side). A tile prints at
+50 mm, so a 256-unit tile stands for a label about 20 cm long; smaller
+crops would stand for labels too big to be real. The tile is not cut from a rendered 1024 px picture and resized.
 The layout is drawn straight at the tile's scale, so a close-up is as sharp
 as a whole label: no resampling, no blur, no JPEG, no noise. Shapes are drawn
 at twice the size and averaged 2 x 2 down (antialiasing), as digital art is.
@@ -45,7 +46,7 @@ HERE = Path(__file__).resolve().parent
 FONT_DIR = HERE / "fonts"
 
 CANVAS = 1024           # long side of a label, in layout units
-MIN_CROP = 96           # smallest tile side in layout units (about 4x zoom on the canvas)
+MIN_CROP = 256          # smallest tile side in layout units: a 50 mm tile then stands for a label of about 20 cm
 SUPERSAMPLE = 2         # drawn at this many times the tile size, then averaged down
 FLAT_SHARE = 1 / 6      # labels that are mostly flat colour
 
@@ -688,10 +689,14 @@ def render_label(label: Label, long_side: int = 512) -> np.ndarray:
 
 
 def crop_box(label: Label, seed: int) -> tuple[float, float, float]:
-    """(left, top, side) of the tile of ``seed``: side log-uniform from MIN_CROP to the label's short side."""
+    """(left, top, side) of the tile of ``seed``: side log-uniform from MIN_CROP to the label's short side.
+
+    A label whose short side is below MIN_CROP gives tiles of its short side.
+    """
     rng = np.random.default_rng([seed, 1])
     short = min(label.width, label.height)
-    side = float(math.exp(rng.uniform(math.log(MIN_CROP), math.log(short))))
+    smallest = min(MIN_CROP, short)
+    side = float(math.exp(rng.uniform(math.log(smallest), math.log(short))))
     return float(rng.uniform(0, label.width - side)), float(rng.uniform(0, label.height - side)), side
 
 

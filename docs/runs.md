@@ -15,6 +15,72 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 | Direct reader | **Dropped for the gate.** Every smoke test with rotation ends at chance; no pod run was made. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
 
+## Generated labels
+
+From 2026-11-21 there is a second source of training tiles:
+`training/labelgen.py` draws made-up packaging labels from a seed, so no
+photo dataset is needed. Fonts and their licences: `training/THIRD_PARTY.md`,
+"Fonts".
+
+**What a label is.** A background (flat, two-colour gradient, stripes, dots
+or checks), 1 to 4 panels (bands, boxes, rounded boxes, circles, slanted
+bands) in a palette of 2 to 5 colours (saturated, pale, dark, muted or
+near-grey), a made-up title, a smaller line, fine print, a logo built from
+shapes, and sometimes a barcode-like box, a ruled table like a nutrition
+panel, a border, small icons and text turned 90 degrees. About 1 label in 6
+is mostly flat colour, the hardest case for hiding a mark. The label's long
+side is 1024 layout units.
+
+**What a tile is.** A square of the label, its side drawn log-uniformly from
+256 units to the label's short side (683 to 1024 units, as the labels are
+between 0.65 and 1.5 times as wide as high), at a random place. The first
+version went down to 96 units; it was raised to 256 because a tile prints at
+50 mm, so a 96-unit tile would stand for a label about 53 cm long. At 256
+units it stands for one of about 20 cm.
+
+**One change from the specification, approved on 2026-11-21.** The
+specification said to draw each label on a canvas of about 1024 px and cut a
+random 384 px crop at a random zoom. That is not what the code does: the
+layout is a list of shapes and text in layout units, and each tile is drawn
+straight at its own scale, twice the tile size, then averaged 2 x 2 down
+(antialiasing). Reason: a crop smaller than 384 px of a rendered canvas has
+to be scaled up to fill the tile, which blurs every edge, and the
+specification asked for sharp edges and no blur. Drawing at the tile's scale
+keeps a close-up as sharp as a whole label. Nothing is resampled except the
+2 x 2 average; there is no JPEG and no noise.
+
+**Measured on seeds 0 to 511** (flat area by `acceptance.py`'s method: the
+share of 48 px windows whose local contrast is under its flat level):
+
+| | Smallest crop 96 units (first version) | Smallest crop 256 units (used) |
+|---|---|---|
+| Labels of the mostly-flat kind | 84 of 512 = 16.4 percent | 84 of 512 = 16.4 percent (the labels did not change) |
+| Tiles at least 90 percent flat | 27.5 percent | **17.6 percent** (90 of 512; 67 of them from mostly-flat labels) |
+| Mean flat share of a tile | 0.575 | 0.506 |
+| Tiles with no flat window | 4.7 percent | 1.8 percent |
+
+For comparison, 256 crops of the label photos with `configs/labels.yaml`'s
+settings: 0.4 percent of tiles at least 90 percent flat, mean flat share
+0.089. Camera noise keeps a photo from ever reading as flat by this measure,
+so the two sources are not alike here: the generated tiles are clean flat
+colour where the photos are noisy.
+
+**Speed** (`python labelgen.py --bench 300 --workers 1 4 8`, laptop CPU,
+i7-13620H, nothing else running):
+
+| Processes | 96-unit crops | 256-unit crops (used) |
+|---|---|---|
+| 1 | 15.6 tiles/s | 14.8 tiles/s |
+| 4 | 49.9 tiles/s | 44.7 tiles/s |
+| 8 | 45.8 tiles/s | not measured again |
+
+The label run's fastest logged rate was 2.13 steps per second at batch 8,
+that is 17.0 tiles per second. One process falls just short, four keep up
+with more than twice to spare, eight were slower than four on this laptop.
+So the tiles are made while training, not saved to disk first, with 4
+loader processes on the laptop. Before any pod run, the same benchmark is to
+be run on the pod's CPU with 1, 4 and 8 processes and the fastest taken.
+
 ## Label run (laptop)
 
 From 2026-11-21 the models train on product labels, not general photos.
