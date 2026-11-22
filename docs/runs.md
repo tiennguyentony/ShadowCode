@@ -40,9 +40,9 @@ judgement of one sheet, not a measurement.
 **The old dataset is gone.** `training/data/open-images-v7-val/images`
 (16,000 photos, 4.7 GB) was deleted on 2026-11-21 after the label download
 was checked. Its `ATTRIBUTION.csv` and `image_list.csv` are kept, and so is
-every checkpoint and every `runs/` folder. The folder's `COMPLETE` file is
-still there and still says 16,000, so `fetch_dataset.py` would call the
-dataset complete: delete that file before fetching Open Images again.
+every checkpoint and every `runs/` folder. The folder's `COMPLETE` file,
+which still said 16,000, was deleted on 2026-11-21, so `fetch_dataset.py` no
+longer reports that dataset as complete.
 
 **Numbers from earlier runs are not comparable with new ones.** The spread
 check and its PSNR are measured on 256 fixed images picked from the training
@@ -89,6 +89,11 @@ uses the same weight. Sample sheet and spread check every 1,000 steps.
 | 2026-11-21 21:04 | 13,000 | 1.29 | 2.47 | 14.1 percent | 56 percent | 23.84 | 0.9481 |
 | 2026-11-21 21:12 | 14,000 | 1.30 | 2.89 | 16.0 percent | 74 percent | 24.01 | 0.9479 |
 | 2026-11-21 21:19 | 15,000 | 1.36 | 3.17 | 17.6 percent | 76 percent | 24.17 | 0.9479 |
+| 2026-11-21 21:28 | 15,087 | 1.46 | 3.26 | 18.1 percent | 77 percent | 24.26 (fixed images) | n/a |
+| 2026-11-21 21:36 | 16,000 | 2.17 | 3.47 | 19.3 percent | 76 percent | 24.27 | 0.9477 |
+| 2026-11-21 21:44 | 17,000 | 2.97 | 3.94 | 22.1 percent | 71 percent | 24.14 | 0.9484 |
+| 2026-11-21 21:52 | 18,000 | 3.13 | 3.52 | 20.8 percent | 63 percent | 24.23 | 0.9481 |
+| 2026-11-21 22:01 | 19,000 | 3.44 | 3.74 | 22.4 percent | 61 percent | 24.13 | 0.9474 |
 <!-- labels-run:end -->
 
 **Result, 2026-11-21, 19:20 to 21:20.** Code: commit `1a9c008` on
