@@ -6,9 +6,6 @@ import { FC_SEED, hex, readField, refCrc7, refMessage, refModG, withFlips } from
 const RUNS = 1_000
 const RUNS_HEAVY = 10_000
 
-const params = (numRuns: number, examples?: unknown[][]) =>
-  ({ seed: FC_SEED, numRuns, ...(examples ? { examples } : {}) }) as fc.Parameters<never>
-
 const idArb = fc.noBias(fc.integer({ min: 0, max: 0xffffffff }))
 const limitArb = fc.noBias(fc.integer({ min: 0, max: 4 }))
 const flipsArb = (k: number, max = 62) =>
@@ -31,8 +28,6 @@ const limitOf = (o: DecodeOptions | undefined) => o?.maxCorrectableErrors ?? 4
 const same = (a: DecodeResult, b: DecodeResult) =>
   a === null || b === null ? a === b : a.id === b.id && a.correctedBits === b.correctedBits
 
-const ID_EXAMPLES = [[0], [1], [0xffffffff]]
-
 const logSeed = (n: number) => console.log(`[message-codec] property ${n} fast-check seed=${hex(FC_SEED, 8)}`)
 
 describe('message codec properties', () => {
@@ -50,7 +45,7 @@ describe('message codec properties', () => {
         expect(refModG(m.subarray(0, 63)).every((b) => b === 0)).toBe(true)
         expect(m[63]).toBe(0)
       }),
-      params(RUNS, ID_EXAMPLES),
+      { seed: FC_SEED, numRuns: RUNS, examples: [[0], [1], [0xffffffff]] },
     )
   })
 
@@ -67,7 +62,7 @@ describe('message codec properties', () => {
         expect(second).not.toBe(first)
         expect(Array.from(second)).toEqual(Array.from(copy))
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -82,7 +77,7 @@ describe('message codec properties', () => {
         }
         expect(Number.isInteger(r.id) && r.id >= 0 && r.id <= 0xffffffff).toBe(true)
       }),
-      params(RUNS_HEAVY, [[0, undefined], [1, undefined], [0xffffffff, undefined]]),
+      { seed: FC_SEED, numRuns: RUNS_HEAVY, examples: [[0, undefined], [1, undefined], [0xffffffff, undefined]] },
     )
   })
 
@@ -99,11 +94,11 @@ describe('message codec properties', () => {
         const r = decodeMessage(bits, { maxCorrectableErrors: m })
         expect(r, `id=${id} m=${m} flips=${flips} spare=${spare}`).toEqual({ id, correctedBits: flips.length })
       }),
-      params(RUNS_HEAVY, [
+      { seed: FC_SEED, numRuns: RUNS_HEAVY, examples: [
         [0, { m: 4, flips: [0, 1, 2, 3] }, true],
         [1, { m: 4, flips: [59, 60, 61, 62] }, false],
         [0xffffffff, { m: 0, flips: [] }, true],
-      ]),
+      ] },
     )
   })
 
@@ -117,7 +112,7 @@ describe('message codec properties', () => {
         bits[63] = spare ? 1 : 0
         expect(decodeMessage(bits), `id=${id} flips=${f}`).toEqual({ id, correctedBits: f.length })
       }),
-      params(RUNS_HEAVY, [[0, [0, 31, 32, 62], false], [1, [], true], [0xffffffff, [5, 38, 39], false]]),
+      { seed: FC_SEED, numRuns: RUNS_HEAVY, examples: [[0, [0, 31, 32, 62], false], [1, [], true], [0xffffffff, [5, 38, 39], false]] },
     )
   })
 
@@ -135,7 +130,7 @@ describe('message codec properties', () => {
         bits[63] = spare ? 1 : 0
         expect(decodeMessage(bits, { maxCorrectableErrors: m }), `id=${id} m=${m} flips=${flips}`).toBeNull()
       }),
-      params(RUNS_HEAVY, [[0, { m: 3, flips: [0, 1, 2, 3] }, false], [0xffffffff, { m: 0, flips: [62] }, true]]),
+      { seed: FC_SEED, numRuns: RUNS_HEAVY, examples: [[0, { m: 3, flips: [0, 1, 2, 3] }, false], [0xffffffff, { m: 0, flips: [62] }, true]] },
     )
   })
 
@@ -152,7 +147,7 @@ describe('message codec properties', () => {
           }
         }
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -175,7 +170,7 @@ describe('message codec properties', () => {
         const plain = decodeMessage(bits, { maxCorrectableErrors: m })
         expect(same(decodeMessage(bits, { ...junk, maxCorrectableErrors: m }), plain)).toBe(true)
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -188,7 +183,7 @@ describe('message codec properties', () => {
         const r2 = decodeMessage(withFlips(bits, [63]), opts)
         expect(same(r1, r2)).toBe(true)
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -203,7 +198,7 @@ describe('message codec properties', () => {
           expect(Number.isInteger(r.correctedBits) && r.correctedBits >= 0 && r.correctedBits <= limitOf(opts)).toBe(true)
         }
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -237,7 +232,7 @@ describe('message codec properties', () => {
         expect(Array.from(bits)).toEqual(Array.from(bitsCopy))
         expect(opts).toEqual(optsCopy)
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -255,7 +250,7 @@ describe('message codec properties', () => {
           expect(same(before, decodeMessage(x, o))).toBe(true)
         },
       ),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -269,7 +264,7 @@ describe('message codec properties', () => {
         expect(refModG(bits.subarray(0, 63)).every((b) => b === 0)).toBe(true)
         for (let m = 0; m <= 4; m++) expect(decodeMessage(bits, { maxCorrectableErrors: m })).toBeNull()
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 
@@ -309,19 +304,19 @@ describe('message codec properties', () => {
       fc.property(badId, (v) => {
         expect(() => encodeMessage(v as number)).toThrow(RangeError)
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
     fc.assert(
       fc.property(badBits, anyOpts, (b, o) => {
         expect(() => decodeMessage(b, o)).toThrow(RangeError)
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
     fc.assert(
       fc.property(anyMessageArb(4), badLimit, (b, v) => {
         expect(() => decodeMessage(b, { maxCorrectableErrors: v as number })).toThrow(RangeError)
       }),
-      params(RUNS),
+      { seed: FC_SEED, numRuns: RUNS },
     )
   })
 })

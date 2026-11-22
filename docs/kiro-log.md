@@ -111,3 +111,18 @@ Entries before this log are not backfilled.
 **Went wrong or had to redo:**
 - First manual CRLF test of the generator reported a mismatch because PowerShell `Get-Content` re-encoded the en dash. Re-run with UTF-8 file I/O: CRLF check and write mode pass.
 - `tsc` failed on the new test helpers (no Node types) until the tsconfig exclude was added.
+**Feature:** chat (message-codec cleanup, branch `web/message-codec-cleanup`)
+**Output:**
+- `web/package.json`: added devDependency `@types/node` ^24.19.2 (MIT). `web/tsconfig.json`: removed the `src/**/__tests__` exclude and added `node` to `types`, so `tsc` type-checks the tests.
+- `web/src/codec/__tests__/message.properties.test.ts`: replaced the `params()` helper (typed `fc.Parameters<never>`, rejected by `tsc`) with inline fast-check parameter objects. Seeds, run counts and examples unchanged.
+- `.kiro/hooks/codec-test-on-save.json`: prompt now reports Property 1 to 16 by their suite names instead of PT-1 to PT-6, and runs `tsc` for type errors.
+- `docs/message-format.md`: removed the first-line note that the split of the 32 non-ID bits may change; the Status section now states the frozen layout 32 ID + 7 CRC + 24 BCH parity + 1 spare.
+- `.kiro/steering/boundaries.md`: added "Never commit or push directly to master. Work on a branch; only Tony merges."
+- `.kiro/specs/scanner/requirements.md`: added Requirement 4 (show a decoded ID only if it is in the Product_Catalog and was decoded on 2 consecutive Decode_Attempts), citing 2.9e-4 and 0.031% from the Residual risk section. Updated the introduction, the Confirmation_Count glossary entry, and Requirement 3.4 and 3.6 to say N = 2 was chosen.
+- Verified: `npm run build` passes, `npm test` 11 files / 90 tests pass, generator `--check` exits 0. Message-codec `tasks.md` has 46 checked and 0 unchecked boxes in commit `5aa11b7`.
+**Caught, corrected, or changed my mind about:**
+- "2 consecutive frames" is recorded as 2 consecutive Decode_Attempts, the unit the scanner spec already uses (processed frames only).
+- Requirement 3 still accepts a Confirmation_Count of 2 or 3; Requirement 4 fixes the app's value at 2.
+- The IDE workspace `D:\Coding\ShadowCode` (branch `training/pipeline`) has its own copy of the hook file. It keeps the old PT-1 to PT-6 prompt until that branch gets this change.
+**Went wrong or had to redo:**
+- First `tsc` run after removing the exclude failed with 16 TS2769 errors in `message.properties.test.ts` (the `params()` helper type). Fixed as above.
