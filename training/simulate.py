@@ -107,33 +107,102 @@ def _random_tilt(batch: int, cfg: dict, strength: float) -> torch.Tensor | None:
     return _tilt(tilt, azimuth, distance)
 
 
-def sample_homography(batch: int, surface_px: int, cfg: dict, strength: float) -> tuple[torch.Tensor, torch.Tensor]:
-    """Flattened mode: random surface -> frame homography, (B,3,3) float64 on the CPU, and the fit scale (B,).
+def _rotation(batch: int, cfg: dict, strength: float) -> torch.Tensor | None:
+    """In-plane rotation of the surface, uniform in [0, rotation_deg * strength]; None when there is none."""
+    sim = cfg["simulation"]
+    deg = float(sim["perspective"].get("rotation_deg") or 0.0)
+    if not (sim["effects"]["perspective"] and strength > 0 and deg > 0):
+        return None
+    angle = torch.rand(batch, dtype=torch.float64) * math.radians(deg) * strength
+    return _scale_rotate(torch.ones(batch, dtype=torch.float64), angle)
 
-    The fit scale is how much each sample was shrunk to fit the frame. It is
-    not part of the camera model, so the loss-of-resolution step divides it
-    out again.
+
+def tile_px_in_frame(cfg: dict) -> tuple[float, float] | None:
+    """``simulation.perspective.tile_px_in_frame``: (low, high) frame pixels per tile, or None (fit to the frame).
+
+    ``auto`` is for the locator: ``camera_px_per_tile`` shrunk as the app
+    shrinks the central square of the stream to the locator input
+    (``locator_input_scale``).
     """
-    frame_w, frame_h = frame_size(cfg)
-    half = surface_px / 2.0
-    centre = torch.full((batch,), -half, dtype=torch.float64)
-    h = _translate(centre, centre)
+    value = cfg["simulation"]["perspective"].get("tile_px_in_frame")
+    if value is None:
+        return None
+    if value == "auto":
+        span = camera_range(cfg)
+        if span is None:
+            raise ValueError("simulation.perspective.tile_px_in_frame: auto needs camera_px_per_tile")
+        scale = locator_input_scale(cfg)
+        return span[0] * scale, span[1] * scale
+    low, high = float(value[0]), float(value[1])
+    if not 0 < low <= high:
+        raise ValueError(f"simulation.perspective.tile_px_in_frame needs 0 < low <= high, got {value!r}")
+    return low, high
+
+
+def locator_crop_px(cfg: dict) -> int:
+    """Side of the central square of the camera stream the app gives the locator: the stream's short side."""
+    stream = (cfg.get("demo") or {}).get("stream_px")
+    if not stream:
+        raise ValueError("the locator needs demo.stream_px, the camera stream size [width, height]")
+    return int(min(stream))
+
+
+def locator_input_scale(cfg: dict) -> float:
+    """Locator-input pixels per camera pixel: locator input side over the crop side (384 / 1080)."""
+    return float(cfg["locator_train"]["input_px"]) / locator_crop_px(cfg)
+
+
+def sample_homography(
+    batch: int,
+    surface_px: int,
+    cfg: dict,
+    strength: float,
+    centre: torch.Tensor | None = None,
+    tile_px: tuple[float, float] | None = None,
+    frame_wh: tuple[int, int] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flattened mode: random surface -> frame homography, (B,3,3) float64 on the CPU, and the scale (B,).
+
+    The surface point ``centre`` (B,2), by default the middle of the
+    surface, lands on the middle of the frame. Order: in-plane rotation
+    (``simulation.perspective.rotation_deg``), tilt, scale.
+
+    The scale is the frame's pixels per surface pixel near the middle. With
+    ``tile_px`` (or ``simulation.perspective.tile_px_in_frame``) unset it is
+    the fit scale, how much each sample was shrunk to fit the frame; that is
+    not part of the camera model, so the loss-of-resolution step divides it
+    out again. With it set, the tile is drawn log-uniformly at that many
+    frame pixels and nothing is fitted.
+    """
+    frame_w, frame_h = frame_wh or frame_size(cfg)
+    if centre is None:
+        centre = torch.full((batch, 2), surface_px / 2.0, dtype=torch.float64)
+    centre = centre.to(torch.float64)
+    h = _translate(-centre[:, 0], -centre[:, 1])
+    rotation = _rotation(batch, cfg, strength)
+    if rotation is not None:
+        h = rotation @ h
     tilt = _random_tilt(batch, cfg, strength)
     if tilt is not None:
         h = tilt @ h
 
-    # Keep the middle two tiles' worth of surface inside the frame, so a
-    # tile-sized patch at any offset can be flattened out of it.
-    reach = TILE_PX + 8.0
-    corners = torch.tensor([[-reach, -reach], [reach, -reach], [reach, reach], [-reach, reach]], dtype=torch.float64)
-    projected = apply_homography(h, (corners + half).unsqueeze(0).expand(batch, -1, -1))
-    extent_x, extent_y = projected[..., 0].abs().amax(dim=1), projected[..., 1].abs().amax(dim=1)
-    fit = torch.minimum((frame_w / 2.0 - 4.0) / extent_x, (frame_h / 2.0 - 4.0) / extent_y).clamp(max=1.0)
-    h = _scale_rotate(fit, torch.zeros_like(fit)) @ h
+    span = tile_px if tile_px is not None else tile_px_in_frame(cfg)
+    if span is None:
+        # Keep the middle two tiles' worth of surface inside the frame, so a
+        # tile-sized patch at any offset can be flattened out of it.
+        reach = TILE_PX + 8.0
+        corners = torch.tensor([[-reach, -reach], [reach, -reach], [reach, reach], [-reach, reach]], dtype=torch.float64)
+        projected = apply_homography(h, corners.unsqueeze(0) + centre.unsqueeze(1))
+        extent_x, extent_y = projected[..., 0].abs().amax(dim=1), projected[..., 1].abs().amax(dim=1)
+        scale = torch.minimum((frame_w / 2.0 - 4.0) / extent_x, (frame_h / 2.0 - 4.0) / extent_y).clamp(max=1.0)
+    else:
+        low, high = span
+        scale = low * (high / low) ** torch.rand(batch, dtype=torch.float64) / TILE_PX
+    h = _scale_rotate(scale, torch.zeros_like(scale)) @ h
 
     middle_x = torch.full((batch,), frame_w / 2.0, dtype=torch.float64)
     middle_y = torch.full((batch,), frame_h / 2.0, dtype=torch.float64)
-    return _translate(middle_x, middle_y) @ h, fit
+    return _translate(middle_x, middle_y) @ h, scale
 
 
 def direct_scale_range(cfg: dict) -> tuple[float, float]:
@@ -486,3 +555,184 @@ def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = F
             one = F.interpolate(one, size=(full_h, full_w), mode="bilinear", align_corners=False).clamp(0.0, 1.0)
         out.append(one)
     return SimResult(torch.cat(out, dim=0), homography)
+
+
+# -- the locator's view -----------------------------------------------------
+
+
+class ViewResult(NamedTuple):
+    frame: torch.Tensor        # (B,3,H,W) in [0,1]
+    homography: torch.Tensor   # (B,3,3): surface pixels -> frame pixels, exact; the surface is one tile, repeating
+    corners: torch.Tensor      # (B,4,2): the locator's target in frame pixels, see target_corners
+    tile_px: torch.Tensor      # (B,): pixels per tile in the frame near its middle (the drawn tile size)
+
+
+def surface_extent_tiles(cfg: dict) -> tuple[float, float] | None:
+    """``simulation.surface_extent_tiles``: (low, high) tiles from the centre point to each edge of the print, or None."""
+    value = cfg["simulation"].get("surface_extent_tiles")
+    if value is None:
+        return None
+    low, high = float(value[0]), float(value[1])
+    if not 0.5 < low <= high:
+        raise ValueError(
+            f"simulation.surface_extent_tiles needs 0.5 < low <= high (the target square reaches half a tile), got {value!r}"
+        )
+    return low, high
+
+
+def target_corners(homography: torch.Tensor, frame_w: int, frame_h: int) -> torch.Tensor:
+    """The locator's target: the tile-sized square on the surface centred on the point seen at the middle of the frame.
+
+    Sides along the surface rows and columns, carried into the frame by
+    ``homography`` (surface -> frame). Order top-left, top-right,
+    bottom-right, bottom-left as on the surface. (B,4,2).
+    """
+    h = homography.double().cpu()
+    b = h.shape[0]
+    middle = torch.tensor([[[frame_w / 2.0, frame_h / 2.0]]], dtype=torch.float64).expand(b, -1, -1)
+    centre = apply_homography(torch.linalg.inv(h), middle)
+    half = TILE_PX / 2.0
+    offsets = torch.tensor([[-half, -half], [half, -half], [half, half], [-half, half]], dtype=torch.float64)
+    return apply_homography(h, centre + offsets.unsqueeze(0)).to(homography)
+
+
+def _pixel_centres(h: int, w: int, b: int, device, dtype) -> torch.Tensor:
+    ys = torch.arange(h, device=device, dtype=dtype) + 0.5
+    xs = torch.arange(w, device=device, dtype=dtype) + 0.5
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+    return torch.stack([xx, yy], dim=-1).view(1, -1, 2).expand(b, -1, -1)
+
+
+def _background(background: torch.Tensor, frame_hw: tuple[int, int]) -> torch.Tensor:
+    """Per sample, a flat colour or a zoomed, turned window of another label tile, filling the frame. Half each."""
+    b = background.shape[0]
+    fh, fw = frame_hw
+    device, dtype = background.device, background.dtype
+    # Frame pixels -> background tile pixels: a window 0.25 to 0.75 tiles wide, any angle, anywhere.
+    side = (0.25 + 0.5 * torch.rand(b, dtype=torch.float64)) * TILE_PX
+    scale = side / max(fw, fh)
+    angle = torch.rand(b, dtype=torch.float64) * 2 * math.pi
+    where = torch.rand(b, 2, dtype=torch.float64) * TILE_PX
+    to_tile = (
+        _translate(where[:, 0], where[:, 1])
+        @ _scale_rotate(scale, angle)
+        @ _translate(torch.full((b,), -fw / 2.0, dtype=torch.float64), torch.full((b,), -fh / 2.0, dtype=torch.float64))
+    )
+    picture = warp_periodic(background, to_tile.to(device=device, dtype=dtype), (fh, fw))
+    flat = torch.rand(b, 3, 1, 1, device=device, dtype=dtype).expand(-1, -1, fh, fw)
+    use_flat = (torch.rand(b, device=device) < 0.5).view(b, 1, 1, 1)
+    return torch.where(use_flat, flat, picture)
+
+
+def _warp_shrunk(tile: torch.Tensor, to_surface: torch.Tensor, scale: torch.Tensor, frame_hw: tuple[int, int]) -> torch.Tensor:
+    """``warp_periodic`` of the repeating tile, shrunk first with smoothing where the frame is coarser than the tile.
+
+    Bilinear sampling alone would alias at 3 to 7 times smaller. Each sample
+    whose scale is below 0.8 gets its tile resized, with antialiasing, to
+    about 1.25 times its size in the frame, and is sampled from that.
+    """
+    device, dtype = tile.device, tile.dtype
+    out = []
+    for i in range(tile.shape[0]):
+        one, inv = tile[i : i + 1], to_surface[i : i + 1]
+        s = float(scale[i])
+        if s < 0.8:
+            side = max(16, round(TILE_PX * s * 1.25))
+            one = F.interpolate(one, size=(side, side), mode="bilinear", antialias=True, align_corners=False)
+            k = torch.full((1,), side / TILE_PX, dtype=torch.float64)
+            inv = _scale_rotate(k, torch.zeros(1, dtype=torch.float64)) @ inv
+        out.append(warp_periodic(one, inv.to(device=device, dtype=dtype), frame_hw))
+    return torch.cat(out, dim=0)
+
+
+def simulate_view(
+    tile: torch.Tensor,
+    cfg: dict,
+    strength: float,
+    frame_wh: tuple[int, int],
+    tile_px: tuple[float, float],
+    background: torch.Tensor | None = None,
+    max_tries: int = 20,
+) -> ViewResult:
+    """The locator's view: one tile, repeating, seen at ``tile_px`` frame pixels per tile, and its target corners.
+
+    The tile is taken as an endless pattern and the point at the middle of
+    the frame is a random place in it. Geometry from ``sample_homography``
+    (rotation, tilt, the tile size drawn from ``tile_px``). With
+    ``simulation.surface_extent_tiles`` set the print ends: each of its four
+    edges lies that many tiles (drawn per edge) from the centre point, and
+    beyond it the frame shows ``background`` (see ``_background``); the
+    target square is always inside the print. A sample whose target square
+    leaves the frame is drawn again.
+
+    Then blur (its lengths, given at TILE_PX pixels per tile, scaled to the
+    drawn tile size), colour, noise and JPEG at the resolution of the frame.
+    No loss-of-resolution step: the caller picks the resolution.
+    """
+    sim = cfg["simulation"]
+    effects = sim["effects"]
+    b = tile.shape[0]
+    fw, fh = frame_wh
+    device, dtype = tile.device, tile.dtype
+    on = strength > 0
+
+    centre = torch.rand(b, 2, dtype=torch.float64) * TILE_PX
+    h, scale = sample_homography(b, TILE_PX, cfg, strength, centre=centre, tile_px=tile_px, frame_wh=frame_wh)
+    corners = target_corners(h, fw, fh)
+    for _ in range(max_tries):
+        bad = (
+            (corners[..., 0].amin(1) < 1) | (corners[..., 0].amax(1) > fw - 1)
+            | (corners[..., 1].amin(1) < 1) | (corners[..., 1].amax(1) > fh - 1)
+        )
+        if not bool(bad.any()):
+            break
+        idx = bad.nonzero().flatten()
+        h2, s2 = sample_homography(len(idx), TILE_PX, cfg, strength, centre=centre[idx], tile_px=tile_px, frame_wh=frame_wh)
+        h[idx], scale[idx] = h2, s2
+        corners = target_corners(h, fw, fh)
+    else:
+        raise RuntimeError(f"simulate_view: no target square inside a {fw}x{fh} frame after {max_tries} draws")
+
+    to_surface = torch.linalg.inv(h)
+    frame = _warp_shrunk(tile, to_surface, scale, (fh, fw))
+    extent = surface_extent_tiles(cfg)
+    if extent is not None:
+        if background is None:
+            raise ValueError("simulation.surface_extent_tiles is set: simulate_view needs a background")
+        low, high = extent
+        reach = (low + (high - low) * torch.rand(b, 4, dtype=torch.float64)) * TILE_PX   # left, top, right, bottom
+        src = apply_homography(to_surface.to(device=device, dtype=dtype), _pixel_centres(fh, fw, b, device, dtype))
+        rel = src - centre.to(device=device, dtype=dtype).unsqueeze(1)
+        reach = reach.to(device=device, dtype=dtype)
+        inside = torch.minimum(
+            torch.minimum(rel[..., 0] + reach[:, 0:1], reach[:, 2:3] - rel[..., 0]),
+            torch.minimum(rel[..., 1] + reach[:, 1:2], reach[:, 3:4] - rel[..., 1]),
+        )
+        # About one frame pixel of soft edge, as a sampled print edge has.
+        mask = (inside * scale.to(device=device, dtype=dtype).view(b, 1) + 0.5).clamp(0.0, 1.0).view(b, 1, fh, fw)
+        frame = mask * frame + (1.0 - mask) * _background(background, (fh, fw))
+
+    homography = h.to(device=device, dtype=dtype)
+    corners = corners.to(device=device, dtype=dtype)
+    tile_size = (scale * TILE_PX).to(device=device, dtype=dtype)
+    if not on:
+        return ViewResult(frame, homography, corners, tile_size)
+
+    def uniform(value: float) -> torch.Tensor:
+        return torch.rand(b, device=device, dtype=dtype) * value * strength
+
+    if effects["blur"]:
+        k = scale.to(device=device, dtype=dtype)
+        kernels = blur_kernels(
+            uniform(sim["blur"]["defocus_radius_px"]) * k,
+            uniform(sim["blur"]["motion_length_px"]) * k,
+            torch.rand(b, device=device, dtype=dtype) * math.pi,
+            _blur_kernel_size(sim["blur"]),
+        )
+        frame = apply_blur(frame, kernels)
+    if effects["colour"]:
+        frame = colour_shift(frame, sim["colour"], strength)
+    sigma = uniform(sim["noise"]["sigma"]) if effects["noise"] else None
+    quality = 100.0 - uniform(100.0 - sim["jpeg"]["min_quality"]) if effects["jpeg"] else None
+    frame = _sensor(frame, sigma, quality, sim["jpeg"]["chroma_subsampling"])
+    return ViewResult(frame, homography, corners, tile_size)

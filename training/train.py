@@ -5,6 +5,8 @@
 Resumes automatically from the newest checkpoint in ``checkpoint.dir``.
 Pass --fresh to start over; existing checkpoints are moved aside, not deleted.
 
+Overrides may come before or after the options.
+
 Every ``log.report_every`` steps one line goes to the console and to
 ``<log.dir>/progress.csv``: step, bit accuracy, PSNR, the image-loss weight
 and, with ``--price-per-hour``, the cost so far.
@@ -21,6 +23,10 @@ tile (``spread.stop_above``),
 With every sample sheet the run measures where the mark sits on 256 fixed
 dataset images (the spread check) and appends a row to ``<log.dir>/spread.csv``.
 
+When the training loop ends, for any reason other than a crash,
+``<log.dir>/throughput.json`` records this process's steps, seconds and how
+long the loop waited for the data loader (bench_report.py reads it).
+
 On a CUDA device the run first prints what the GPU is and how much memory is
 free. ``train.expect_gpu`` names the GPU the run must be on; anything else,
 including no CUDA at all, stops the run. It never falls back to the CPU then.
@@ -31,6 +37,7 @@ including no CUDA at all, stops the run. It never falls back to the CPU then.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import signal
@@ -48,6 +55,7 @@ from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from data import infinite, make_loader
 from geometry import center_crop, flatten_random_patch
+from losses import texture_settings, texture_weights
 from models import build_models, count_parameters
 from runlog import ProgressLog, RunClock, SpreadLog
 from simulate import simulate, wrap_surface
@@ -142,6 +150,7 @@ class Trainer:
         # The image-loss weight while schedule.image_loss.follow_accuracy is set; unused otherwise.
         self.follow_scale = 0.0
         self.follow_settings()  # a bad setting fails at start, not at the trigger
+        texture_settings(cfg)  # likewise for loss.texture_mask
 
     # -- schedules ---------------------------------------------------------
 
@@ -260,13 +269,23 @@ class Trainer:
         loss = weights["bit_weight"] * bit_loss
         lpips_loss = None
         peak_loss = None
+        l2_texture_loss = None
         peak = peak_settings(self.cfg)
         if image_scale > 0:
-            loss = loss + image_scale * weights["l2_weight"] * l2_loss
+            # loss.texture_mask: the L2 loss and the peak penalty see the residual weighted
+            # by what each pixel's surroundings can hide (losses.texture_weights).
+            residual = out["residual"]
+            if texture_settings(self.cfg)["enabled"]:
+                cost = texture_weights(tiles, self.cfg)
+                l2_texture_loss = (cost * residual.pow(2)).mean()
+                loss = loss + image_scale * weights["l2_weight"] * l2_texture_loss
+                residual = residual * cost.sqrt()
+            else:
+                loss = loss + image_scale * weights["l2_weight"] * l2_loss
             if peak["enabled"]:
                 # On the residual before the clamp, like the L2 loss, and on the same schedule:
                 # the mark only piles up once the image loss is on.
-                peak_loss = peak_penalty(out["residual"], self.cfg)
+                peak_loss = peak_penalty(residual, self.cfg)
                 loss = loss + image_scale * float(peak["weight"]) * peak_loss
             if self.perceptual is not None:
                 lpips_loss = self.perceptual(out["marked"], tiles)
@@ -297,6 +316,8 @@ class Trainer:
             )
             if peak_loss is not None:
                 metrics["peak_loss"] = peak_loss.item()
+            if l2_texture_loss is not None:
+                metrics["l2_texture_loss"] = l2_texture_loss.item()
             if lpips_loss is not None:
                 metrics["lpips_loss"] = lpips_loss.item()
             if keep_outputs:
@@ -334,7 +355,8 @@ SCALARS = {
     "image/psnr_db": "psnr",
     "loss/total": "loss",
     "loss/bit": "bit_loss",
-    "loss/l2": "l2_loss",
+    "loss/l2": "l2_loss",  # always the plain mean square, so runs with and without the texture mask compare
+    "loss/l2_texture": "l2_texture_loss",  # the L2 term the loss used, when loss.texture_mask is on
     "loss/lpips": "lpips_loss",
     "loss/peak": "peak_loss",
     "image/concentration": "concentration",
@@ -484,7 +506,14 @@ def spread_summary(cfg: dict) -> str:
         if hide["enabled"]
         else "off"
     )
-    return f"spread: peak penalty {peak_text}; hiding {hide_text}"
+    texture = texture_settings(cfg)
+    texture_text = (
+        f"on (L2 and peak penalty cost {float(texture['flat_weight']):g}x on flat colour, "
+        f"{float(texture['busy_weight']):g}x on busy detail)"
+        if texture["enabled"]
+        else "off"
+    )
+    return f"spread: peak penalty {peak_text}; hiding {hide_text}; texture mask {texture_text}"
 
 
 def main() -> int:
@@ -505,14 +534,25 @@ def main() -> int:
     )
     parser.add_argument("--keep-awake", action="store_true", help="keep the computer from idle-sleeping during the run")
     parser.add_argument("overrides", nargs="*", help="dotted.key=value config overrides")
-    args = parser.parse_args()
+    # Intermixed, so overrides may come before, between or after the options (pod_run.sh appends its own).
+    args = parser.parse_intermixed_args()
     if args.price_per_hour is not None and args.price_per_hour < 0:
         parser.error("--price-per-hour cannot be negative")
     if args.max_minutes is not None and args.max_minutes <= 0:
         parser.error("--max-minutes must be positive")
 
     cfg = load_config(args.config, args.overrides)
+    if cfg["data"].get("num_workers") is None:
+        parser.error(
+            f"data.num_workers is not set in {args.config}: add data.num_workers=N to the command. "
+            "On a pod, setup_runpod.sh times the label generator and prints the fastest N."
+        )
     check_demo(cfg)
+    if int(cfg["train"]["stage"]) == 2:
+        # Stage 2, the locator: its own loop (locator_train.py), same command-line options.
+        from locator_train import run as run_locator
+
+        return run_locator(cfg, args)
     ckpt_cfg, log_cfg = cfg["checkpoint"], cfg["log"]
     early = cfg.get("early_stop") or {}
     check_enabled = bool(early.get("enabled", False))
@@ -659,6 +699,11 @@ def main() -> int:
     batches = infinite(make_loader(cfg, device))
     total = int(cfg["train"]["total_steps"])
     t0, start_step = time.time(), trainer.step
+    # Time spent waiting for the next batch. Every step ends with .item() calls, so the GPU is
+    # idle while the loop waits here: this is time the data loader (the CPU) held the GPU up.
+    # The first batch also starts the loader's processes and is counted apart.
+    first_batch_s: float | None = None
+    loader_wait_s = 0.0
     # (bit accuracy, PSNR) of the most recent steps, for the report line and the learning check
     recent: deque[tuple[float, float]] = deque(maxlen=max(1, report_every))
     stop = StopRequest()
@@ -680,7 +725,14 @@ def main() -> int:
         while trainer.step < total and stop.signal_name is None:
             want_images = (trainer.step + 1) % log_cfg["image_every"] == 0
             want_sheet = bool(sheet_every) and (trainer.step + 1) % sheet_every == 0
-            m = trainer.train_step(next(batches), keep_outputs=want_images or want_sheet)
+            waited = time.perf_counter()
+            tiles = next(batches)
+            waited = time.perf_counter() - waited
+            if first_batch_s is None:
+                first_batch_s = waited
+            else:
+                loader_wait_s += waited
+            m = trainer.train_step(tiles, keep_outputs=want_images or want_sheet)
             step = trainer.step
             clock.tick()
             recent.append((m["bit_acc"], m["psnr"]))
@@ -777,6 +829,35 @@ def main() -> int:
     finally:
         writer.close()
         clock.save()
+
+    loop_s = time.time() - t0
+    steps_done = trainer.step - start_step
+    throughput = {
+        "start_step": start_step,
+        "end_step": trainer.step,
+        "steps": steps_done,
+        "seconds": round(loop_s, 3),
+        "first_batch_seconds": None if first_batch_s is None else round(first_batch_s, 3),
+        "loader_wait_seconds": round(loader_wait_s, 3),
+        "batch_size": int(cfg["train"]["batch_size"]),
+        "num_workers": int(cfg["data"]["num_workers"]),
+        "total_steps": total,
+        "price_per_hour": args.price_per_hour,
+        "max_hours": max_hours,
+        "device": torch.cuda.get_device_name(device) if device.type == "cuda" else str(device),
+        "image_loss_on_at_end": trainer.image_ramp_start is not None,
+        "utc_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with open(Path(log_cfg["dir"]) / "throughput.json", "w", encoding="utf-8") as f:
+        json.dump(throughput, f, indent=2)
+    if steps_done > 0:
+        after_first = max(1e-9, loop_s - (first_batch_s or 0.0))
+        print(
+            f"data loader: the loop waited {loader_wait_s:.1f} s for batches, {100.0 * loader_wait_s / after_first:.1f} percent "
+            f"of {after_first:.0f} s after the first batch (which took {first_batch_s or 0.0:.1f} s), "
+            f"with {throughput['num_workers']} workers",
+            flush=True,
+        )
 
     if not_learning:
         checkpoint_now()

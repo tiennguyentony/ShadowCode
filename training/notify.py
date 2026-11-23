@@ -1,16 +1,27 @@
 """Email reports for the training runs, sent from the laptop. Nothing runs on the pod.
 
     python notify.py --test                           one test email, then exit
-    python notify.py --pod root@<pod ip> --port <port> --key ~/.ssh/<key>
+    python notify.py --run labels_generated --pod root@<pod ip> --port <port> --key ~/.ssh/<key>
     python notify.py --no-pod                         the laptop run only
+    python notify.py --no-pod --locator --laptop-run runs/locator --laptop-match locator.yaml --state runs/notify_locator_state.json --total-steps 200000
+                                                      the laptop locator run (stage 2): one report per
+                                                      held-out evaluation (eval.csv), with its sample sheet
+
+--run names the pod run: its folder is /workspace/runs/<run> on the pod, as
+pod_run.sh writes it.
 
 It watches two runs and sends, through Gmail:
 
-* a report for every spread row (one per sample sheet, every 2,000 steps),
-  with the sample sheet attached;
-* at once: a run that ended (finished, one of the automatic stops, a crash,
-  an interrupt), a pod that cannot be reached for 5 minutes, and 30 minutes
-  with no new progress row.
+* a report every ``notify.every_steps`` training steps (configs/default.yaml:
+  10,000; --every-steps N overrides it), with every spread row since the
+  last email and the newest sample sheet attached. The spread check, the
+  sheets, the checkpoints and the automatic stops are train.py's and keep
+  their own interval (every 2,000 steps on the pod); only the email is less
+  often. --every-steps 0: no progress reports, only the messages below;
+* at once, whatever the step: a run that ended (finished, one of the
+  automatic stops, a crash, an interrupt), with the rows since the last
+  email and the newest sample sheet; a pod that cannot be reached for 5
+  minutes; and 30 minutes with no new progress row.
 
 The laptop run is only read, and only through files it appends to
 (progress.csv, spread.csv, console.log) and finished sample sheets. It never
@@ -18,14 +29,15 @@ opens that run's checkpoints or run_state.json: the run replaces and deletes
 those, and on Windows that fails while another program has them open.
 
 The pod is read over ssh once a minute (public IP and TCP port 22; RUNPOD.md
-section 2). Its small log files are mirrored to runs/spread/ here, so the
+section 2). Its small log files are mirrored to runs/pod/<run>/ here, so the
 table command in docs/runs.md works on the mirror, and its sheets are copied
-as they are emailed.
+as they are emailed. The mirror is never the laptop run's own folder.
 
 Address, password and pod details are outside the repository, in
 ~/.shadowcode/ (podlink.py). RUNPOD.md, "Email reports", has the setup.
 
-Standard library only. It never imports torch.
+Standard library only, and PyYAML for reading notify.every_steps from the
+config. It never imports torch.
 """
 
 from __future__ import annotations
@@ -70,6 +82,7 @@ EXIT_CODES = {
     4: "automatic stop: the mark piled up at a fixed place (exit code 4)",
     5: "automatic stop: the image loss never switched on (exit code 5)",
     6: "automatic stop: the limit on hours or cost was reached (exit code 6)",
+    7: "automatic stop: the locator's held-out corner error stopped improving (exit code 7)",
     130: "interrupted (Ctrl-C or SIGTERM), checkpoint saved",
 }
 
@@ -151,12 +164,110 @@ class LaptopRun:
         return path if path.is_file() else None
 
 
+class LocatorRun(LaptopRun):
+    """A stage-2 (locator) run on this machine. Its reports come from eval.csv, one row per held-out evaluation."""
+
+    def view(self) -> dict:
+        out = super().view()
+        out["spread"] = read_rows(self.directory / "eval.csv")
+        return out
+
+    def report_text(self, row: dict, view: dict, total_steps: int, note: str = "") -> tuple[str, str]:
+        step = int(row["step"])
+        subject = (
+            f"{self.name} step {step:,}: corner error mean {number(row['mean'], 2)} px, "
+            f"worst 5% {number(row['worst5_mean'], 1)} px"
+        )
+        best = min(view["spread"], key=lambda r: float(r["mean"])) if view["spread"] else row
+        body = [
+            f"{self.name}, step {step:,} of {total_steps:,}" + (f"  ({note})" if note else ""),
+            f"Row written {row['local_time']} (the clock of this laptop)",
+            "",
+            f"Held-out corner error, reader pixels (384 per tile), {row['samples']} samples:",
+            f"  mean {number(row['mean'], 2)}, median {number(row['median'], 2)}, 95th percentile {number(row['p95'], 2)}, "
+            f"worst 5% mean {number(row['worst5_mean'], 2)}, max {number(row['max'], 1)}",
+            f"  marked {number(row['marked_mean'], 2)}, plain {number(row['plain_mean'], 2)}",
+            f"  samples whose best turn is not 0: {row['turn_not_zero']}",
+            f"Best mean so far: {number(best['mean'], 2)} at step {int(best['step']):,}",
+            "",
+            *self.pace(view["progress"], total_steps),
+            "",
+            "Latest rows:",
+            *self.table(view["spread"]),
+        ]
+        return subject, "\n".join(body)
+
+    @staticmethod
+    def pace(progress: list[dict], total_steps: int) -> list[str]:
+        if not progress:
+            return []
+        last = progress[-1]
+        lines = [
+            f"Training time so far: {number(last['elapsed_hours'], 2)} h; "
+            f"train corner error {number(last['train_corner_px'], 2)} px (last 1,000 steps)"
+        ]
+        recent = progress[-6:]
+        hours = float(recent[-1]["elapsed_hours"]) - float(recent[0]["elapsed_hours"])
+        steps = int(recent[-1]["step"]) - int(recent[0]["step"])
+        if hours > 0 and steps > 0:
+            left = (total_steps - int(last["step"])) / (steps / hours)
+            lines.append(f"Pace: {steps / hours:,.0f} steps per hour. Estimate: {left:.1f} h to step {total_steps:,} at this pace.")
+        return lines
+
+    @staticmethod
+    def table(rows: list[dict], count: int = 6) -> list[str]:
+        lines = ["step | mean px | 95th pct | worst 5% | marked | plain"]
+        for r in rows[-count:]:
+            lines.append(
+                f"{int(r['step']):,} | {number(r['mean'], 2)} | {number(r['p95'], 2)} | {number(r['worst5_mean'], 2)} | "
+                f"{number(r['marked_mean'], 2)} | {number(r['plain_mean'], 2)}"
+            )
+        return lines
+
+    def situation(self, view: dict, total_steps: int, console_lines: int = 30) -> str:
+        body = []
+        if view.get("spread"):
+            body += ["Latest held-out rows:", *self.table(view["spread"], 4), ""]
+        if view.get("progress"):
+            last = view["progress"][-1]
+            body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}", *self.pace(view["progress"], total_steps), ""]
+        if view.get("console"):
+            body += [f"Last {min(console_lines, len(view['console']))} console lines of {self.name}:", *view["console"][-console_lines:]]
+        return "\n".join(body)
+
+
+def run_report(run, row: dict, view: dict, total_steps: int, note: str = "") -> tuple[str, str]:
+    if isinstance(run, LocatorRun):
+        return run.report_text(row, view, total_steps, note)
+    return report_text(run.name, row, view, total_steps, note)
+
+
+def run_table(run, rows: list[dict]) -> list[str]:
+    """All of ``rows`` as the run's table (spread rows, or held-out rows for a locator run)."""
+    if not rows:
+        return ["(no new rows since the last email)"]
+    if isinstance(run, LocatorRun):
+        return run.table(rows, len(rows))
+    return table(rows, len(rows))
+
+
+def rows_since(view: dict, step: int) -> list[dict]:
+    return [row for row in view.get("spread") or [] if int(row["step"]) > step]
+
+
+def run_situation(run, view: dict, total_steps: int, console_lines: int = 30) -> str:
+    if isinstance(run, LocatorRun):
+        return run.situation(view, total_steps, console_lines)
+    return situation(run.name, view, total_steps, console_lines)
+
+
 class PodRun:
     """The run on the pod: one ssh call per look, mirrored into a local folder."""
 
-    def __init__(self, name: str, pod: Pod, remote: str, mirror: Path, match: str):
+    def __init__(self, name: str, pod: Pod, remote: str, mirror: Path, match: str, key: str):
         self.name, self.pod, self.remote, self.mirror, self.match = name, pod, remote.rstrip("/"), mirror, match
-        self.key = "pod"
+        # What has been sent is kept per run: a new run on the pod starts with nothing sent.
+        self.key = key
 
     def view(self) -> dict:
         try:
@@ -221,6 +332,8 @@ def ending(console: list[str]) -> tuple[str, str | None]:
         if found:
             code = int(found.group(1))
             said = next((s for s in reversed(session) if any(p.search(s) for p, _ in ENDINGS)), None)
+            if code == 0 and said is not None and said.startswith("time limit reached"):
+                return "stopped by --max-minutes, checkpoint saved (exit code 0)", said
             if code in EXIT_CODES:
                 return EXIT_CODES[code], said
             # A code this file does not know: train.py's own stops all say "Stopped:" first.
@@ -360,6 +473,16 @@ def situation(name: str, view: dict, total_steps: int, console_lines: int = 30) 
 # -- deciding what to send ------------------------------------------------------------
 
 
+def every_steps_from(config: Path) -> int:
+    """notify.every_steps from a training config (with its base files)."""
+    from config import load_config  # PyYAML; only needed here
+
+    value = (load_config(config).get("notify") or {}).get("every_steps")
+    if value is None:
+        raise SystemExit(f"stopped: {config} has no notify.every_steps; pass --every-steps N")
+    return int(value)
+
+
 def utc_seconds(text: str) -> float:
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
 
@@ -384,29 +507,35 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             st["unreachable_told"] = mailer.send(f"ALERT {run.name}: cannot be reached", body)
     else:
         if st.pop("unreachable_since", None) and st.pop("unreachable_told", None):
-            mailer.send(f"{run.name}: reachable again", situation(run.name, view, args.total_steps, 10))
+            mailer.send(f"{run.name}: reachable again", run_situation(run, view, args.total_steps, 10))
         if not view["started"]:
             return
 
-        # Reports: one per spread row. The first look sends only the newest row.
+        # Reports: one each time the newest row passes a multiple of every_steps, with all the
+        # rows since the last email and the newest sheet. "reported_step" is the newest row
+        # any email has carried. The first look sends the newest row only (not with every_steps 0).
         rows = view["spread"]
-        if rows and "reported_step" not in st:
-            subject, body = report_text(run.name, rows[-1], view, args.total_steps, "the watcher has just started")
-            if mailer.send(subject, body, run.sheet(int(rows[-1]["step"]))):
-                st["reported_step"] = int(rows[-1]["step"])
-        for row in rows if "reported_step" in st else []:
-            step = int(row["step"])
-            if step <= st["reported_step"]:
-                continue
-            sheet = run.sheet(step)
-            subject, body = report_text(run.name, row, view, args.total_steps)
+        every = args.every_steps
+        if "reported_step" not in st:
+            if rows and every > 0:
+                subject, body = run_report(run, rows[-1], view, args.total_steps, "the watcher has just started")
+                if mailer.send(subject, body, run.sheet(int(rows[-1]["step"]))):
+                    st["reported_step"] = int(rows[-1]["step"])
+            else:
+                st["reported_step"] = -1
+        newest = int(rows[-1]["step"]) if rows else -1
+        if every > 0 and "reported_step" in st and newest > st["reported_step"] and newest // every > max(st["reported_step"], 0) // every:
+            new_rows = rows_since(view, st["reported_step"])
+            sheet = run.sheet(newest)
+            subject, body = run_report(run, rows[-1], view, args.total_steps)
+            body += (
+                f"\n\nAll rows since the last email ({len(new_rows)}; one email every {every:,} steps):\n"
+                + "\n".join(run_table(run, new_rows))
+            )
             if sheet is None:
                 body += "\n\nThe sample sheet for this step could not be read, so it is not attached."
-            if not mailer.send(subject, body, sheet):
-                break
-            st["reported_step"] = step
-        if not rows:
-            st.setdefault("reported_step", -1)
+            if mailer.send(subject, body, sheet):
+                st["reported_step"] = newest
 
         # Ended: train.py is not running. Two looks in a row, or at once when the console gives an exit code.
         alive = view["alive"]
@@ -421,15 +550,23 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             if known and not st.get("ended") and (st["not_alive_looks"] >= 2 or exit_line):
                 reason, said = ending(view["console"])
                 body = f"{run.name}: train.py is no longer running.\nWhy: {reason}\n" + (f"It said: {said}\n" if said else "")
-                if run.key == "pod":
+                if isinstance(run, PodRun):
                     body += (
                         "\nIf the run was started with the stop-the-pod command, the pod stops itself now. Check in the "
                         "RunPod console that it has. To keep the result: RUNPOD.md, \"Keep the result\".\n"
                     )
                 if not st.get("was_alive"):
                     body += "\nIt was already stopped when the watcher first looked.\n"
-                if mailer.send(f"ENDED {run.name}: {reason}", body + "\n" + situation(run.name, view, args.total_steps)):
+                new_rows = rows_since(view, st.get("reported_step", -1))
+                body += f"\nRows since the last email ({len(new_rows)}):\n" + "\n".join(run_table(run, new_rows)) + "\n"
+                rows = view.get("spread") or []
+                sheet = run.sheet(int(rows[-1]["step"])) if rows else None
+                if rows and sheet is None:
+                    body += "\nThe newest sample sheet could not be read, so it is not attached.\n"
+                if mailer.send(f"ENDED {run.name}: {reason}", body + "\n" + run_situation(run, view, args.total_steps), sheet):
                     st["ended"] = {"reason": reason, "at": now}
+                    if rows:
+                        st["reported_step"] = max(st.get("reported_step", -1), int(rows[-1]["step"]))
 
     # Stalled: no new progress row for too long. Counted from the newest row, or from the first look.
     if st.get("ended") or not (st.get("was_alive") or st.get("last_row")):
@@ -451,9 +588,9 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             f"{run.name}: no new progress row for {quiet / 60:.0f} minutes "
             f"(a row comes every 1,000 steps). "
             + (f"The last one is step {last['step']:,} at {last['utc_time']}.\n\n" if last else "No row has been written yet.\n\n")
-            + ("The run is hung or very slow, or the pod is gone. A pod that is still running is still billed.\n\n" if run.key == "pod"
+            + ("The run is hung or very slow, or the pod is gone. A pod that is still running is still billed.\n\n" if isinstance(run, PodRun)
                else "The run is hung or very slow, or the laptop was asleep.\n\n")
-            + (situation(run.name, view, args.total_steps) if view["reachable"] else "The pod could not be reached for this look.")
+            + (run_situation(run, view, args.total_steps) if view["reachable"] else "The pod could not be reached for this look.")
         )
         st["stall_told"] = mailer.send(f"ALERT {run.name}: no new row for {quiet / 60:.0f} minutes", body)
 
@@ -468,20 +605,35 @@ def main() -> int:
     parser.add_argument("--no-laptop", action="store_true", help="watch the pod run only")
     parser.add_argument("--laptop-run", default="runs/penalty", help="log folder of the laptop run")
     parser.add_argument("--laptop-match", default="penalty.yaml", help="text in the laptop run's command line")
-    parser.add_argument("--pod-run", default="/workspace/runs/spread", help="run folder on the pod")
-    parser.add_argument("--pod-match", default="runpod_spread.yaml", help="text in the pod run's command line, after train.py")
-    parser.add_argument("--pod-mirror", default="runs/spread", help="local folder the pod's logs and sheets are copied to")
+    parser.add_argument("--run", help="the pod run's name, e.g. labels_generated (its folder is /workspace/runs/<run>)")
+    parser.add_argument("--pod-run", help="run folder on the pod (default: /workspace/runs/<run>)")
+    parser.add_argument("--pod-match", help="text in the pod run's command line, after train.py "
+                        "(default: runs/<run>/logs, which pod_run.sh passes as log.dir)")
+    parser.add_argument("--pod-mirror", help="local folder the pod's logs and sheets are copied to (default: runs/pod/<run>)")
     parser.add_argument("--total-steps", type=int, default=140000)
     parser.add_argument("--interval", type=float, default=60.0, help="seconds between looks")
     parser.add_argument("--stall-minutes", type=float, default=30.0)
     parser.add_argument("--state", default="runs/notify_state.json", help="what has been sent already")
     parser.add_argument("--dry-run", metavar="DIR", help="write the messages to DIR as .eml files instead of sending")
     parser.add_argument("--once", action="store_true", help="look once and exit")
+    parser.add_argument("--locator", action="store_true", help="the laptop run is a stage-2 locator run (reports from eval.csv)")
+    parser.add_argument("--config", default="configs/default.yaml",
+                        help="config whose notify.every_steps sets the report interval (default configs/default.yaml)")
+    parser.add_argument("--every-steps", type=int, default=None,
+                        help="one progress report every N training steps, overriding notify.every_steps; "
+                             "0: no progress reports, only the end of the run and alerts")
     args = parser.parse_args()
+    if args.every_steps is None:
+        args.every_steps = every_steps_from(HERE / args.config)
+    if args.every_steps < 0:
+        raise SystemExit("stopped: --every-steps must be 0 or more")
 
     settings = load_settings()
     mailer = Mailer(settings, Path(args.dry_run) if args.dry_run else None)
-    laptop = LaptopRun("penalty run (laptop)", HERE / args.laptop_run, args.laptop_match)
+    if args.locator:
+        laptop = LocatorRun("locator run (laptop)", HERE / args.laptop_run, args.laptop_match)
+    else:
+        laptop = LaptopRun("penalty run (laptop)", HERE / args.laptop_run, args.laptop_match)
 
     if args.test:
         rows = read_rows(laptop.directory / "spread.csv")
@@ -497,7 +649,14 @@ def main() -> int:
     runs: list = [] if args.no_laptop else [laptop]
     pod = None if args.no_pod else pod_from(args, settings)
     if pod is not None:
-        runs.append(PodRun("spread run (pod)", pod, args.pod_run, HERE / args.pod_mirror, args.pod_match))
+        if not args.run or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", args.run):
+            raise SystemExit("stopped: name the pod run with --run, e.g. --run labels_generated (the name given to pod_run.sh).")
+        pod_run = args.pod_run or f"/workspace/runs/{args.run}"
+        match = args.pod_match or re.escape(f"runs/{args.run}/logs")
+        mirror = (HERE / (args.pod_mirror or f"runs/pod/{args.run}")).resolve()
+        if mirror == laptop.directory.resolve() or (mirror / "run_state.json").is_file() and not (mirror / "console_tail.log").is_file():
+            raise SystemExit(f"stopped: {mirror} holds a run of this laptop; pick another --pod-mirror.")
+        runs.append(PodRun(f"{args.run} run (pod)", pod, pod_run, mirror, match, f"pod:{args.run}"))
     elif not args.no_pod:
         raise SystemExit("stopped: no pod given. Pass --pod root@<pod ip> --port <port>, or --no-pod for the laptop run only.")
     if mailer.dry_run is None:
@@ -505,7 +664,8 @@ def main() -> int:
 
     state_path = HERE / args.state
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
-    log(f"watching: {', '.join(r.name for r in runs)}; reports to {mailer.to}; a look every {args.interval:g} s")
+    cadence = f"a report every {args.every_steps:,} steps" if args.every_steps else "no progress reports, only the end and alerts"
+    log(f"watching: {', '.join(r.name for r in runs)}; reports to {mailer.to} ({cadence}); a look every {args.interval:g} s")
     try:
         while True:
             for run in runs:

@@ -1,0 +1,56 @@
+# The generated-label run (configs/labels_generated.yaml) on a RunPod pod.
+#
+# configs/labels_generated.yaml with these changes:
+#
+# - Paths on the network volume, which RunPod mounts at /workspace: logs,
+#   checkpoints and console.log under /workspace/runs/labels_generated.
+# - No GPU name check (labels.yaml expects the laptop's RTX 4070) and no
+#   Markdown table in docs/runs.md (the pod's checkout is not where the
+#   results are written up).
+# - The four automatic stops of runpod_spread.yaml: the learning check at 45
+#   minutes (already in labels.yaml), the image-loss check at step 15,000,
+#   the fixed-place limit of 4 (already in labels.yaml) and 24 hours of
+#   training (labels_generated.yaml has no limit on hours).
+# - data.num_workers is not set here. Every pod has a different CPU, and
+#   label generation runs on the CPU. setup_runpod.sh times labelgen.py with
+#   1, 4 and 8 workers (and the pod's vCPU count) and prints the fastest;
+#   pass it on the command line as data.num_workers=N. train.py refuses to
+#   start without it.
+#
+# Everything else is labels_generated.yaml: tiles drawn by labelgen.py from
+# seeds 1,000,000 to 1,999,999, both spread options on, batch 8, 140,000
+# steps, sample sheet and spread check every 1,000 steps.
+#
+# Started through pod_run.sh, which stops the pod when train.py exits
+# (RUNPOD.md, "The generated-label run"):
+#
+#   bash pod_run.sh labels_generated configs/runpod_labels_generated.yaml --price-per-hour <price> data.num_workers=<N>
+base: labels_generated.yaml
+
+data:
+  num_workers: null            # set from setup_runpod.sh's labelgen benchmark: data.num_workers=N
+
+train:
+  expect_gpu: null
+
+log:
+  dir: /workspace/runs/labels_generated/logs
+  spread_markdown: null
+
+checkpoint:
+  dir: /workspace/runs/labels_generated/checkpoints
+  every: 2000
+  keep: 3
+
+early_stop:                    # one look, 45 minutes of training in
+  enabled: true
+  after_minutes: 45
+  min_bit_acc: 0.75            # mean of the last 1,000 training steps, read with regions blanked
+
+image_loss_check:              # at step 15,000: save and exit if PSNR is still below 14 dB (exit code 5)
+  enabled: true
+  at_step: 15000
+  min_psnr_db: 14.0
+
+budget:                        # save and exit (exit code 6) once the run has trained this long
+  max_hours: 24

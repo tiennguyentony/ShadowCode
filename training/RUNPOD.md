@@ -1,4 +1,210 @@
-# Running the spread run on RunPod
+# Training runs on RunPod
+
+Two runs are set up for a pod. Each is started with `pod_run.sh`, which stops
+the pod when the run ends, and has a name: its folder on the volume is
+`/workspace/runs/<name>`, and `notify.py`, `keep_result.py`, `finish_run.sh`
+and `watchdog.sh` take the same name.
+
+| Run | Config | Name |
+|---|---|---|
+| Embedder and reader on generated label art (next) | `configs/runpod_labels_generated.yaml` | `labels_generated` |
+| Its 10-minute benchmark | the same | `labels_generated_bench` |
+| The spread run on photos | `configs/runpod_spread.yaml` | `spread` |
+
+RunPod facts in this guide were read from docs.runpod.io on 2026-11-21 and
+2026-11-22. Prices change; check the console.
+
+## The generated-label run: checklist
+
+`configs/runpod_labels_generated.yaml` is `configs/labels_generated.yaml`
+(tiles drawn by `labelgen.py`, both spread options on, 140,000 steps) with
+its paths on the volume, no GPU-name check, the four automatic stops of the
+spread run (45-minute learning check, image-loss check at step 15,000,
+fixed-place limit 4, 24 hours of training), and **no `data.num_workers`**:
+the tiles are drawn on the CPU while the GPU trains, so the number of loader
+processes comes from timing the pod's own CPU (step 6).
+
+There is no dataset to download. **Nothing in this run has been run on a
+pod yet**, including the stop: step 7 is its first live test.
+
+**In the RunPod console, before anything is billed**
+
+1. **Billing** page: make sure auto-pay is **not** enabled (the docs describe
+   enabling it there, with a threshold and an amount). Load a small balance:
+   enough for setup and the benchmark, about one hour at the price of the pod
+   you will pick. You top up for the long run in step 10, once the benchmark
+   has given an estimate. Under **Notifications**, turn on **Low balance
+   alert** (it is sent by email). Why: when the balance reaches $0, RunPod
+   stops every pod. A pod on a network volume keeps its data, but the volume
+   is still billed, and the docs say a volume that cannot be paid for may
+   eventually be deleted. The account also has a default spend limit of $80
+   per hour, which does not limit a long run's total.
+2. **Storage > Network Volumes > New**: 10 GB, in a data center that has the
+   GPUs below. The run needs about 2 GB: three checkpoints of 0.25 GB, the
+   kept results of the benchmark and of the run (about 0.27 GB each), the
+   LPIPS weights (0.23 GB) and the code.
+3. **Deploy a pod from that volume** (a network volume can only be attached
+   at deploy time):
+   - Template **Runpod PyTorch**; volume mounted at `/workspace`.
+   - **One GPU with 24 GB.** Among the 24 GB types RunPod lists are the
+     RTX 4090, RTX 3090, RTX A5000, L4 and A30. Which is fastest for this run,
+     and the cheapest per step, has not been measured.
+   - **At least 8 vCPUs.** RunPod's docs say vCPUs and RAM come from the host
+     machine, not from the GPU type, and do not say whether the GPU list shows
+     them. If the deploy page shows a vCPU count, pick 8 or more. Step 6
+     prints the count the pod really has.
+   - **On-demand.** RunPod's docs say spot (interruptible) pods have been
+     retired; if an interruptible option is offered anyway, do not pick it.
+   - A public IP with TCP port 22 and your SSH key (for `notify.py` and
+     `keep_result.py`, section 9 and 10).
+
+   Write down the price per hour and, from **Connect**, the IP and port.
+
+**On the laptop, once:** `python notify.py --test` in `training`, and wait
+for the message (section 9).
+
+**On the pod** (web terminal or ssh)
+
+4. Code: `cd /workspace && git clone https://github.com/tiennguyentony/ShadowCode.git`,
+   then `cd /workspace/ShadowCode && git checkout master && git log -1 --oneline`.
+   The commit has to have `pod_run.sh` in `training` (section 3).
+5. `tmux new -s labels`, then `cd /workspace/ShadowCode/training`.
+6. Setup: `CONFIG=configs/runpod_labels_generated.yaml bash setup_runpod.sh`.
+   It must end with `ready - nothing has been started` and say that
+   `runpodctl` was found. Instead of a download it times `labelgen.py` with 1,
+   4 and 8 loader processes (and the pod's vCPU count, if higher) and prints
+   `fastest: N workers, ... tiles/s`, and the two commands below with that N
+   filled in. **If the vCPU line shows fewer than 8, stop here**: terminate
+   the pod and deploy another.
+7. **The 10-minute benchmark**, the line setup printed, with your price:
+
+   ```bash
+   bash pod_run.sh --bench labels_generated_bench configs/runpod_labels_generated.yaml --max-minutes 10 --price-per-hour 0.00 data.num_workers=N
+   ```
+
+   It trains for 10 minutes from step 0 in `/workspace/runs/labels_generated_bench`
+   (not the real run's folder), then prints the report: steps per second,
+   GPU utilisation, whether the CPU held the GPU up, and the hours and GPU cost
+   of 140,000 steps at that speed. Then it exports and keeps the result, waits
+   three minutes, and **stops the pod through the same path the long run
+   uses**. Read the report on the screen during those three minutes; it is
+   also saved as `/workspace/runs/labels_generated_bench/bench_report.txt`.
+8. **Check in the console that the pod has stopped**, about five minutes
+   after the report. This is the live test of the stop. If it has not
+   stopped, stop it by hand, and do not leave the long run unattended: the
+   `runpodctl` lines at the end of `/workspace/runs/labels_generated_bench/console.log`
+   say why.
+9. Decide from the report. If `CPU bottleneck` says YES, a pod with more
+   vCPUs would be faster. If the image loss was off for the whole benchmark,
+   the report says so: its estimate is then too low, because later steps do
+   more work. If the estimate is over 24 hours, the run stops at 24 hours
+   (it says near which step).
+10. Top up the balance to the estimate plus the margin you want. Start the
+    pod again (**Pods > Start**; the IP and port may change). Stopping wiped
+    the container disk, so run step 5 and 6 again.
+11. **The run**, the second line setup printed, with your price:
+
+    ```bash
+    bash pod_run.sh labels_generated configs/runpod_labels_generated.yaml --price-per-hour 0.00 data.num_workers=N
+    ```
+
+    The first lines have to show `launched pod_run.sh labels_generated`,
+    `device=cuda`, the `spread:` line with both options on, and `budget: the
+    run stops, with a checkpoint, at 24 h of training`. `pod_run.sh` starts
+    the watchdog itself (`watchdog: watching ...` in `console.log`): it stops
+    the pod if no progress row has come for an hour. Leave tmux with `Ctrl-b`
+    then `d`.
+12. On the laptop, in a terminal of its own, in `training`:
+    `python notify.py --no-laptop --run labels_generated --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>`
+    (leave out `--no-laptop` if a laptop run is going too).
+13. When the `ENDED` message arrives, the pod stops itself a few minutes
+    later. Check in the console that it has.
+14. Start the pod again and, on the laptop, in `training`:
+    `python keep_result.py --run labels_generated --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>`
+    and wait for `CHECK PASSED` (section 10). It copies to
+    `training/kept/labels_generated/<bundle id>/`.
+15. Stop the pod. **Delete the pod and the volume only after `CHECK PASSED`**
+    (section 7). The volume is billed until it is deleted.
+
+## The generated-label fix: 2,000-step check, then the run
+
+The generated-label run stopped itself at step 38,000 with the mark piled up
+in the tile corner (`/docs/runs.md`, "Generated-label pod run: the stop and
+the fix"). `configs/runpod_labels_generated_fix.yaml` is the same run with the
+peak penalty at weight 16 instead of 4 and the texture mask on. It is checked
+first for 2,000 steps, resumed from the old run's step 34,000 (the least
+piled-up checkpoint left), under the run name `labels_generated_fix`.
+
+**Keep the old run's volume** until this has passed: its
+`checkpoints/step_00034000.pt` is the start.
+
+**On the pod** (start it again: **Pods > Start**; the IP and port may change)
+
+1. `tmux new -s fix`, then
+   `cd /workspace/ShadowCode && git fetch origin && git checkout training/spread-texture-fix && git pull && git log -1 --oneline`.
+2. `cd training && CONFIG=configs/runpod_labels_generated_fix.yaml bash setup_runpod.sh`
+   (stopping wiped the container disk). Note the `fastest: N workers` line;
+   the old run used 8.
+3. Put the start checkpoint into the new run's folder:
+
+   ```bash
+   mkdir -p /workspace/runs/labels_generated_fix/checkpoints
+   cp /workspace/runs/labels_generated/checkpoints/step_00034000.pt /workspace/runs/labels_generated_fix/checkpoints/
+   ```
+
+4. **The check**, 2,000 steps (34,000 to 36,000), about 8 minutes of training:
+
+   ```bash
+   bash pod_run.sh labels_generated_fix configs/runpod_labels_generated_fix.yaml --price-per-hour 0.69 --max-minutes 15 train.total_steps=36000 data.num_workers=8
+   ```
+
+   The first lines have to show
+   `spread: peak penalty on (weight 16, ...); ...; texture mask on (...)` and
+   `resumed from /workspace/runs/labels_generated_fix/checkpoints/step_00034000.pt at step 34000`.
+   `--max-minutes 15` is only a guard: 2,000 steps take about 7.5 minutes
+   at 15,990 steps per hour.
+
+**On the laptop**, in `training`, one email at the end only:
+
+```powershell
+python notify.py --no-laptop --run labels_generated_fix --every-steps 0 --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
+```
+
+**Pass lines**, read from the step 36,000 row of the ENDED email (the row at
+34,000 is the start):
+
+| Line | Pass |
+|---|---|
+| Fixed place | under 2 (start 3.20) |
+| Bit accuracy, mean of the last 1,000 training steps | 0.94 or more |
+| PSNR | above the start (23.48 dB on the fixed images at 34,000) |
+| Energy on the busier half | above 60 percent (start 49) |
+
+With the texture mask the mark may move onto detail and the PSNR may fall
+while the mark gets harder to see; read the PSNR line together with the
+sample sheet.
+
+**If it passes**, the same name resumes from 36,000 to 140,000, with the
+normal reports (one every 10,000 steps):
+
+```bash
+bash pod_run.sh labels_generated_fix configs/runpod_labels_generated_fix.yaml --price-per-hour 0.69 data.num_workers=8
+```
+
+```powershell
+python notify.py --no-laptop --run labels_generated_fix --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
+```
+
+104,000 steps: about 6.5 hours and $4.49 of GPU time at 15,990 steps per
+hour and $0.69 per hour (estimate).
+
+**If it fails** (fixed place still 2 or more at 36,000), do not resume: the
+mark is too set in the old checkpoints. Start the same config from step 0
+under a new name; the image loss only switches on near step 16,000, so its
+first useful look is the spread row at about 20,000 (1.25 hours, $0.86), and
+the whole run is about 8.8 hours and $6.04.
+
+## The spread run
 
 The pod trains `configs/runpod_spread.yaml`: the long run's settings
 (flattened reader, phone camera range, top band, 140,000 steps) with the two
@@ -16,11 +222,8 @@ hours of training, the only one of the four that limits time or cost. The
 sample sheets, one every 2,000 steps, show the mark itself; section 6 says
 how to copy one to the laptop and what to look for.
 
-**This guide has not been run on a pod.** The RunPod facts in it (mount path,
-what is billed, `runpodctl` commands, file transfer) were read from
-docs.runpod.io on 2026-11-21. `setup_runpod.sh` was run only on the laptop
-against an ordinary folder standing in for the volume. Prices change; check
-the console.
+**This guide has not been run on a pod.** `setup_runpod.sh` was run only on
+the laptop against an ordinary folder standing in for the volume.
 
 The direct reader (`configs/runpod_direct.yaml`) is dropped for the gate: it
 never left chance with rotation (`/docs/runs.md`, "Direct mode"). The config
@@ -51,31 +254,32 @@ Each step names the section that has the details and the reasons.
 
 6. Get the code and check the commit is the newest one on GitHub (section 3):
    `cd /workspace && git clone https://github.com/tiennguyentony/ShadowCode.git`
-   then `cd /workspace/ShadowCode && git checkout training/pipeline && git log -1 --oneline`
+   then `cd /workspace/ShadowCode && git checkout master && git log -1 --oneline`
 7. Set up; it downloads the dataset the first time (section 4):
    `cd /workspace/ShadowCode/training && bash setup_runpod.sh`
    It has to end with `ready - nothing has been started`, say that
    `runpodctl` was found, and list the stops, the 24 hours among them.
-8. Open tmux and set the folder (section 5):
-   `tmux new -s spread`, then
-   `cd /workspace/ShadowCode/training && export TORCH_HOME=/workspace/cache/torch && mkdir -p /workspace/runs/spread`
-9. Start the run with the long **stop-the-pod command** of section 5, with
-   your price in place of `0.00`.
+8. Open tmux and go to the folder (section 5):
+   `tmux new -s spread`, then `cd /workspace/ShadowCode/training`
+9. Start the run with the **stop-the-pod command** of section 5, with
+   your price in place of `0.00`:
+   `bash pod_run.sh spread configs/runpod_spread.yaml --price-per-hour 0.00`
 10. Read the first lines before you leave. They have to show `device=cuda`,
     `spread: peak penalty on ...; hiding on ...`, and
     `budget: the run stops, with a checkpoint, at 24 h of training`.
-11. Leave tmux with `Ctrl-b` then `d`, and start the watchdog of section 5
-    (the `tmux new -d -s watchdog ...` line).
+11. Leave tmux with `Ctrl-b` then `d`. The watchdog of section 5 was started
+    by `pod_run.sh`.
 
 **On the laptop**
 
 12. In a terminal of its own, in `training`, start the watcher (section 9):
-    `python notify.py --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>`
+    `python notify.py --run spread --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>`
     It prints one `sent:` line per run within a minute or two.
 
 **While it runs**
 
-13. A report arrives every 2,000 steps for each run. Section 5, "What you
+13. A report arrives every 10,000 steps for each run (`notify.every_steps`),
+    with the spread rows of the 2,000-step checks since the last one. Section 5, "What you
     will see", says what the numbers mean and section 6 what a good and a
     bad sample sheet look like. The run can stop itself at 45 minutes (not
     learning), at step 15,000 (image loss never on), at any sample sheet
@@ -87,7 +291,7 @@ Each step names the section that has the details and the reasons.
     that it has.
 15. Start the pod again (or deploy any pod on the same volume) and, on the
     laptop, in `training`, copy and check the result (section 10):
-    `python keep_result.py --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>`
+    `python keep_result.py --run spread --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>`
     Wait for `CHECK PASSED`.
 16. Stop the pod. Fill in GPU, price and start time in `/docs/runs.md`,
     "Spread run (RunPod)", and rebuild its table with the command there.
@@ -134,8 +338,9 @@ Deploy the pod **from the network volume** (so that it is attached), with:
   already holds, so they should add little; that was not measured on a GPU.
 - Volume mount path: `/workspace` (the default). The config assumes it.
 - Container disk: the template default. It only has to hold the pip packages.
-- On-demand, not spot (interruptible), unless you accept restarts. A restarted run
-  resumes from its newest checkpoint and loses at most 2,000 steps.
+- On-demand. RunPod's docs (2026-11-22) say spot (interruptible) pods have
+  been retired. A run restarted for any reason resumes from its newest
+  checkpoint and loses at most 2,000 steps.
 - For `scp` or `rsync`, the pod needs a public IP with TCP port 22 exposed.
   RunPod's proxied "basic SSH" does not support them. `runpodctl send`
   (section 6) needs neither.
@@ -152,7 +357,7 @@ cd /workspace && git clone https://github.com/tiennguyentony/ShadowCode.git
 ```
 
 ```bash
-cd /workspace/ShadowCode && git checkout training/pipeline
+cd /workspace/ShadowCode && git checkout master
 ```
 
 If the code is already on the volume from an earlier pod, update it instead:
@@ -187,6 +392,7 @@ everything else is on the volume.
 cd /workspace/ShadowCode/training && bash setup_runpod.sh
 ```
 
+For another config, name it: `CONFIG=configs/runpod_labels_generated.yaml bash setup_runpod.sh`.
 It does four things and starts nothing:
 
 1. Checks that `/workspace` exists and is writable, and prints its size.
@@ -194,6 +400,15 @@ It does four things and starts nothing:
 3. Checks the GPU with `nvidia-smi` and by running a convolution on it.
 4. Fetches the dataset to `/workspace/datasets/open-images-v7-val` if it is
    not complete there, and the LPIPS weights to `/workspace/cache/torch`.
+   A config with `data.source: generated_labels` has no dataset: instead,
+   `labelgen.py --bench 300 --workers 1 4 8` (and the vCPU count, from
+   `RUNPOD_CPU_COUNT` or `nproc`, if above 8) times the label generator,
+   prints the fastest worker count and its tiles per second, and saves the
+   timing to `/workspace/cache/labelgen_bench.txt`. The LPIPS weights are
+   fetched either way.
+
+At the end it prints the `pod_run.sh` commands for the config, with the
+fastest worker count filled in for generated labels.
 
 The dataset is **Open Images V7, validation split**, first 16,000 images by
 image ID, **4.94 GB**, images listed as **CC BY 2.0** (`THIRD_PARTY.md`). The
@@ -214,58 +429,62 @@ Start a tmux session, so the run survives a dropped connection:
 tmux new -s spread
 ```
 
-Inside it:
+Inside it, with your pod's price in place of `0.00`:
 
 ```bash
-cd /workspace/ShadowCode/training && export TORCH_HOME=/workspace/cache/torch && mkdir -p /workspace/runs/spread
+cd /workspace/ShadowCode/training && bash pod_run.sh spread configs/runpod_spread.yaml --price-per-hour 0.00
 ```
 
-Then one of the two commands below, with your pod's price in place of `0.00`.
+**`pod_run.sh` is the stop-the-pod command.** It takes the run's name and
+config, then any `train.py` options and overrides, and puts everything under
+`/workspace/runs/<name>/` (it passes `log.dir` and `checkpoint.dir` to
+`train.py` itself). When `train.py` exits, for any reason (finished, stopped
+by one of its four stops, `Ctrl-c`, or crashed), it:
 
-**Stop the pod when the run ends** (finished, stopped by one of its four
-stops, or crashed). This is the one to use if you will not be watching:
-
-```bash
-python3 train.py --config configs/runpod_spread.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/spread/console.log; echo "train.py exited with code ${PIPESTATUS[0]} at $(date -u)" | tee -a /workspace/runs/spread/console.log; bash finish_run.sh 2>&1 | tee -a /workspace/runs/spread/console.log; sleep 180; until runpodctl pod stop "$RUNPOD_POD_ID" || runpodctl stop pod "$RUNPOD_POD_ID"; do sleep 60; done
-```
-
-When `train.py` exits, for any reason, this does four things in order:
-
-1. writes its exit code to `console.log`;
-2. runs `finish_run.sh`, which exports the bundle and puts everything worth
-   keeping into `/workspace/runs/spread/kept/<bundle id>/` with checksums
+1. writes `train.py exited with code N` to `console.log`;
+2. with `--bench` only, prints the benchmark report (`bench_report.py`);
+3. runs `finish_run.sh`, which exports the bundle and puts everything worth
+   keeping into `/workspace/runs/<name>/kept/<bundle id>/` with checksums
    (section 10), while the pip packages the export needs are still there;
-3. waits three minutes, so the laptop's watcher (section 9) can read why the
+4. waits three minutes, so the laptop's watcher (section 9) can read why the
    run ended before the pod goes away;
-4. asks RunPod to stop the pod, again every minute until that works.
+5. asks RunPod to stop the pod (`runpodctl pod stop "$RUNPOD_POD_ID"`), again
+   every minute until that works.
 
-Nothing in steps 2 and 3 can prevent step 4. If `finish_run.sh` is not on the
-pod (a checkout from before it existed) or fails, the line says so and goes
-on. A crash in the first seconds stops the pod too, about three minutes
-later; the reason is then in `console.log`, on the volume.
+Nothing in steps 2 to 4 can prevent step 5. Only a mistake found before
+anything starts (no price, a price of 0, a config that does not load, no
+`data.num_workers` for the generated-label config) ends it without stopping
+the pod, with `Nothing was started and the pod was not stopped.` A crash in
+the first seconds stops the pod too, about three minutes later; the reason
+is then in `console.log`, on the volume. To keep the pod after all, close the
+tmux session during the three-minute wait (`tmux kill-session -t spread`).
 
-`setup_runpod.sh` says at the end whether `RUNPOD_POD_ID` and `runpodctl` are
-present. If they are not, this command cannot stop the pod. The second form
-after `||` is the older `runpodctl` syntax, for images that ship an older
-version. Check in the console afterwards that the pod really is stopped.
+RunPod's docs say every pod comes with `runpodctl` and a pod-scoped API key,
+and sets `RUNPOD_POD_ID`; `setup_runpod.sh` checks both. If either is
+missing, `pod_run.sh` says so before the wait and cannot stop the pod. The
+second form it tries, `runpodctl stop pod`, is the older syntax, which the
+docs now list as legacy. Check in the console afterwards that the pod really
+is stopped.
 
-**If the run hangs** it never exits, and the command above never reaches the
-stop. Start this once, from any shell on the pod, after the run has started.
-It stops the pod when `progress.csv` has had no new row for an hour (a row
-comes every 1,000 steps, about 8 minutes on the laptop):
+**If the run hangs** it never exits, and `pod_run.sh` never reaches the stop.
+For that it starts `watchdog.sh <name>` in the background: it stops the pod
+when `progress.csv` has had no new row for an hour (a row comes every 1,000
+steps). The hour counts from when the watchdog starts, so an old
+`progress.csv` from an earlier pod session does not trip it. `pod_run.sh`
+ends it just before its own stop. For a run started without `pod_run.sh`,
+start one by hand from the training folder:
 
 ```bash
-tmux new -d -s watchdog 's=$(date +%s); f=/workspace/runs/spread/logs/progress.csv; while sleep 300; do m=$(stat -c %Y "$f" 2>/dev/null || echo 0); [ "$m" -lt "$s" ] && m=$s; if [ $(( $(date +%s) - m )) -gt 3600 ]; then echo "no report line for an hour at $(date -u): stopping the pod" >> /workspace/runs/spread/console.log; until runpodctl pod stop "$RUNPOD_POD_ID" || runpodctl stop pod "$RUNPOD_POD_ID"; do sleep 60; done; fi; done'
+tmux new -d -s watchdog 'bash watchdog.sh spread'
 ```
 
-The hour counts from when the watchdog starts, so an old `progress.csv` from
-an earlier pod session does not trip it. `tmux kill-session -t watchdog`
-ends it. It has to be started again after every pod start.
-
-Both commands were tested on the laptop with a stand-in for `runpodctl`
-(exit codes 4 and 1, a stop that fails twice before it works, a run that
-stops writing rows). Neither has stopped a real pod yet, and the `tmux`
-wrapper of the second was not run.
+Tested on the laptop with a stand-in for `runpodctl` that fails twice before
+it works, and a stand-in for `train.py` that trains nothing: exit codes 0, 1
+and 6, the benchmark report, a crash before any log was written, every
+argument mistake above, and the watchdog with no rows, with rows that stop
+coming, and with an old `progress.csv`. Not run on a pod, and not with the
+real `train.py`. The `tmux` lines were not run either (the laptop has no
+tmux).
 
 **What neither covers:** the container restarting, or the pod losing its
 network. Nothing inside the pod can act then. The one limit that does not
@@ -279,8 +498,11 @@ charges cannot be covered may eventually be deleted.
 **Leave the pod running** when the run ends (it keeps billing until you stop it):
 
 ```bash
-python3 train.py --config configs/runpod_spread.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/spread/console.log
+mkdir -p /workspace/runs/spread && export TORCH_HOME=/workspace/cache/torch && python3 train.py --config configs/runpod_spread.yaml --price-per-hour 0.00 2>&1 | tee -ia /workspace/runs/spread/console.log
 ```
+
+`notify.py` cannot tell whether this one is still running (it looks for the
+`log.dir` that `pod_run.sh` passes); give it `--pod-match runpod_spread.yaml`.
 
 tmux:
 
@@ -293,8 +515,8 @@ tmux:
 | Stop the run, with a checkpoint | `Ctrl-c` once, in the session |
 | Close the session | `exit` in it, or `tmux kill-session -t spread` |
 
-With the stop-the-pod command, `Ctrl-c` also stops the pod, because
-`runpodctl` runs as soon as `train.py` exits.
+With `pod_run.sh`, `Ctrl-c` also stops the pod, three minutes after
+`train.py` has saved its checkpoint and the result has been kept.
 
 From any other shell on the pod:
 
@@ -501,9 +723,10 @@ Stopping the run (`Ctrl-c`) does **not** stop billing. The pod does.
    runpodctl pod delete "$RUNPOD_POD_ID"
    ```
 
-   Either ends the GPU charge. Stop keeps the pod in your list for a restart;
-   terminate (`delete`) removes it. With a network volume nothing is lost
-   either way: everything under `/workspace` stays on the volume.
+   Either ends the GPU charge. Stop keeps the pod in your list for a restart
+   and wipes its container disk (the pip packages); terminate (`delete`)
+   removes the pod and everything not on a network volume. With a network
+   volume mounted at `/workspace`, nothing of the run is lost either way.
 4. **Confirm in the console** that no pod is listed as running.
 5. **The network volume is still billed** ($0.07 per GB per month) until you
    delete it: **Storage > Network Volumes > Delete**, or
@@ -523,7 +746,8 @@ above with `direct` in place of `spread` in the paths and the session name,
 CONFIG=configs/runpod_direct.yaml bash setup_runpod.sh
 ```
 
-for the setup. Its check is at 30 minutes and 0.55.
+for the setup, and `bash pod_run.sh direct configs/runpod_direct.yaml ...` to
+run it. Its check is at 30 minutes and 0.55.
 
 ## 9. Email reports
 
@@ -532,10 +756,19 @@ run and the pod's run and sends email through Gmail:
 
 | When | What |
 |---|---|
-| Every sample sheet (2,000 steps), each run | the report row, the last rows, hours and cost so far, an estimate of what is left, and the sample sheet attached |
-| A run ends | at once: finished, one of the automatic stops (with its exit code), an interrupt, or a crash, with the last console lines |
+| Every `notify.every_steps` training steps (10,000, `configs/default.yaml`), each run | the newest row, **every spread row since the last email**, hours and cost so far, an estimate of what is left, and the newest sample sheet attached |
+| A run ends | at once, whatever the step: finished, one of the automatic stops (with its exit code), an interrupt, or a crash, with the rows since the last email, the newest sample sheet and the last console lines |
 | The pod does not answer for 5 minutes | at once, with the last row seen |
 | No new progress row for 30 minutes | at once, for either run |
+
+Only the email is less often. The spread check, the sample sheets, the
+checkpoints and the automatic stop on a piled-up mark stay at every 2,000
+steps on the pod (they are `train.py`'s), so a pile-up still stops the run
+within 2,000 steps and its ENDED message carries the rows that show it.
+`--every-steps N` overrides the interval for one watcher; `--every-steps 0`
+sends no progress reports at all, only the end and the alerts (used for the
+2,000-step check run). `--config <file>` reads `notify.every_steps` from
+another config.
 
 The password never goes to the pod and is never in the repository.
 
@@ -586,26 +819,32 @@ anywhere else.
 
 ### Run it
 
-In a terminal of its own, from `training`, with the pod's address:
+In a terminal of its own, from `training`, with the pod's address and the
+run's name (the one given to `pod_run.sh`):
 
 ```powershell
-python notify.py --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
+python notify.py --run labels_generated --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
 ```
 
-`--no-pod` watches the laptop run only. `Ctrl-c` stops it; the same command
-carries on from what it has already sent (`runs/notify_state.json`). The
-first look sends each run's newest row, so you know it is working.
+`--no-pod` watches the laptop run only, `--no-laptop` the pod run only.
+`Ctrl-c` stops it; the same command carries on from what it has already sent
+(`runs/notify_state.json`, kept per run name, so a new run starts with
+nothing sent). The first look sends each run's newest row, so you know it is
+working (not with `--every-steps 0`). It recognises the pod run by the `log.dir` that `pod_run.sh` passes
+to `train.py`; for a run started another way, add `--pod-match <text in its
+command line>`.
 
 It also copies the pod's `progress.csv` and `spread.csv` to
-`training/runs/spread/` at every look, and each sheet it emails to
-`training/runs/spread/samples/`. The table command in `/docs/runs.md`,
-"Spread run (RunPod)", works on that copy as it is.
+`training/runs/pod/<run>/` at every look, and each sheet it emails to
+`training/runs/pod/<run>/samples/`. It refuses a mirror folder that holds a
+laptop run (the laptop's own `runs/labels_generated`, for example). The table
+command in `/docs/runs.md`, "Spread run (RunPod)", works on that copy.
 
 ### What it cannot do
 
 - **It only runs while the laptop is awake** and its terminal is open. No
-  mail is not good news: a report should come every 2,000 steps. If they
-  stop, look.
+  mail is not good news: a report should come every 10,000 steps (about 38
+  minutes on the RTX PRO 4000 pod). If they stop, look.
 - **It reads the laptop run without touching it**: only `progress.csv`,
   `spread.csv`, `console.log` and finished sample sheets. It never opens
   that run's checkpoints or `run_state.json`, which the run replaces and
@@ -620,7 +859,8 @@ It also copies the pod's `progress.csv` and `spread.csv` to
 
 Tested on the laptop: reports, the stops, a crash, an unreachable pod and a
 stalled run, against the laptop run's real logs and against a stand-in for
-ssh. Not tested: a real pod.
+ssh; `--run` with a benchmark folder written by `pod_run.sh` (the `ENDED`
+message names the `--max-minutes` stop). Not tested: a real pod.
 
 ## 10. Keep the result
 
@@ -632,20 +872,20 @@ One checkpoint is **243 MB** (243,175,661 bytes on the laptop, for the same
 models): embedder, reader, the optimizer's state and the schedule state. The
 run keeps the newest three on the volume.
 
-When the run has ended, on the laptop, from `training`:
+When the run has ended, on the laptop, from `training`, with the run's name:
 
 ```powershell
-python keep_result.py --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
+python keep_result.py --run labels_generated --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
 ```
 
 It does three things and changes nothing on the pod outside
-`/workspace/runs/spread/kept` and `/workspace/runs/spread/export`:
+`/workspace/runs/<run>/kept` and `/workspace/runs/<run>/export`:
 
 1. **Stage**, on the pod: `finish_run.sh` exports the bundle from the newest
-   checkpoint and writes `/workspace/runs/spread/kept/<bundle id>/` with a
-   checksum for every file. If the stop-the-pod command already did this
-   (section 5), it is found and not done twice.
-2. **Copy** that folder with `scp` to `training/kept/<bundle id>/`
+   checkpoint and writes `/workspace/runs/<run>/kept/<bundle id>/` with a
+   checksum for every file. If `pod_run.sh` already did this (section 5), it
+   is found and not done twice.
+2. **Copy** that folder with `scp` to `training/kept/<run>/<bundle id>/`
    (git-ignored), about 270 MB.
 3. **Check**: every file on the laptop is hashed again (SHA-256) and compared
    with the pod's list; nothing may be missing or extra; the list itself must
@@ -657,7 +897,7 @@ It does three things and changes nothing on the pod outside
 | `CHECK FAILED` | 1 | Do not delete anything. Run the command again; it copies afresh. |
 | `COPY GOOD, BUNDLE MISSING` | 2 | Checkpoint, config and commit are safe here, but the export failed on the pod. Export on the laptop with the command it prints, then delete. |
 
-What is in `training/kept/<bundle id>/`:
+What is in `training/kept/<run>/<bundle id>/`:
 
 | | |
 |---|---|
@@ -673,7 +913,7 @@ The bundle id is the date of the export and the short commit, for example
 `20261122-bf9c7a0`. To check a copy again later, without a pod:
 
 ```powershell
-python keep_result.py --check kept/<bundle id>
+python keep_result.py --check kept/<run>/<bundle id>
 ```
 
 **The pod has to be running** for the first command, with full SSH (section
@@ -688,7 +928,8 @@ python keep_result.py --check kept/<bundle id>
 
 Tested on the laptop against a stand-in for ssh, with the cancelled long
 run's step 26,000 checkpoint: staged, exported, copied and checked in 23
-seconds; a flipped byte, a missing file, an extra file, an unreachable pod
+seconds; again with `--run`, on a copy of the laptop's generated-label step
+6,056 checkpoint (19 seconds, `CHECK PASSED`); a flipped byte, a missing file, an extra file, an unreachable pod
 and a failed export are each reported. It is the first export made from a
 trained checkpoint. Not tested: a real pod, and the export under the pod's
 PyTorch version.

@@ -1,0 +1,35 @@
+# The generated-label pod run again, with two changes against what stopped it
+# at step 38,000 (docs/runs.md, "Generated-label run (RunPod)"):
+#
+# - spread.peak_penalty.weight 4 -> 16. At step 38,000 the mark, spread evenly
+#   at the same energy, cost 0.075 more LPIPS and 0.0075 less peak penalty:
+#   the penalty only outweighs what piling up saves in LPIPS above a weight of
+#   10. 16 leaves a margin. Like the L2 loss and LPIPS it is multiplied by the
+#   image-loss weight, so its ratio to LPIPS stays 16 whatever that weight is.
+#   spread.stop_above stays 4.
+# - loss.texture_mask on: the L2 loss and the peak penalty cost 1.5x on flat
+#   colour and 0.25x on busy detail (configs/default.yaml), so the mark goes
+#   where the label can hide it.
+#
+# Everything else is configs/runpod_labels_generated.yaml: the same model,
+# 64-bit message, 384 px tile, schedules, hiding and automatic stops.
+#
+# First a 2,000-step check, resumed from the old run's step 34,000 (the least
+# piled-up checkpoint left; fixed place 3.20). In /workspace/ShadowCode/training:
+#
+#   mkdir -p /workspace/runs/labels_generated_fix/checkpoints
+#   cp /workspace/runs/labels_generated/checkpoints/step_00034000.pt /workspace/runs/labels_generated_fix/checkpoints/
+#   bash pod_run.sh labels_generated_fix configs/runpod_labels_generated_fix.yaml --price-per-hour 0.69 --max-minutes 15 train.total_steps=36000 data.num_workers=8
+#
+# If it passes (docs/runs.md has the lines), the full run resumes from 36,000:
+#
+#   bash pod_run.sh labels_generated_fix configs/runpod_labels_generated_fix.yaml --price-per-hour 0.69 data.num_workers=8
+base: runpod_labels_generated.yaml
+
+loss:
+  texture_mask:
+    enabled: true
+
+spread:
+  peak_penalty:
+    weight: 16.0
