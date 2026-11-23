@@ -1,7 +1,8 @@
 # Stage 2: the locator, on the laptop GPU. Design: /docs/model-contract.md,
 # "The locator: design note".
 #
-#   python train.py --config configs/locator.yaml --keep-awake --max-minutes 20
+#   python train.py --config configs/locator.yaml --keep-awake --max-minutes 20    (proof run)
+#   python train.py --config configs/locator.yaml --keep-awake --max-minutes 480   (full run, resumes from the proof run)
 #
 # The embedder and the reader are frozen and not trained here. Tiles come
 # from labelgen.py training seeds (data.source: generated_labels); half of
@@ -16,7 +17,7 @@ base: labels_generated.yaml
 train:
   stage: 2
   batch_size: 8                # tiles per step from the loader; each gives locator_train.views_per_tile samples
-  total_steps: 200000
+  total_steps: 124000          # 4,962 steps of the proof run + 480 minutes at about 4.1 steps/s; the cosine ends near the time limit
   lr: 1.0e-3                   # cosine down to locator_train.lr_end over total_steps
 
 model:
@@ -55,7 +56,7 @@ locator_train:
   # Stop when the held-out mean corner error has not improved by at least
   # min_improvement (relative) on the best so far for this many evaluations
   # in a row. null: never.
-  patience_evals: null
+  patience_evals: 15           # 15 evaluations = 15,000 steps, about one hour
   min_improvement: 0.01
 
 log:

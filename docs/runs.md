@@ -8,7 +8,8 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 | Run | State |
 |---|---|
 | Generated-label run (RunPod) | **Stopped itself** at step 38,000 of 140,000 on 2026-11-23 02:53 UTC, exit code 4: the fixed-place measure rose 1.10 (step 30,000), 1.60 (32,000), 3.20 (34,000), 3.54 (36,000), 4.20 (38,000), above the limit of 4 (`spread.stop_above`); 27.4 percent of the mark's energy in one 96 px square. Bit accuracy flat at about 0.948 from step 34,000; PSNR 23.7 to 24.8 dB and the mark still clearly visible; 54 percent of it on the busier half; image-loss weight 0.295 to 0.335. `configs/runpod_labels_generated.yaml`, commit `6cc7062`, one RTX PRO 4000 Blackwell at $0.69 per hour: **2.37 GPU hours, $1.63**. Kept: `20261123-6cc7062` (step 38,000, checksums equal to the pod's). Checkpoints 30,000 and 32,000 were deleted by the run itself when 36,000 and 38,000 were saved (`checkpoint.keep: 3`); 34,000 and 36,000 and the TensorBoard log were copied to the laptop on 2026-11-22 (`training/runs/pod/labels_generated/`; both checkpoints reproduce the pod's spread rows exactly) and are also on the pod volume. Pod stopped, not terminated. Diagnosis and the fix: "Generated-label pod run: the stop and the fix". |
-| Locator proof run (stage 2, laptop) | **Done**, 20 minutes on 2026-11-22, step 0 to 4,962, `configs/locator.yaml`. It learns: held-out mean corner error 130.11 reader px at step 0, 37.42 at the end (worst 5 percent 238.17 to 145.69). See "Locator (stage 2)". The full run is not started yet. |
+| Locator full run (stage 2, laptop) | **Stopped on its own** (no improvement), 2026-11-22, step 4,962 to 52,000 in 283 minutes, `configs/locator.yaml`, resumed from the proof run. Held-out mean corner error 37.42 reader px at the start, best 18.65 at step 37,000, 19.30 at the end (worst 5 percent 97.77). Reader bit accuracy with the located corners 71.8 percent, with the true corners 82.0 percent. The step-37,000 checkpoint was not kept. See "Locator (stage 2)". No locator bundle exported. |
+| Locator proof run (stage 2, laptop) | **Done**, 20 minutes on 2026-11-22, step 0 to 4,962. It learns: held-out mean corner error 130.11 reader px at step 0, 37.42 at the end. |
 | Generated-label sanity run (laptop) | **Done**, one hour on 2026-11-21/22, step 0 to 6,056, on `labelgen.py` tiles (`configs/labels_generated.yaml`). It learns: bit accuracy 0.863 over the last 1,000 steps and still rising, final eval 0.873. The image loss never switched on (needs 0.95), so PSNR is 12.5 dB. Acceptance fails, as expected after one hour. See "Generated labels". No pod run. |
 | Label run (laptop) | **Done**, two hours on 2026-11-21, from step 0 to 15,087, on Open Food Facts label photos with the image-loss weight following bit accuracy. Bit accuracy held at 0.948; the image-loss weight stopped at 0.22 and PSNR at 24 dB. **Acceptance failed** on reading (0.53 of held-out tiles within reach of the error correction, line 0.80) and the mark is visible. No fixed patch (1.36). See "Label run". |
 | Penalty-only run (laptop) | **Resumed** on 2026-11-21 from its step 10,000 checkpoint. It had stopped itself there on a limit that could not tell the corner patch from a mark that follows the image. The limit is now on the fixed-place measure (4.0, on 256 images); a mark that follows the image is accepted. See "Penalty-only run". |
@@ -162,8 +163,99 @@ alike, so it is not leaning on the mark. In 195 of 256 samples the best turn
 is not 0: the locator picks its own corner order, as the loss allows, and
 the app's four tries are needed for most frames. No reader accuracy was
 measured in this run. Sample sheets: `training/runs/locator/samples/`.
-Checkpoint `checkpoints/locator/step_00004962.pt`; the full run resumes from
-it with the same config.
+Checkpoint `checkpoints/locator/step_00004962.pt`; the full run resumed
+from it (the checkpoint itself was later rotated out, `checkpoint.keep` 3).
+
+### Full run, 2026-11-22
+
+```
+python train.py --config configs/locator.yaml --keep-awake --max-minutes 480
+```
+
+Resumed from the proof run at step 4,962. Changes to `configs/locator.yaml`
+for it: `train.total_steps` 124,000 (4,962 + 480 minutes at the proof run's
+4.1 steps per second, so the cosine would end near the time limit) and
+`locator_train.patience_evals` 15 (the run stops when the held-out mean has
+not improved by 1 percent on its best for 15 evaluations in a row, 15,000
+steps, about one hour at the planned pace). Nothing else changed.
+
+It stopped on its own at step 52,000 (exit code 7), after 283.4 minutes in
+this process (303.5 in all), well inside the 480-minute limit: the best
+held-out mean, 18.65 at step 37,000, was not beaten by 1 percent in the 15
+evaluations that followed. At the stop the cosine was at step 52,000 of
+124,000, learning rate 6.3e-4, not near its end (1e-5).
+
+Speed: 2.59 steps per second (median of the 1,000-step windows after step
+6,000; 1.83 to 4.04), not 4.1. A Visual Studio Build Tools install (winget)
+and a System Restore task started on the laptop a minute before the run and
+took much of the CPU; neither was started from this work. Peak GPU memory
+1,822 MiB.
+
+| step | minutes | mean | median | 95th pct | worst 5% | max | marked | plain | best turn not 0 |
+|---|---|---|---|---|---|---|---|---|---|
+| 5,000 | 21.0 | 36.78 | 25.45 | 106.70 | 154.52 | 193.13 | 37.18 | 36.38 | 200 |
+| 10,000 | 55.8 | 28.59 | 20.49 | 85.83 | 114.14 | 164.13 | 30.44 | 26.74 | 197 |
+| 15,000 | 79.8 | 27.61 | 21.32 | 78.55 | 110.71 | 182.86 | 27.30 | 27.93 | 196 |
+| 20,000 | 100.9 | 25.48 | 19.72 | 63.89 | 102.69 | 192.37 | 29.70 | 21.27 | 196 |
+| 25,000 | 127.0 | 26.04 | 17.55 | 73.25 | 110.57 | 171.65 | 26.72 | 25.35 | 195 |
+| 30,000 | 159.1 | 23.81 | 15.53 | 70.16 | 120.18 | 191.54 | 23.94 | 23.68 | 196 |
+| 35,000 | 191.9 | 20.68 | 15.75 | 55.80 | 80.26 | 129.80 | 22.39 | 18.97 | 196 |
+| 36,000 | 198.5 | 20.37 | 14.63 | 51.34 | 89.27 | 190.82 | 20.72 | 20.01 | 197 |
+| 37,000 | 204.9 | 18.65 | 13.08 | 50.08 | 80.65 | 182.18 | 19.71 | 17.59 | 197 |
+| 38,000 | 211.6 | 20.06 | 13.60 | 59.84 | 86.83 | 141.71 | 21.39 | 18.73 | 198 |
+| 40,000 | 224.9 | 21.42 | 14.20 | 61.30 | 110.40 | 181.21 | 22.01 | 20.83 | 193 |
+| 45,000 | 257.6 | 19.63 | 15.33 | 47.42 | 79.83 | 149.10 | 20.61 | 18.64 | 197 |
+| 46,000 | 264.3 | 19.21 | 12.56 | 61.77 | 88.35 | 133.78 | 18.90 | 19.52 | 193 |
+| 50,000 | 290.1 | 20.27 | 13.27 | 57.13 | 98.95 | 178.30 | 20.30 | 20.25 | 197 |
+| 51,000 | 296.7 | 21.97 | 13.12 | 74.20 | 113.59 | 191.83 | 22.06 | 21.89 | 197 |
+| 52,000 | 303.5 | 19.30 | 12.85 | 51.95 | 97.77 | 203.63 | 20.17 | 18.43 | 198 |
+
+Held-out corner error, reader pixels, 256 samples, every 1,000 steps (all
+rows: `training/runs/locator/eval.csv`; this table shows some). The mean
+fell from 37.42 to 18.65 by step 37,000 and then moved between 19.2 and 22.2
+without a new best. The median moved between 12.56 and 15.33 after step
+37,000 (13.08 there, 12.85 at the end). Marked and plain labels stay alike.
+
+**The best checkpoint was not kept.** `checkpoint.keep` is 3, so step 37,000
+was rotated out; what is left is steps 50,000, 51,000 and 52,000. The
+numbers below are for step 52,000, the last one.
+
+**Final evaluation, step 52,000** (`checkpoints/locator/step_00052000.pt`, read
+from a copy). Reader: `checkpoints/labels_generated/step_00006056.pt`, the
+newest reader on this laptop (end of the one-hour generated-label sanity
+run; the pod run has newer ones, not fetched). The same 256 held-out frames.
+
+| measure | value |
+|---|---|
+| corner error, mean | 19.30 reader px |
+| corner error, median | 12.85 |
+| corner error, 95th percentile | 51.95 |
+| corner error, worst 5% (mean of worst 13) | 97.77 |
+| corner error, max | 203.63 |
+| marked / plain mean | 20.17 / 18.43 |
+| best turn not 0 (corners) | 198 of 256 (turns 0, 1, 2, 3: 58, 72, 79, 47) |
+| reader bit accuracy, true corners (128 marked) | 82.0% |
+| reader bit accuracy, located corners, at the turn that puts them on the true ones | 71.8% |
+| reader bit accuracy, located corners, best of the four turns | 79.1% |
+| best-accuracy turn not 0 | 98 of 128 |
+| within BCH reach (at most 4 of 63 codeword bits wrong), true corners | 1 of 128 |
+| within BCH reach, located corners, any turn | 2 of 128 |
+| within BCH reach only at a turn other than 0 | 1 of 128 |
+| within BCH reach at more than one turn | 0 |
+
+"Within BCH reach" stands in for a read: there is no Python codec for the
+checksum, so a sample counts as read when the BCH code could correct its
+wrong bits. With this reader almost nothing reads even with the true corners
+(1 of 128), so the read counts say more about the reader than about the
+locator. "Best of the four turns" assumes the app keeps the read with the
+most right bits; in the app the checksum decides, and with this few reads it
+was not measured.
+
+What it shows: at 12.85 reader px median and 51.95 at the 95th percentile,
+the locator is still about four times the reader's tolerance (3 reader px)
+for a typical frame. The located corners cost the reader 3 points of bit
+accuracy on the best turn (82.0 to 79.1). The early stop came at a high
+learning rate.
 
 ## Generated labels
 

@@ -208,7 +208,7 @@ class HeldOut:
         was_training = locator.training
         locator.eval()
         errors, best_turn, kinds = [], [], []
-        acc_true, acc_loc, read_true, read_turn = [], [], [], []
+        acc_true, acc_loc, read_true, read_turn, acc_turn = [], [], [], [], []
         kept = {"input": [], "true": [], "pred": []}
         for batch in self.batches():
             pred = locator(batch["input"])
@@ -242,6 +242,7 @@ class HeldOut:
                 rm = r[m]
                 acc_loc.append(per_turn_acc.gather(1, rm.view(-1, 1)).squeeze(1).cpu())
                 read_turn.append(per_turn_read.cpu())
+                acc_turn.append(per_turn_acc.cpu())
         if was_training:
             locator.train()
         err = torch.cat(errors)
@@ -257,6 +258,7 @@ class HeldOut:
         )
         if reader is not None and acc_true:
             reads = torch.cat(read_turn)                                # (marked,4) within BCH reach per turn
+            accs = torch.cat(acc_turn)                                  # (marked,4) bit accuracy per turn
             out.update(
                 reader_acc_true=torch.cat(acc_true).mean().item(),
                 reader_acc_located=torch.cat(acc_loc).mean().item(),
@@ -266,6 +268,9 @@ class HeldOut:
                 read_only_other_turn=int((~reads[:, 0] & reads[:, 1:].any(dim=1)).sum().item()),
                 read_more_than_one_turn=int((reads.sum(dim=1) > 1).sum().item()),
                 marked_samples=int(reads.shape[0]),
+                # The turn with the most right bits, as if the app's checksum picked the best of its four reads.
+                reader_acc_best_turn=accs.max(dim=1).values.mean().item(),
+                best_acc_turn_not_zero=int((accs.argmax(dim=1) != 0).sum().item()),
             )
         if keep:
             out["kept"] = {k: torch.cat(v)[:keep] for k, v in kept.items()}
