@@ -379,12 +379,12 @@ same 16,000 files. That was not checked on the pod.
 
 **How the rows get here.** The pod does not write this file. It writes
 `/workspace/runs/spread/logs/spread.csv`, one row per sample sheet. Copy
-that file to `training/runs/spread/spread.csv` on the laptop
-(`training/RUNPOD.md`, section 6, has the two ways to copy), then in
+that file to `training/runs/pod/spread/spread.csv` on the laptop: `notify.py --run spread` keeps that copy up to date, or
+copy it by hand (`training/RUNPOD.md`, section 6). Then, in
 `training`:
 
 ```bash
-python -c "from runlog import SpreadLog; SpreadLog('runs/spread', {'file': '../docs/runs.md', 'marker': 'spread-run'}).update_markdown()"
+python -c "from runlog import SpreadLog; SpreadLog('runs/pod/spread', {'file': '../docs/runs.md', 'marker': 'spread-run'}).update_markdown()"
 ```
 
 It rebuilds the table above from the whole file, with the code the

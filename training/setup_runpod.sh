@@ -3,13 +3,20 @@
 # start (a new container has lost its pip packages):
 #
 #     bash setup_runpod.sh
+#     CONFIG=configs/runpod_labels_generated.yaml bash setup_runpod.sh
 #
 # It installs the dependencies, checks the GPU, and fetches the dataset to the
 # network volume if it is not there yet. It is safe to run again. It does not
 # start training and it does not start or stop anything that is billed.
 #
+# A config with data.source: generated_labels has no dataset to fetch: its
+# tiles are drawn on the CPU by labelgen.py while it trains. Instead, the
+# script times labelgen.py with 1, 4 and 8 loader processes (and the pod's
+# vCPU count, if higher), prints the fastest, and saves the timing to
+# <VOLUME>/cache/labelgen_bench.txt for the benchmark report.
+#
 # Settings, as environment variables:
-#     CONFIG          config whose data.train_dir is filled   (configs/runpod_spread.yaml)
+#     CONFIG          the config to prepare                    (configs/runpod_spread.yaml)
 #     VOLUME          where the network volume is mounted      (/workspace)
 #     DATASET_COUNT   images to fetch, or "all"                (16000 = 4.94 GB)
 #     ALLOW_LARGE=1   permit a dataset download over 5 GB
@@ -58,17 +65,41 @@ gb = torch.cuda.get_device_properties(0).total_memory / 2**30
 print(f"  PyTorch ran a convolution on {torch.cuda.get_device_name(0)} ({gb:.0f} GiB), result {tuple(y.shape)}")
 PY
 
-step "4/4 dataset"
-TRAIN_DIR="$("$PYTHON" -c "from config import load_config; print(load_config('$CONFIG')['data']['train_dir'])")"
-case "$TRAIN_DIR" in
-    "$VOLUME"/*/images) ;;
-    *) fail "data.train_dir in $CONFIG is $TRAIN_DIR; expected a path under $VOLUME ending in /images." ;;
-esac
-DATASET_DIR="$(dirname "$TRAIN_DIR")"
-FETCH_ARGS=(--out "$DATASET_DIR" --count "$DATASET_COUNT")
-[ "${ALLOW_LARGE:-0}" = "1" ] && FETCH_ARGS+=(--allow-large)
-"$PYTHON" fetch_dataset.py "${FETCH_ARGS[@]}" || fail "the dataset is not complete (see above). Run this script again to continue; a download over 5 GB also needs ALLOW_LARGE=1."
-echo "  $(find "$TRAIN_DIR" -name '*.jpg' | wc -l) images in $TRAIN_DIR, $(du -sh "$DATASET_DIR" | cut -f1) in $DATASET_DIR"
+SOURCE="$("$PYTHON" -c "from config import load_config; print(load_config('$CONFIG')['data'].get('source') or 'folder')")"
+RUN_NAME="$("$PYTHON" -c "from pathlib import Path; from config import load_config; d = Path(load_config('$CONFIG')['log']['dir']); print((d.parent if d.name == 'logs' else d).name)")"
+BEST_WORKERS=""
+if [ "$SOURCE" = generated_labels ]; then
+    step "4/4 label generator (data.source generated_labels: no dataset to download)"
+    VCPUS="${RUNPOD_CPU_COUNT:-$(nproc)}"
+    echo "  vCPUs: RUNPOD_CPU_COUNT=${RUNPOD_CPU_COUNT:-unset}, nproc $(nproc)"
+    COUNTS=(1 4 8)
+    if [ "$VCPUS" -gt 8 ] 2>/dev/null; then COUNTS+=("$VCPUS"); fi
+    mkdir -p "$VOLUME/cache"
+    BENCH_FILE="$VOLUME/cache/labelgen_bench.txt"
+    echo "  timing labelgen.py: 300 tiles per process, with ${COUNTS[*]} processes"
+    bench_code=0
+    "$PYTHON" labelgen.py --bench 300 --workers "${COUNTS[@]}" > "$BENCH_FILE" 2>&1 || bench_code=$?
+    sed 's/^/  /' "$BENCH_FILE"
+    [ "$bench_code" -eq 0 ] || fail "labelgen.py --bench failed (above). Do not start training on this pod."
+    BEST="$(sed -n 's/^\([0-9]*\) worker(s): .* = \([0-9.]*\) tiles\/s.*/\2 \1/p' "$BENCH_FILE" | sort -g -r | head -n 1)"
+    [ -n "$BEST" ] || fail "no timing line in $BENCH_FILE"
+    BEST_WORKERS="${BEST#* }"
+    echo "  fastest: $BEST_WORKERS workers, ${BEST% *} tiles/s (saved in $BENCH_FILE)"
+    echo "  At batch 8 that is enough for $(awk -v t="${BEST% *}" 'BEGIN { printf "%.1f", t / 8 }') steps per second at most, if training"
+    echo "  left the CPU to the loader. The 10-minute benchmark (RUNPOD.md) shows whether the GPU waits."
+else
+    step "4/4 dataset"
+    TRAIN_DIR="$("$PYTHON" -c "from config import load_config; print(load_config('$CONFIG')['data']['train_dir'])")"
+    case "$TRAIN_DIR" in
+        "$VOLUME"/*/images) ;;
+        *) fail "data.train_dir in $CONFIG is $TRAIN_DIR; expected a path under $VOLUME ending in /images." ;;
+    esac
+    DATASET_DIR="$(dirname "$TRAIN_DIR")"
+    FETCH_ARGS=(--out "$DATASET_DIR" --count "$DATASET_COUNT")
+    [ "${ALLOW_LARGE:-0}" = "1" ] && FETCH_ARGS+=(--allow-large)
+    "$PYTHON" fetch_dataset.py "${FETCH_ARGS[@]}" || fail "the dataset is not complete (see above). Run this script again to continue; a download over 5 GB also needs ALLOW_LARGE=1."
+    echo "  $(find "$TRAIN_DIR" -name '*.jpg' | wc -l) images in $TRAIN_DIR, $(du -sh "$DATASET_DIR" | cut -f1) in $DATASET_DIR"
+fi
 
 # Pretrained weights for the LPIPS loss go to the volume too, so they are downloaded once.
 export TORCH_HOME="$VOLUME/cache/torch"
@@ -90,9 +121,9 @@ PY
 
 step "ready - nothing has been started"
 if [ -n "${RUNPOD_POD_ID:-}" ] && command -v runpodctl >/dev/null; then
-    echo "  pod id $RUNPOD_POD_ID, runpodctl found: the stop-when-done command in RUNPOD.md will work"
+    echo "  pod id $RUNPOD_POD_ID, runpodctl found: pod_run.sh can stop the pod (RUNPOD.md)"
 else
-    echo "  RUNPOD_POD_ID or runpodctl is missing: stop the pod from the RunPod console instead (RUNPOD.md)"
+    echo "  RUNPOD_POD_ID or runpodctl is missing: pod_run.sh cannot stop the pod; stop it from the RunPod console (RUNPOD.md)"
 fi
 echo
 "$PYTHON" - "$CONFIG" <<'PY'
@@ -107,8 +138,8 @@ if any((spread.get(name) or {}).get("enabled") for name in ("peak_penalty", "hid
 early = cfg.get("early_stop") or {}
 if early.get("enabled"):
     print(f"  The run stops itself after {early['after_minutes']:g} minutes of training if bit accuracy is")
-    print(f"  below {early['min_bit_acc']}. The pod keeps billing after that unless you use the")
-    print("  stop-when-done command or stop it yourself.")
+    print(f"  below {early['min_bit_acc']}. The pod keeps billing after that unless it was started")
+    print("  with pod_run.sh or you stop it yourself.")
 if spread.get("stop_above") is not None:
     print(f"  It also stops if the mark piles up at the same place in every tile: fixed-place measure")
     print(f"  above {spread['stop_above']:g} at a sample sheet.")
@@ -124,11 +155,18 @@ if limits:
 else:
     print("  Nothing in this config limits hours or cost: the run goes on to its last step.")
 PY
+WORKERS_ARG=""
+[ -n "$BEST_WORKERS" ] && WORKERS_ARG=" data.num_workers=$BEST_WORKERS"
 cat <<EOF
 
-  To train, in tmux (RUNPOD.md, "Run"):
+  In tmux (RUNPOD.md), with your pod's price per hour in place of 0.00. Each one stops the pod when it ends.
 
-      export TORCH_HOME=$TORCH_HOME
-      $PYTHON train.py --config $CONFIG --price-per-hour <your pod's price>
+  The 10-minute benchmark:
+
+      bash pod_run.sh --bench ${RUN_NAME}_bench $CONFIG --max-minutes 10 --price-per-hour 0.00$WORKERS_ARG
+
+  The run:
+
+      bash pod_run.sh $RUN_NAME $CONFIG --price-per-hour 0.00$WORKERS_ARG
 
 EOF

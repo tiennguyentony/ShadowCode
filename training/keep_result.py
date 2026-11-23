@@ -1,7 +1,10 @@
 """Copy a finished run's result from the pod to the laptop and check the copy.
 
-    python keep_result.py --pod root@<pod ip> --port <port> --key ~/.ssh/<key>
-    python keep_result.py --check kept/<bundle id>        check a copy again; no pod needed
+    python keep_result.py --run labels_generated --pod root@<pod ip> --port <port> --key ~/.ssh/<key>
+    python keep_result.py --check kept/labels_generated/<bundle id>    check a copy again; no pod needed
+
+--run is the name given to pod_run.sh: the run folder on the pod is
+/workspace/runs/<run>, and the copy goes to kept/<run>/<bundle id>/ here.
 
 Three steps, from the laptop:
 
@@ -9,7 +12,7 @@ Three steps, from the laptop:
    command; nothing has to be installed there). It exports the bundle from
    the newest checkpoint and puts checkpoint, bundle, config, commit and run
    logs into <run>/kept/<bundle id>/ with a checksum for every file.
-2. Copy. That folder is copied with scp to kept/<bundle id>/ here.
+2. Copy. That folder is copied with scp to kept/<run>/<bundle id>/ here.
 3. Check. Every file here is hashed again and compared with the pod's
    checksums; nothing may be missing or extra, and the checksum list itself
    must be the one the pod has.
@@ -30,6 +33,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -143,15 +147,19 @@ def main() -> int:
     parser.add_argument("--pod", help="root@<pod ip> (default: \"pod\" in ~/.shadowcode/notify.json)")
     parser.add_argument("--port", type=int, help="the pod's public SSH port")
     parser.add_argument("--key", help="private key registered with RunPod, e.g. ~/.ssh/id_ed25519")
-    parser.add_argument("--pod-run", default="/workspace/runs/spread", help="run folder on the pod")
+    parser.add_argument("--run", help="the run's name, as given to pod_run.sh, e.g. labels_generated")
+    parser.add_argument("--pod-run", help="run folder on the pod (default: /workspace/runs/<run>)")
     parser.add_argument("--pod-code", default="/workspace/ShadowCode/training", help="training folder of the code on the pod")
-    parser.add_argument("--dest", default="kept", help="local folder the result folder is created in (git-ignored)")
+    parser.add_argument("--dest", help="local folder the result folder is created in (default: kept/<run>, git-ignored)")
     parser.add_argument("--check", metavar="FOLDER", help="only check a result folder that is already here")
     args = parser.parse_args()
 
     if args.check:
         return check(Path(args.check), None)
 
+    if not args.run or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", args.run):
+        parser.error("name the run with --run, e.g. --run labels_generated (the name given to pod_run.sh)")
+    pod_run = args.pod_run or f"/workspace/runs/{args.run}"
     pod = pod_from(args, load_settings())
     if pod is None:
         parser.error("no pod given: pass --pod root@<pod ip> --port <port>")
@@ -159,7 +167,7 @@ def main() -> int:
     print(f"1/3 staging on the pod ({pod.host}, port {pod.port}); the export takes a minute or two")
     script = (HERE / "finish_run.sh").read_text(encoding="utf-8")
     try:
-        done = pod.run_script(script, args.pod_run, args.pod_code, timeout=1800)
+        done = pod.run_script(script, pod_run, args.pod_code, timeout=1800)
     except (OSError, subprocess.TimeoutExpired) as error:
         print(f"FAILED: could not run the staging on the pod ({type(error).__name__}: {error})")
         return 1
@@ -171,7 +179,7 @@ def main() -> int:
         print("Nothing was copied. Do not delete the pod or the volume.")
         return 1
 
-    dest = (HERE / args.dest).resolve()
+    dest = (HERE / (args.dest or f"kept/{args.run}")).resolve()
     target = dest / facts["KEPT_ID"]
     if target.exists():
         aside = target.with_name(f"{target.name}.previous-{time.strftime('%Y%m%d-%H%M%S')}")

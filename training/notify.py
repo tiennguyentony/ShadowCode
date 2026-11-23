@@ -1,8 +1,11 @@
 """Email reports for the training runs, sent from the laptop. Nothing runs on the pod.
 
     python notify.py --test                           one test email, then exit
-    python notify.py --pod root@<pod ip> --port <port> --key ~/.ssh/<key>
+    python notify.py --run labels_generated --pod root@<pod ip> --port <port> --key ~/.ssh/<key>
     python notify.py --no-pod                         the laptop run only
+
+--run names the pod run: its folder is /workspace/runs/<run> on the pod, as
+pod_run.sh writes it.
 
 It watches two runs and sends, through Gmail:
 
@@ -18,9 +21,9 @@ opens that run's checkpoints or run_state.json: the run replaces and deletes
 those, and on Windows that fails while another program has them open.
 
 The pod is read over ssh once a minute (public IP and TCP port 22; RUNPOD.md
-section 2). Its small log files are mirrored to runs/spread/ here, so the
+section 2). Its small log files are mirrored to runs/pod/<run>/ here, so the
 table command in docs/runs.md works on the mirror, and its sheets are copied
-as they are emailed.
+as they are emailed. The mirror is never the laptop run's own folder.
 
 Address, password and pod details are outside the repository, in
 ~/.shadowcode/ (podlink.py). RUNPOD.md, "Email reports", has the setup.
@@ -154,9 +157,10 @@ class LaptopRun:
 class PodRun:
     """The run on the pod: one ssh call per look, mirrored into a local folder."""
 
-    def __init__(self, name: str, pod: Pod, remote: str, mirror: Path, match: str):
+    def __init__(self, name: str, pod: Pod, remote: str, mirror: Path, match: str, key: str):
         self.name, self.pod, self.remote, self.mirror, self.match = name, pod, remote.rstrip("/"), mirror, match
-        self.key = "pod"
+        # What has been sent is kept per run: a new run on the pod starts with nothing sent.
+        self.key = key
 
     def view(self) -> dict:
         try:
@@ -221,6 +225,8 @@ def ending(console: list[str]) -> tuple[str, str | None]:
         if found:
             code = int(found.group(1))
             said = next((s for s in reversed(session) if any(p.search(s) for p, _ in ENDINGS)), None)
+            if code == 0 and said is not None and said.startswith("time limit reached"):
+                return "stopped by --max-minutes, checkpoint saved (exit code 0)", said
             if code in EXIT_CODES:
                 return EXIT_CODES[code], said
             # A code this file does not know: train.py's own stops all say "Stopped:" first.
@@ -421,7 +427,7 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             if known and not st.get("ended") and (st["not_alive_looks"] >= 2 or exit_line):
                 reason, said = ending(view["console"])
                 body = f"{run.name}: train.py is no longer running.\nWhy: {reason}\n" + (f"It said: {said}\n" if said else "")
-                if run.key == "pod":
+                if isinstance(run, PodRun):
                     body += (
                         "\nIf the run was started with the stop-the-pod command, the pod stops itself now. Check in the "
                         "RunPod console that it has. To keep the result: RUNPOD.md, \"Keep the result\".\n"
@@ -451,7 +457,7 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             f"{run.name}: no new progress row for {quiet / 60:.0f} minutes "
             f"(a row comes every 1,000 steps). "
             + (f"The last one is step {last['step']:,} at {last['utc_time']}.\n\n" if last else "No row has been written yet.\n\n")
-            + ("The run is hung or very slow, or the pod is gone. A pod that is still running is still billed.\n\n" if run.key == "pod"
+            + ("The run is hung or very slow, or the pod is gone. A pod that is still running is still billed.\n\n" if isinstance(run, PodRun)
                else "The run is hung or very slow, or the laptop was asleep.\n\n")
             + (situation(run.name, view, args.total_steps) if view["reachable"] else "The pod could not be reached for this look.")
         )
@@ -468,9 +474,11 @@ def main() -> int:
     parser.add_argument("--no-laptop", action="store_true", help="watch the pod run only")
     parser.add_argument("--laptop-run", default="runs/penalty", help="log folder of the laptop run")
     parser.add_argument("--laptop-match", default="penalty.yaml", help="text in the laptop run's command line")
-    parser.add_argument("--pod-run", default="/workspace/runs/spread", help="run folder on the pod")
-    parser.add_argument("--pod-match", default="runpod_spread.yaml", help="text in the pod run's command line, after train.py")
-    parser.add_argument("--pod-mirror", default="runs/spread", help="local folder the pod's logs and sheets are copied to")
+    parser.add_argument("--run", help="the pod run's name, e.g. labels_generated (its folder is /workspace/runs/<run>)")
+    parser.add_argument("--pod-run", help="run folder on the pod (default: /workspace/runs/<run>)")
+    parser.add_argument("--pod-match", help="text in the pod run's command line, after train.py "
+                        "(default: runs/<run>/logs, which pod_run.sh passes as log.dir)")
+    parser.add_argument("--pod-mirror", help="local folder the pod's logs and sheets are copied to (default: runs/pod/<run>)")
     parser.add_argument("--total-steps", type=int, default=140000)
     parser.add_argument("--interval", type=float, default=60.0, help="seconds between looks")
     parser.add_argument("--stall-minutes", type=float, default=30.0)
@@ -497,7 +505,14 @@ def main() -> int:
     runs: list = [] if args.no_laptop else [laptop]
     pod = None if args.no_pod else pod_from(args, settings)
     if pod is not None:
-        runs.append(PodRun("spread run (pod)", pod, args.pod_run, HERE / args.pod_mirror, args.pod_match))
+        if not args.run or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", args.run):
+            raise SystemExit("stopped: name the pod run with --run, e.g. --run labels_generated (the name given to pod_run.sh).")
+        pod_run = args.pod_run or f"/workspace/runs/{args.run}"
+        match = args.pod_match or re.escape(f"runs/{args.run}/logs")
+        mirror = (HERE / (args.pod_mirror or f"runs/pod/{args.run}")).resolve()
+        if mirror == laptop.directory.resolve() or (mirror / "run_state.json").is_file() and not (mirror / "console_tail.log").is_file():
+            raise SystemExit(f"stopped: {mirror} holds a run of this laptop; pick another --pod-mirror.")
+        runs.append(PodRun(f"{args.run} run (pod)", pod, pod_run, mirror, match, f"pod:{args.run}"))
     elif not args.no_pod:
         raise SystemExit("stopped: no pod given. Pass --pod root@<pod ip> --port <port>, or --no-pod for the laptop run only.")
     if mailer.dry_run is None:

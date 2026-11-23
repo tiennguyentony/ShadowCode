@@ -2,8 +2,9 @@
 # Put everything that has to be kept from a run into one folder on the volume,
 # with a checksum for every file. For the pod, when the run has ended:
 #
-#     bash finish_run.sh
+#     bash finish_run.sh labels_generated
 #
+# pod_run.sh runs it by itself when train.py exits.
 # keep_result.py on the laptop runs this over ssh by itself, then copies the
 # folder and checks the copy (RUNPOD.md, "Keep the result"). It writes
 #
@@ -21,12 +22,19 @@
 # Safe to run again: a checkpoint that is already staged is not staged twice.
 # It changes nothing outside <run>/kept and <run>/export, and stops nothing.
 #
-# Arguments, or environment variables, all optional:
-#     $1 / RUN      the run folder                  (/workspace/runs/spread)
+# Arguments, or environment variables:
+#     $1 / RUN      the run: a name (labels_generated, for <VOLUME>/runs/labels_generated)
+#                   or the run folder itself. Required.
 #     $2 / CODE     the training folder of the code  (/workspace/ShadowCode/training)
+#     VOLUME        (/workspace)
 #     PYTHON        (python3)
 set -uo pipefail
-RUN="${1:-${RUN:-/workspace/runs/spread}}"
+RUN="${1:-${RUN:-}}"
+[ -n "$RUN" ] || { echo "FAILED: no run given. Usage: bash finish_run.sh <run name or run folder>"; exit 1; }
+case "$RUN" in
+    */*) ;;
+    *) RUN="${VOLUME:-/workspace}/runs/$RUN" ;;
+esac
 CODE="${2:-${CODE:-/workspace/ShadowCode/training}}"
 PYTHON="${PYTHON:-python3}"
 
