@@ -35,6 +35,7 @@ from constants import MESSAGE_BITS, TILE_PX
 from torchvision import transforms
 
 from data import ImageFolderDataset, holdout_images, infinite, load_rgb, make_loader, procedural_image
+from losses import texture_settings, texture_weights
 from geometry import apply_homography, flatten_from_corners, flatten_random_patch, square_corners, warp_periodic
 from models import count_parameters
 from simulate import simulate
@@ -206,6 +207,76 @@ def check_spread(trainer: Trainer) -> None:
         f"spread checks passed: bit-loss gradient norm {to_embedder:.3g} at the embedder and {to_reader:.3g} at the "
         f"reader with {out['hidden_fraction'] * 100:.0f} percent of the patch blanked; "
         f"peak-penalty gradient norm {norm(from_peak):.3g} at the embedder"
+    )
+
+
+def check_texture_mask(trainer: Trainer) -> None:
+    """loss.texture_mask: flat colour costs flat_weight, detail costs near busy_weight, and the loss uses it.
+
+    Runs on a fresh trainer with the mask and the peak penalty on and the
+    image loss at full weight, whatever the config says.
+    """
+    cfg = copy.deepcopy(trainer.cfg)
+    cfg["loss"]["texture_mask"] = {**texture_settings(cfg), "enabled": True}
+    cfg["loss"]["lpips_weight"] = 0.0
+    cfg["spread"] = {**(cfg.get("spread") or {}), "peak_penalty": {**peak_settings(cfg), "enabled": True}}
+    s = texture_settings(cfg)
+    flat_w, busy_w = float(s["flat_weight"]), float(s["busy_weight"])
+
+    # Left half flat grey, right half a sharp 8 px checkerboard.
+    tile = torch.full((1, 3, TILE_PX, TILE_PX), 0.5)
+    y, x = torch.meshgrid(torch.arange(TILE_PX), torch.arange(TILE_PX), indexing="ij")
+    checks = ((y // 8 + x // 8) % 2).float() * 0.6 + 0.2
+    tile[:, :, :, TILE_PX // 2 :] = checks[:, TILE_PX // 2 :]
+    cost = texture_weights(tile, cfg)
+    assert cost.shape == (1, 1, TILE_PX, TILE_PX)
+    assert cost.min().item() >= busy_w - 1e-6 and cost.max().item() <= flat_w + 1e-6, "weight outside [busy, flat]"
+    margin = int(s["window_px"]) // 2 + 5
+    flat_part = cost[..., :, : TILE_PX // 2 - margin]
+    busy_part = cost[..., :, TILE_PX // 2 + margin :]
+    assert (flat_part - flat_w).abs().max().item() < 1e-6, "flat colour must cost flat_weight"
+    assert busy_part.max().item() < busy_w + 0.05 * (flat_w - busy_w), "detail must cost close to busy_weight"
+    assert (texture_weights(torch.full_like(tile, 0.3), cfg) - flat_w).abs().max().item() < 1e-6
+
+    # The training step uses the weighted L2 and the weighted peak penalty.
+    probe = Trainer(cfg, trainer.device)
+    probe.embedder.load_state_dict(trainer.embedder.state_dict())
+    probe.reader.load_state_dict(trainer.reader.state_dict())
+    probe.cfg["schedule"]["image_loss"]["follow_accuracy"] = None
+    probe.image_ramp_start = -(10**9)  # the plain ramp, long finished: weight 1
+    assert probe.image_loss_scale() == 1.0
+    tiles = torch.rand(2, 3, TILE_PX, TILE_PX)
+    tiles[0] = 0.4  # one flat tile, one busy one
+    bits = probe.random_bits(2)
+    probe.random_bits = lambda batch: bits  # the same message in the step as in the expectation below
+    probe.embedder.train()
+    with torch.no_grad():
+        residual = probe.embedder(tiles.to(probe.device), bits)
+        want_l2 = (texture_weights(tiles.to(probe.device), cfg) * residual.pow(2)).mean().item()
+        want_peak = peak_penalty(residual * texture_weights(tiles.to(probe.device), cfg).sqrt(), cfg).item()
+    m = probe.train_step(tiles)
+    assert "l2_texture_loss" in m and "peak_loss" in m, "the texture-weighted terms were not computed"
+    assert abs(m["l2_texture_loss"] - want_l2) < 1e-4 * want_l2, f"L2 in the step {m['l2_texture_loss']:.6g}, texture-weighted {want_l2:.6g}"
+    assert abs(m["peak_loss"] - want_peak) < 1e-4 * want_peak, f"peak in the step {m['peak_loss']:.6g}, texture-weighted {want_peak:.6g}"
+    expected = (
+        cfg["loss"]["bit_weight"] * m["bit_loss"]
+        + cfg["loss"]["l2_weight"] * m["l2_texture_loss"]
+        + float(cfg["spread"]["peak_penalty"]["weight"]) * m["peak_loss"]
+    )
+    assert abs(m["loss"] - expected) < 1e-4 * max(1.0, abs(expected)), f"loss {m['loss']:.6f}, terms give {expected:.6f}"
+
+    # Gradient of the weighted terms reaches the embedder and is finite.
+    probe.embedder.train()
+    residual = probe.embedder(tiles.to(probe.device), probe.random_bits(2))
+    weights = texture_weights(tiles.to(probe.device), cfg)
+    term = (weights * residual.pow(2)).mean() + peak_penalty(residual * weights.sqrt(), cfg)
+    grads = torch.autograd.grad(term, [p for p in probe.embedder.parameters() if p.requires_grad], allow_unused=True)
+    norm = sum(g.pow(2).sum().item() for g in grads if g is not None) ** 0.5
+    assert norm > 0 and all(torch.isfinite(g).all() for g in grads if g is not None), "no finite gradient from the mask"
+    print(
+        f"texture mask checks passed: flat colour costs {flat_w:g}, the checkerboard at most "
+        f"{busy_part.max().item():.3f} (floor {busy_w:g}); the loss uses the weighted L2 and peak penalty; "
+        f"gradient norm {norm:.3g} at the embedder"
     )
 
 
@@ -532,6 +603,7 @@ def run_smoke(
             "portrait, landscape and square frames, periodic sampling"
         )
         check_spread(trainer)
+        check_texture_mask(trainer)
         check_follow_accuracy(trainer)
         check_center_fraction()
         check_rotation_tag()

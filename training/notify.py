@@ -12,11 +12,16 @@ pod_run.sh writes it.
 
 It watches two runs and sends, through Gmail:
 
-* a report for every spread row (one per sample sheet, every 2,000 steps),
-  with the sample sheet attached;
-* at once: a run that ended (finished, one of the automatic stops, a crash,
-  an interrupt), a pod that cannot be reached for 5 minutes, and 30 minutes
-  with no new progress row.
+* a report every ``notify.every_steps`` training steps (configs/default.yaml:
+  10,000; --every-steps N overrides it), with every spread row since the
+  last email and the newest sample sheet attached. The spread check, the
+  sheets, the checkpoints and the automatic stops are train.py's and keep
+  their own interval (every 2,000 steps on the pod); only the email is less
+  often. --every-steps 0: no progress reports, only the messages below;
+* at once, whatever the step: a run that ended (finished, one of the
+  automatic stops, a crash, an interrupt), with the rows since the last
+  email and the newest sample sheet; a pod that cannot be reached for 5
+  minutes; and 30 minutes with no new progress row.
 
 The laptop run is only read, and only through files it appends to
 (progress.csv, spread.csv, console.log) and finished sample sheets. It never
@@ -31,7 +36,8 @@ as they are emailed. The mirror is never the laptop run's own folder.
 Address, password and pod details are outside the repository, in
 ~/.shadowcode/ (podlink.py). RUNPOD.md, "Email reports", has the setup.
 
-Standard library only. It never imports torch.
+Standard library only, and PyYAML for reading notify.every_steps from the
+config. It never imports torch.
 """
 
 from __future__ import annotations
@@ -234,6 +240,19 @@ def run_report(run, row: dict, view: dict, total_steps: int, note: str = "") -> 
     if isinstance(run, LocatorRun):
         return run.report_text(row, view, total_steps, note)
     return report_text(run.name, row, view, total_steps, note)
+
+
+def run_table(run, rows: list[dict]) -> list[str]:
+    """All of ``rows`` as the run's table (spread rows, or held-out rows for a locator run)."""
+    if not rows:
+        return ["(no new rows since the last email)"]
+    if isinstance(run, LocatorRun):
+        return run.table(rows, len(rows))
+    return table(rows, len(rows))
+
+
+def rows_since(view: dict, step: int) -> list[dict]:
+    return [row for row in view.get("spread") or [] if int(row["step"]) > step]
 
 
 def run_situation(run, view: dict, total_steps: int, console_lines: int = 30) -> str:
@@ -454,6 +473,16 @@ def situation(name: str, view: dict, total_steps: int, console_lines: int = 30) 
 # -- deciding what to send ------------------------------------------------------------
 
 
+def every_steps_from(config: Path) -> int:
+    """notify.every_steps from a training config (with its base files)."""
+    from config import load_config  # PyYAML; only needed here
+
+    value = (load_config(config).get("notify") or {}).get("every_steps")
+    if value is None:
+        raise SystemExit(f"stopped: {config} has no notify.every_steps; pass --every-steps N")
+    return int(value)
+
+
 def utc_seconds(text: str) -> float:
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
 
@@ -482,25 +511,31 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
         if not view["started"]:
             return
 
-        # Reports: one per spread row. The first look sends only the newest row.
+        # Reports: one each time the newest row passes a multiple of every_steps, with all the
+        # rows since the last email and the newest sheet. "reported_step" is the newest row
+        # any email has carried. The first look sends the newest row only (not with every_steps 0).
         rows = view["spread"]
-        if rows and "reported_step" not in st:
-            subject, body = run_report(run, rows[-1], view, args.total_steps, "the watcher has just started")
-            if mailer.send(subject, body, run.sheet(int(rows[-1]["step"]))):
-                st["reported_step"] = int(rows[-1]["step"])
-        for row in rows if "reported_step" in st else []:
-            step = int(row["step"])
-            if step <= st["reported_step"]:
-                continue
-            sheet = run.sheet(step)
-            subject, body = run_report(run, row, view, args.total_steps)
+        every = args.every_steps
+        if "reported_step" not in st:
+            if rows and every > 0:
+                subject, body = run_report(run, rows[-1], view, args.total_steps, "the watcher has just started")
+                if mailer.send(subject, body, run.sheet(int(rows[-1]["step"]))):
+                    st["reported_step"] = int(rows[-1]["step"])
+            else:
+                st["reported_step"] = -1
+        newest = int(rows[-1]["step"]) if rows else -1
+        if every > 0 and "reported_step" in st and newest > st["reported_step"] and newest // every > max(st["reported_step"], 0) // every:
+            new_rows = rows_since(view, st["reported_step"])
+            sheet = run.sheet(newest)
+            subject, body = run_report(run, rows[-1], view, args.total_steps)
+            body += (
+                f"\n\nAll rows since the last email ({len(new_rows)}; one email every {every:,} steps):\n"
+                + "\n".join(run_table(run, new_rows))
+            )
             if sheet is None:
                 body += "\n\nThe sample sheet for this step could not be read, so it is not attached."
-            if not mailer.send(subject, body, sheet):
-                break
-            st["reported_step"] = step
-        if not rows:
-            st.setdefault("reported_step", -1)
+            if mailer.send(subject, body, sheet):
+                st["reported_step"] = newest
 
         # Ended: train.py is not running. Two looks in a row, or at once when the console gives an exit code.
         alive = view["alive"]
@@ -522,8 +557,16 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
                     )
                 if not st.get("was_alive"):
                     body += "\nIt was already stopped when the watcher first looked.\n"
-                if mailer.send(f"ENDED {run.name}: {reason}", body + "\n" + run_situation(run, view, args.total_steps)):
+                new_rows = rows_since(view, st.get("reported_step", -1))
+                body += f"\nRows since the last email ({len(new_rows)}):\n" + "\n".join(run_table(run, new_rows)) + "\n"
+                rows = view.get("spread") or []
+                sheet = run.sheet(int(rows[-1]["step"])) if rows else None
+                if rows and sheet is None:
+                    body += "\nThe newest sample sheet could not be read, so it is not attached.\n"
+                if mailer.send(f"ENDED {run.name}: {reason}", body + "\n" + run_situation(run, view, args.total_steps), sheet):
                     st["ended"] = {"reason": reason, "at": now}
+                    if rows:
+                        st["reported_step"] = max(st.get("reported_step", -1), int(rows[-1]["step"]))
 
     # Stalled: no new progress row for too long. Counted from the newest row, or from the first look.
     if st.get("ended") or not (st.get("was_alive") or st.get("last_row")):
@@ -574,7 +617,16 @@ def main() -> int:
     parser.add_argument("--dry-run", metavar="DIR", help="write the messages to DIR as .eml files instead of sending")
     parser.add_argument("--once", action="store_true", help="look once and exit")
     parser.add_argument("--locator", action="store_true", help="the laptop run is a stage-2 locator run (reports from eval.csv)")
+    parser.add_argument("--config", default="configs/default.yaml",
+                        help="config whose notify.every_steps sets the report interval (default configs/default.yaml)")
+    parser.add_argument("--every-steps", type=int, default=None,
+                        help="one progress report every N training steps, overriding notify.every_steps; "
+                             "0: no progress reports, only the end of the run and alerts")
     args = parser.parse_args()
+    if args.every_steps is None:
+        args.every_steps = every_steps_from(HERE / args.config)
+    if args.every_steps < 0:
+        raise SystemExit("stopped: --every-steps must be 0 or more")
 
     settings = load_settings()
     mailer = Mailer(settings, Path(args.dry_run) if args.dry_run else None)
@@ -612,7 +664,8 @@ def main() -> int:
 
     state_path = HERE / args.state
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
-    log(f"watching: {', '.join(r.name for r in runs)}; reports to {mailer.to}; a look every {args.interval:g} s")
+    cadence = f"a report every {args.every_steps:,} steps" if args.every_steps else "no progress reports, only the end and alerts"
+    log(f"watching: {', '.join(r.name for r in runs)}; reports to {mailer.to} ({cadence}); a look every {args.interval:g} s")
     try:
         while True:
             for run in runs:

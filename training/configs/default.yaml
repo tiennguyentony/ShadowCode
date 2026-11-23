@@ -99,6 +99,16 @@ loss:
   l2_weight: 2.0               # multiplied by the image-loss schedule
   lpips_weight: 1.0            # multiplied by the image-loss schedule; 0 disables LPIPS entirely
   lpips_net: alex              # alex | vgg | squeeze
+  # Texture mask (losses.texture_weights): the L2 loss and the peak penalty
+  # (spread.peak_penalty) weigh each pixel of the mark by how flat the clean
+  # tile is around it, so the mark may be stronger on text and detail and
+  # must be weaker on flat colour. LPIPS is not weighted. Off by default.
+  texture_mask:
+    enabled: false
+    flat_weight: 1.5           # cost of the mark on perfectly flat colour
+    busy_weight: 0.25          # cost on busy detail (text, edges, texture); the weight never goes below it
+    level: 6.0e-5              # local contrast where the weight is half-way; acceptance.py's flat level
+    window_px: 17              # local contrast is averaged over this square around each pixel (odd)
 
 schedule:
   image_loss:
@@ -205,6 +215,15 @@ log:
   # {file: path, marker: name}: also keep those rows as a table in a Markdown
   # file, between its lines <!-- name:start --> and <!-- name:end -->.
   spread_markdown: null
+
+notify:                        # read by notify.py on the laptop, not by train.py
+  # One emailed progress report every this many training steps, with all the
+  # spread rows since the last email and the newest sample sheet. The spread
+  # check, sample sheets, checkpoints and automatic stops keep their own
+  # intervals above and below. The end of a run and alerts are emailed at
+  # once whatever this says. notify.py --every-steps N overrides it; 0 sends
+  # no progress reports.
+  every_steps: 10000
 
 checkpoint:
   dir: checkpoints/stage1      # training resumes from the newest checkpoint here

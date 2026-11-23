@@ -55,6 +55,7 @@ from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from data import infinite, make_loader
 from geometry import center_crop, flatten_random_patch
+from losses import texture_settings, texture_weights
 from models import build_models, count_parameters
 from runlog import ProgressLog, RunClock, SpreadLog
 from simulate import simulate, wrap_surface
@@ -149,6 +150,7 @@ class Trainer:
         # The image-loss weight while schedule.image_loss.follow_accuracy is set; unused otherwise.
         self.follow_scale = 0.0
         self.follow_settings()  # a bad setting fails at start, not at the trigger
+        texture_settings(cfg)  # likewise for loss.texture_mask
 
     # -- schedules ---------------------------------------------------------
 
@@ -267,13 +269,23 @@ class Trainer:
         loss = weights["bit_weight"] * bit_loss
         lpips_loss = None
         peak_loss = None
+        l2_texture_loss = None
         peak = peak_settings(self.cfg)
         if image_scale > 0:
-            loss = loss + image_scale * weights["l2_weight"] * l2_loss
+            # loss.texture_mask: the L2 loss and the peak penalty see the residual weighted
+            # by what each pixel's surroundings can hide (losses.texture_weights).
+            residual = out["residual"]
+            if texture_settings(self.cfg)["enabled"]:
+                cost = texture_weights(tiles, self.cfg)
+                l2_texture_loss = (cost * residual.pow(2)).mean()
+                loss = loss + image_scale * weights["l2_weight"] * l2_texture_loss
+                residual = residual * cost.sqrt()
+            else:
+                loss = loss + image_scale * weights["l2_weight"] * l2_loss
             if peak["enabled"]:
                 # On the residual before the clamp, like the L2 loss, and on the same schedule:
                 # the mark only piles up once the image loss is on.
-                peak_loss = peak_penalty(out["residual"], self.cfg)
+                peak_loss = peak_penalty(residual, self.cfg)
                 loss = loss + image_scale * float(peak["weight"]) * peak_loss
             if self.perceptual is not None:
                 lpips_loss = self.perceptual(out["marked"], tiles)
@@ -304,6 +316,8 @@ class Trainer:
             )
             if peak_loss is not None:
                 metrics["peak_loss"] = peak_loss.item()
+            if l2_texture_loss is not None:
+                metrics["l2_texture_loss"] = l2_texture_loss.item()
             if lpips_loss is not None:
                 metrics["lpips_loss"] = lpips_loss.item()
             if keep_outputs:
@@ -341,7 +355,8 @@ SCALARS = {
     "image/psnr_db": "psnr",
     "loss/total": "loss",
     "loss/bit": "bit_loss",
-    "loss/l2": "l2_loss",
+    "loss/l2": "l2_loss",  # always the plain mean square, so runs with and without the texture mask compare
+    "loss/l2_texture": "l2_texture_loss",  # the L2 term the loss used, when loss.texture_mask is on
     "loss/lpips": "lpips_loss",
     "loss/peak": "peak_loss",
     "image/concentration": "concentration",
@@ -491,7 +506,14 @@ def spread_summary(cfg: dict) -> str:
         if hide["enabled"]
         else "off"
     )
-    return f"spread: peak penalty {peak_text}; hiding {hide_text}"
+    texture = texture_settings(cfg)
+    texture_text = (
+        f"on (L2 and peak penalty cost {float(texture['flat_weight']):g}x on flat colour, "
+        f"{float(texture['busy_weight']):g}x on busy detail)"
+        if texture["enabled"]
+        else "off"
+    )
+    return f"spread: peak penalty {peak_text}; hiding {hide_text}; texture mask {texture_text}"
 
 
 def main() -> int:

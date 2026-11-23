@@ -126,6 +126,84 @@ for the message (section 9).
 15. Stop the pod. **Delete the pod and the volume only after `CHECK PASSED`**
     (section 7). The volume is billed until it is deleted.
 
+## The generated-label fix: 2,000-step check, then the run
+
+The generated-label run stopped itself at step 38,000 with the mark piled up
+in the tile corner (`/docs/runs.md`, "Generated-label pod run: the stop and
+the fix"). `configs/runpod_labels_generated_fix.yaml` is the same run with the
+peak penalty at weight 16 instead of 4 and the texture mask on. It is checked
+first for 2,000 steps, resumed from the old run's step 34,000 (the least
+piled-up checkpoint left), under the run name `labels_generated_fix`.
+
+**Keep the old run's volume** until this has passed: its
+`checkpoints/step_00034000.pt` is the start.
+
+**On the pod** (start it again: **Pods > Start**; the IP and port may change)
+
+1. `tmux new -s fix`, then
+   `cd /workspace/ShadowCode && git fetch origin && git checkout training/spread-texture-fix && git pull && git log -1 --oneline`.
+2. `cd training && CONFIG=configs/runpod_labels_generated_fix.yaml bash setup_runpod.sh`
+   (stopping wiped the container disk). Note the `fastest: N workers` line;
+   the old run used 8.
+3. Put the start checkpoint into the new run's folder:
+
+   ```bash
+   mkdir -p /workspace/runs/labels_generated_fix/checkpoints
+   cp /workspace/runs/labels_generated/checkpoints/step_00034000.pt /workspace/runs/labels_generated_fix/checkpoints/
+   ```
+
+4. **The check**, 2,000 steps (34,000 to 36,000), about 8 minutes of training:
+
+   ```bash
+   bash pod_run.sh labels_generated_fix configs/runpod_labels_generated_fix.yaml --price-per-hour 0.69 --max-minutes 15 train.total_steps=36000 data.num_workers=8
+   ```
+
+   The first lines have to show
+   `spread: peak penalty on (weight 16, ...); ...; texture mask on (...)` and
+   `resumed from /workspace/runs/labels_generated_fix/checkpoints/step_00034000.pt at step 34000`.
+   `--max-minutes 15` is only a guard: 2,000 steps take about 7.5 minutes
+   at 15,990 steps per hour.
+
+**On the laptop**, in `training`, one email at the end only:
+
+```powershell
+python notify.py --no-laptop --run labels_generated_fix --every-steps 0 --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
+```
+
+**Pass lines**, read from the step 36,000 row of the ENDED email (the row at
+34,000 is the start):
+
+| Line | Pass |
+|---|---|
+| Fixed place | under 2 (start 3.20) |
+| Bit accuracy, mean of the last 1,000 training steps | 0.94 or more |
+| PSNR | above the start (23.48 dB on the fixed images at 34,000) |
+| Energy on the busier half | above 60 percent (start 49) |
+
+With the texture mask the mark may move onto detail and the PSNR may fall
+while the mark gets harder to see; read the PSNR line together with the
+sample sheet.
+
+**If it passes**, the same name resumes from 36,000 to 140,000, with the
+normal reports (one every 10,000 steps):
+
+```bash
+bash pod_run.sh labels_generated_fix configs/runpod_labels_generated_fix.yaml --price-per-hour 0.69 data.num_workers=8
+```
+
+```powershell
+python notify.py --no-laptop --run labels_generated_fix --pod root@<pod ip> --port <port> --key $HOME\.ssh\<key>
+```
+
+104,000 steps: about 6.5 hours and $4.49 of GPU time at 15,990 steps per
+hour and $0.69 per hour (estimate).
+
+**If it fails** (fixed place still 2 or more at 36,000), do not resume: the
+mark is too set in the old checkpoints. Start the same config from step 0
+under a new name; the image loss only switches on near step 16,000, so its
+first useful look is the spread row at about 20,000 (1.25 hours, $0.86), and
+the whole run is about 8.8 hours and $6.04.
+
 ## The spread run
 
 The pod trains `configs/runpod_spread.yaml`: the long run's settings
@@ -200,7 +278,8 @@ Each step names the section that has the details and the reasons.
 
 **While it runs**
 
-13. A report arrives every 2,000 steps for each run. Section 5, "What you
+13. A report arrives every 10,000 steps for each run (`notify.every_steps`),
+    with the spread rows of the 2,000-step checks since the last one. Section 5, "What you
     will see", says what the numbers mean and section 6 what a good and a
     bad sample sheet look like. The run can stop itself at 45 minutes (not
     learning), at step 15,000 (image loss never on), at any sample sheet
@@ -677,10 +756,19 @@ run and the pod's run and sends email through Gmail:
 
 | When | What |
 |---|---|
-| Every sample sheet (2,000 steps), each run | the report row, the last rows, hours and cost so far, an estimate of what is left, and the sample sheet attached |
-| A run ends | at once: finished, one of the automatic stops (with its exit code), an interrupt, or a crash, with the last console lines |
+| Every `notify.every_steps` training steps (10,000, `configs/default.yaml`), each run | the newest row, **every spread row since the last email**, hours and cost so far, an estimate of what is left, and the newest sample sheet attached |
+| A run ends | at once, whatever the step: finished, one of the automatic stops (with its exit code), an interrupt, or a crash, with the rows since the last email, the newest sample sheet and the last console lines |
 | The pod does not answer for 5 minutes | at once, with the last row seen |
 | No new progress row for 30 minutes | at once, for either run |
+
+Only the email is less often. The spread check, the sample sheets, the
+checkpoints and the automatic stop on a piled-up mark stay at every 2,000
+steps on the pod (they are `train.py`'s), so a pile-up still stops the run
+within 2,000 steps and its ENDED message carries the rows that show it.
+`--every-steps N` overrides the interval for one watcher; `--every-steps 0`
+sends no progress reports at all, only the end and the alerts (used for the
+2,000-step check run). `--config <file>` reads `notify.every_steps` from
+another config.
 
 The password never goes to the pod and is never in the repository.
 
@@ -742,7 +830,7 @@ python notify.py --run labels_generated --pod root@<pod ip> --port <port> --key 
 `Ctrl-c` stops it; the same command carries on from what it has already sent
 (`runs/notify_state.json`, kept per run name, so a new run starts with
 nothing sent). The first look sends each run's newest row, so you know it is
-working. It recognises the pod run by the `log.dir` that `pod_run.sh` passes
+working (not with `--every-steps 0`). It recognises the pod run by the `log.dir` that `pod_run.sh` passes
 to `train.py`; for a run started another way, add `--pod-match <text in its
 command line>`.
 
@@ -755,8 +843,8 @@ command in `/docs/runs.md`, "Spread run (RunPod)", works on that copy.
 ### What it cannot do
 
 - **It only runs while the laptop is awake** and its terminal is open. No
-  mail is not good news: a report should come every 2,000 steps. If they
-  stop, look.
+  mail is not good news: a report should come every 10,000 steps (about 38
+  minutes on the RTX PRO 4000 pod). If they stop, look.
 - **It reads the laptop run without touching it**: only `progress.csv`,
   `spread.csv`, `console.log` and finished sample sheets. It never opens
   that run's checkpoints or `run_state.json`, which the run replaces and

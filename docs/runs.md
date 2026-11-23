@@ -7,7 +7,7 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
-| Generated-label run (RunPod) | **Stopped itself** at step 38,000 of 140,000 on 2026-11-23 02:53 UTC, exit code 4: the fixed-place measure rose 1.10 (step 30,000), 1.60 (32,000), 3.20 (34,000), 3.54 (36,000), 4.20 (38,000), above the limit of 4 (`spread.stop_above`); 27.4 percent of the mark's energy in one 96 px square. Bit accuracy flat at about 0.948 from step 34,000; PSNR 23.7 to 24.8 dB and the mark still clearly visible; 54 percent of it on the busier half; image-loss weight 0.295 to 0.335. `configs/runpod_labels_generated.yaml`, commit `6cc7062`, one RTX PRO 4000 Blackwell at $0.69 per hour: **2.37 GPU hours, $1.63**. Kept: `20261123-6cc7062` (step 38,000, checksums equal to the pod's). Checkpoints 30,000 and 32,000 were deleted by the run itself when 36,000 and 38,000 were saved (`checkpoint.keep: 3`); 34,000 and 36,000 and the TensorBoard log were copied to the laptop on 2026-11-22 (`training/runs/pod/labels_generated/`; both checkpoints reproduce the pod's spread rows exactly) and are also on the pod volume. Pod stopped, not terminated. |
+| Generated-label run (RunPod) | **Stopped itself** at step 38,000 of 140,000 on 2026-11-23 02:53 UTC, exit code 4: the fixed-place measure rose 1.10 (step 30,000), 1.60 (32,000), 3.20 (34,000), 3.54 (36,000), 4.20 (38,000), above the limit of 4 (`spread.stop_above`); 27.4 percent of the mark's energy in one 96 px square. Bit accuracy flat at about 0.948 from step 34,000; PSNR 23.7 to 24.8 dB and the mark still clearly visible; 54 percent of it on the busier half; image-loss weight 0.295 to 0.335. `configs/runpod_labels_generated.yaml`, commit `6cc7062`, one RTX PRO 4000 Blackwell at $0.69 per hour: **2.37 GPU hours, $1.63**. Kept: `20261123-6cc7062` (step 38,000, checksums equal to the pod's). Checkpoints 30,000 and 32,000 were deleted by the run itself when 36,000 and 38,000 were saved (`checkpoint.keep: 3`); 34,000 and 36,000 and the TensorBoard log were copied to the laptop on 2026-11-22 (`training/runs/pod/labels_generated/`; both checkpoints reproduce the pod's spread rows exactly) and are also on the pod volume. Pod stopped, not terminated. Diagnosis and the fix: "Generated-label pod run: the stop and the fix". |
 | Locator proof run (stage 2, laptop) | **Done**, 20 minutes on 2026-11-22, step 0 to 4,962, `configs/locator.yaml`. It learns: held-out mean corner error 130.11 reader px at step 0, 37.42 at the end (worst 5 percent 238.17 to 145.69). See "Locator (stage 2)". The full run is not started yet. |
 | Generated-label sanity run (laptop) | **Done**, one hour on 2026-11-21/22, step 0 to 6,056, on `labelgen.py` tiles (`configs/labels_generated.yaml`). It learns: bit accuracy 0.863 over the last 1,000 steps and still rising, final eval 0.873. The image loss never switched on (needs 0.95), so PSNR is 12.5 dB. Acceptance fails, as expected after one hour. See "Generated labels". No pod run. |
 | Label run (laptop) | **Done**, two hours on 2026-11-21, from step 0 to 15,087, on Open Food Facts label photos with the image-loss weight following bit accuracy. Bit accuracy held at 0.948; the image-loss weight stopped at 0.22 and PSNR at 24 dB. **Acceptance failed** on reading (0.53 of held-out tiles within reach of the error correction, line 0.80) and the mark is visible. No fixed patch (1.36). See "Label run". |
@@ -17,6 +17,94 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 | Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
 | Direct reader | **Dropped for the gate.** Every smoke test with rotation ends at chance; no pod run was made. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
+
+## Generated-label pod run: the stop and the fix
+
+`configs/runpod_labels_generated.yaml`, RunPod, one RTX PRO 4000 Blackwell at
+$0.69 per hour, 2026-11-23 00:31 to 02:53 UTC, step 0 to 38,000 (16,040 steps
+per hour), 2.37 GPU hours, $1.63. It stopped itself at step 38,000 on the
+fixed-place limit (exit code 4). Kept: `training/kept/labels_generated/20261123-6cc7062/`.
+
+Everything below is measured on the laptop CPU from the checkpoints at
+34,000, 36,000 and 38,000 (each reproduces the pod's spread row to the
+printed digit) and from the run's TensorBoard file, unless it says
+"estimate". The fixed images are the spread check's 256 held-out labels
+(`labelgen.SPREAD_SEEDS`). Results and the scripts' output:
+`training/runs/pod/labels_generated/diagnosis/`.
+
+**Where.** A patch in the lower-right corner of every tile, growing from
+34,000 to 38,000 (`heatmaps_32k_34k_36k_38k.png`; the 32,000 panel is from
+the 4 tiles of that step's sample sheet, as the checkpoint was deleted by
+`checkpoint.keep: 3`). It is the long run's "Corner patch" again, slower.
+It began near step 26,000 to 28,000: training "strongest spot" 1.29, 1.36,
+1.63 for the 2,000 steps ending at 26,000, 28,000, 30,000.
+
+**Loss terms**, training means over each 2,000 steps (s is the image-loss
+weight; the run's weights are L2 2, peak penalty 4, LPIPS 1, all times s):
+
+| Steps | s | Bit | L2 | Peak | LPIPS | s x 2 x L2 | s x 4 x Peak | s x LPIPS | Strongest spot |
+|---|---|---|---|---|---|---|---|---|---|
+| 28,000-30,000 | 0.309 | 0.153 | 0.0053 | 0.0087 | 0.310 | 0.0033 | 0.0108 | 0.0957 | 1.63 |
+| 30,000-32,000 | 0.302 | 0.145 | 0.0048 | 0.0112 | 0.251 | 0.0029 | 0.0135 | 0.0758 | 2.46 |
+| 32,000-34,000 | 0.295 | 0.146 | 0.0042 | 0.0136 | 0.193 | 0.0025 | 0.0160 | 0.0569 | 3.64 |
+| 34,000-36,000 | 0.302 | 0.139 | 0.0042 | 0.0147 | 0.161 | 0.0025 | 0.0178 | 0.0485 | 4.14 |
+| 36,000-38,000 | 0.323 | 0.145 | 0.0037 | 0.0141 | 0.138 | 0.0024 | 0.0183 | 0.0445 | 4.45 |
+
+**Why.** Not the image-loss weight (0.31 to 0.32): LPIPS. At step 38,000 the
+trained mark was spread evenly over each tile at the same energy (a smooth
+gain that flattens its 48 px window energy). Fixed place fell from 4.21 to
+1.69; LPIPS rose from 0.129 to 0.204 (+0.075); the peak penalty fell from
+0.0135 to 0.0060 (-0.0075); the reader's bit accuracy fell from 0.965 to
+0.919 and its bit loss rose by 0.104. So piling up saves ten times more
+LPIPS than the peak penalty charges for it: the penalty outweighs LPIPS only
+above a weight of 10, and the run had 4.
+
+**Visibility.** The image-loss weight follows bit accuracy (floor 0.95, band
+0.01, 1/15,000 per step): it switched on at step 16,304 and was 0.044,
+0.111, 0.178, 0.235, 0.266 at steps 17,000 to 21,000, 0.27 to 0.31 from
+22,000 to 36,000, 0.325 and 0.335 at 37,000 and 38,000. Its ceiling is 1.0,
+but training bit accuracy sat at 0.943 to 0.948, below the floor, so it was
+held near 0.3 and would have stayed there. PSNR at 140,000 steps, estimate
+from a log fit of the training PSNR: 29 to 31 dB (low confidence; part of
+the rise was the pile-up). On the 45 mostly flat fixed images the PSNR is
+27.2 dB, on the rest 24.9 dB, but on flat labels the corner patch is plainly
+visible (`step_00038000/sheet_8_labels.png`: clean | marked | residual x10,
+rows 1 to 3 fully flat).
+
+**Reading at step 38,000** (eval mode, full patch, one simulated shot at full
+strength, BCH(63,39) corrects 4 of the 63 codeword bits,
+`/docs/message-format.md`): 225 of 256 tiles (87.9 percent) fully decode;
+86.6 percent over 9 independent shots (83.2 to 89.1); 98.0 percent with the
+9 shots' logits averaged. Mean 2.04 wrong bits per tile; mostly flat tiles
+84.9 percent, the rest 87.0. This reader leans on the corner patch (see Why).
+
+**The fix**, `configs/runpod_labels_generated_fix.yaml`:
+
+| Setting | Old | New | Why |
+|---|---|---|---|
+| `spread.peak_penalty.weight` | 4 | 16 | Break-even with LPIPS is 10 (above); 16 leaves a margin. It stays on the image-loss weight like L2 and LPIPS, so its ratio to LPIPS is 16 whatever that weight is. |
+| `loss.texture_mask` | off (new) | on: 1.5x on flat colour, 0.25x on busy detail | The L2 loss and the peak penalty weigh each pixel by how flat the clean tile is around it, so the mark may be stronger on text and detail and must be weaker on flat colour; a patch on flat colour costs more. About 70 percent of label pixels are flat by acceptance.py's level (6e-5), the rest 1e-3 to 3e-2. |
+| `spread.stop_above` | 4 | 4 | unchanged |
+
+Not taken: a faster or higher image-loss ramp (the weight is held by bit
+accuracy, so it only rises by giving up reading, and it raises LPIPS, the
+cause); adding LPIPS (on already, weight 1, alex); hiding in blue-yellow
+colour (the simulation's JPEG chroma subsampling halves colour resolution,
+which puts the top of the band at 1.5 camera px per cycle, below what can be
+resolved; it needs an embedder change and a fresh start).
+
+The texture mask is checked in `smoke_test.py` (`check_texture_mask`): flat
+colour costs 1.5, an 8 px checkerboard at most 0.252, the training step's L2
+and peak terms equal the texture-weighted ones computed apart, the gradient
+reaches the embedder; a mask of ones, a mask without the detail term and a
+training step that ignores the mask each fail it. Step 34,000 loads into the
+new config. No training step has run with the fix.
+
+**Plan.** A 2,000-step check from step 34,000 (the least piled-up checkpoint
+left), then the full run if it passes; commands and pass lines in
+`training/RUNPOD.md`, "The generated-label fix". Estimates at 15,990 steps
+per hour and $0.69 per hour: check 0.125 h, $0.09; the rest of the run (36,000
+to 140,000) 6.5 h, $4.49; a fresh start instead 8.8 h, $6.04.
 
 ## Locator (stage 2)
 
