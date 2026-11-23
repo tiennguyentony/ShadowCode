@@ -154,6 +154,7 @@ same model, message and tile, so the fix's step 36,000 loads):
 | `schedule.image_loss.follow_accuracy` | floor 0.95, band 0.01 | floor 0.945, band 0.005 | The weight rises at a smoothed training bit accuracy of 0.945 or more (was 0.95) and falls only below 0.94 (unchanged). Measured: with 0.95/0.01 the old run's training bit accuracy sat between the two thresholds, 0.943 to 0.948. Estimate: it now sits at about 0.9425, still above the 0.94 pass line, and the weight climbs whenever reading allows instead of waiting for 0.95. |
 | `schedule.image_loss.ramp_steps` | 15,000 | 5,000 | The weight moves by 1/5,000 per step instead of 1/15,000: up to 0.4 per 2,000 steps. It also falls three times as fast below 0.94. The smoothing of the bit accuracy (0.98, about 50 steps) is much shorter than the ramp, so it does not swing. |
 | `log.sheet_every` | 1,000 | 2,000 | Sample sheet, spread check and its automatic stop every 2,000 steps, with the checkpoints. Progress emails stay at one every 10,000 steps; the end, a failure and the automatic stops are emailed at once (notify.py). |
+| `checkpoint.keep` | 3 | 15 | The newest 15 checkpoints, the last 30,000 steps, about 3.6 GB at 0.243 GB each, so a run can go back further than 4,000 steps (the first run deleted 32,000). Keeping all (0) from 36,000 to 140,000 is about 12.9 GB, more than the 10 GB volume holds next to the 2.7 GB already on it. |
 | `loss.texture_mask` | on | on | unchanged |
 | `spread.stop_above` | 4 | 4 | unchanged |
 
