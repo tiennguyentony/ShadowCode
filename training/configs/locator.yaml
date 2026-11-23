@@ -1,0 +1,76 @@
+# Stage 2: the locator, on the laptop GPU. Design: /docs/model-contract.md,
+# "The locator: design note".
+#
+#   python train.py --config configs/locator.yaml --keep-awake --max-minutes 20
+#
+# The embedder and the reader are frozen and not trained here. Tiles come
+# from labelgen.py training seeds (data.source: generated_labels); half of
+# them are marked by the frozen embedder of locator_train.embedder_checkpoint
+# with random messages, half are left plain. Held-out evaluation: seeds 0 to
+# 255 (labelgen.ACCEPTANCE_SEEDS), one fixed frame each, rendered at camera
+# resolution and shrunk as the app does (locator_eval.py).
+#
+# Resumes from the newest checkpoint in checkpoint.dir with the same command.
+base: labels_generated.yaml
+
+train:
+  stage: 2
+  batch_size: 8                # tiles per step from the loader; each gives locator_train.views_per_tile samples
+  total_steps: 200000
+  lr: 1.0e-3                   # cosine down to locator_train.lr_end over total_steps
+
+model:
+  locator:
+    input_px: 384
+    widths: [32, 64, 96, 128, 160, 192]
+    head_channels: 64
+    hidden: 128
+    reference_px: auto         # side of the reference square; auto: geometric middle of tile_px_in_frame
+
+simulation:
+  frame_px: 384                # the locator input; training renders it directly
+  effects:
+    resolution: false          # the locator input is coarser than the camera at every tile size
+  perspective:
+    rotation_deg: 360.0
+    tile_px_in_frame: auto     # camera_px_per_tile * 384 / 1080: 54.8 to 120.9
+  surface_extent_tiles: [0.6, 4.0]
+
+schedule:
+  sim_strength:
+    start_step: 0
+    ramp_steps: 0
+    max_strength: 1.0
+
+locator_train:
+  input_px: 384
+  views_per_tile: 4            # samples per tile per step: 8 tiles x 4 = 32
+  marked_share: 0.5            # share of tiles marked by the frozen embedder
+  embedder_checkpoint: checkpoints/labels_generated/step_00006056.pt
+  lr_end: 1.0e-5
+  smooth_l1_beta: 3.0          # reader pixels
+  eval_every: 1000             # steps between held-out evaluations
+  eval_samples: 256            # labelgen.ACCEPTANCE_SEEDS[:this]
+  eval_seed: 20261122          # fixes the held-out frames, so every evaluation is on the same 256
+  # Stop when the held-out mean corner error has not improved by at least
+  # min_improvement (relative) on the best so far for this many evaluations
+  # in a row. null: never.
+  patience_evals: null
+  min_improvement: 0.01
+
+log:
+  dir: runs/locator
+  print_every: 100
+  report_every: 1000
+  sheet_every: 1000
+  spread_markdown: null
+
+checkpoint:
+  dir: checkpoints/locator
+  every: 1000
+  keep: 3
+
+early_stop:
+  enabled: false
+image_loss_check:
+  enabled: false

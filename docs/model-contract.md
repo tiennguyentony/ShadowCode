@@ -286,7 +286,7 @@ One thing that cost time: `ort.env.wasm.wasmPaths` has to be an absolute URL. A 
 
 ## The locator: design note
 
-**Status: proposed 2026-11-22, not approved. Nothing below is built or trained. No locator training starts before this note is approved.**
+**Status: proposed and approved 2026-11-22. Built in `training/` (stage 2); training results in `docs/runs.md`, "Locator (stage 2)". No locator bundle has been exported.**
 
 The locator is stage 2. It takes the camera view and returns the four corners the flatten step needs. The embedder and the reader are not changed by it and are not trained in stage 2.
 
@@ -310,7 +310,7 @@ The square the locator returns is one tile period on a side, on the surface, cen
 - Input 384 x 384 x 3. At the camera's 154 to 340 pixels per printed tile (`camera_px_per_tile`), one tile is 55 to 121 locator-input pixels, so the input shows about 3 to 7 tiles across.
 - A plain CNN: six stride-2 stages, one residual block each, widths 32, 64, 96, 128, 160, 192 (BatchNorm, ReLU), giving a 6 x 6 map; a 1 x 1 convolution to 64 channels; flatten (2,304 values); a fully connected layer of 128; a fully connected layer of 8. The map is flattened, not pooled, so the output keeps where things are.
 - The 8 outputs are the four corners as offsets from a reference square (centred on the input middle, 82 pixels on a side, the geometric middle of 55 and 121), in units of that side. The exported model adds the reference back, so `locator.onnx` returns plain corners in locator-input pixels.
-- 2,637,768 parameters (counted for these layers in PyTorch), under the reader's 3 million target. Same ONNX opset and operator limits as the reader.
+- 2,635,752 parameters as built (`models/locator.py`; the convolutions before BatchNorm have no bias), under the reader's 3 million target. Same ONNX opset and operator limits as the reader.
 
 ### Training targets
 

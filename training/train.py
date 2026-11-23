@@ -526,6 +526,11 @@ def main() -> int:
             "On a pod, setup_runpod.sh times the label generator and prints the fastest N."
         )
     check_demo(cfg)
+    if int(cfg["train"]["stage"]) == 2:
+        # Stage 2, the locator: its own loop (locator_train.py), same command-line options.
+        from locator_train import run as run_locator
+
+        return run_locator(cfg, args)
     ckpt_cfg, log_cfg = cfg["checkpoint"], cfg["log"]
     early = cfg.get("early_stop") or {}
     check_enabled = bool(early.get("enabled", False))

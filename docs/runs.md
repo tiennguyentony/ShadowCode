@@ -7,6 +7,7 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
+| Locator proof run (stage 2, laptop) | **Done**, 20 minutes on 2026-11-22, step 0 to 4,962, `configs/locator.yaml`. It learns: held-out mean corner error 130.11 reader px at step 0, 37.42 at the end (worst 5 percent 238.17 to 145.69). See "Locator (stage 2)". The full run is not started yet. |
 | Generated-label sanity run (laptop) | **Done**, one hour on 2026-11-21/22, step 0 to 6,056, on `labelgen.py` tiles (`configs/labels_generated.yaml`). It learns: bit accuracy 0.863 over the last 1,000 steps and still rising, final eval 0.873. The image loss never switched on (needs 0.95), so PSNR is 12.5 dB. Acceptance fails, as expected after one hour. See "Generated labels". No pod run. |
 | Label run (laptop) | **Done**, two hours on 2026-11-21, from step 0 to 15,087, on Open Food Facts label photos with the image-loss weight following bit accuracy. Bit accuracy held at 0.948; the image-loss weight stopped at 0.22 and PSNR at 24 dB. **Acceptance failed** on reading (0.53 of held-out tiles within reach of the error correction, line 0.80) and the mark is visible. No fixed patch (1.36). See "Label run". |
 | Penalty-only run (laptop) | **Resumed** on 2026-11-21 from its step 10,000 checkpoint. It had stopped itself there on a limit that could not tell the corner patch from a mark that follows the image. The limit is now on the fixed-place measure (4.0, on 256 images); a mark that follows the image is accepted. See "Penalty-only run". |
@@ -15,6 +16,65 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 | Sanity run | **Done**, one hour on the laptop GPU with the settings below. It learns; results in "Sanity run". No run has used an older camera range. |
 | Direct reader | **Dropped for the gate.** Every smoke test with rotation ends at chance; no pod run was made. See "Direct mode". |
 | Smoke tests | Run on 2026-11-21 with the new settings; results below. |
+
+## Locator (stage 2)
+
+Design: `docs/model-contract.md`, "The locator: design note" (approved
+2026-11-22). Code: `locator_train.py` (started through `train.py` when
+`train.stage` is 2), `models/locator.py`, `simulate_view` and the new keys
+in `simulate.py`, `configs/locator.yaml`. `smoke_test.py` checks rotation,
+the target corners, a print that ends inside the frame and the turn-free
+loss (`check_locator_view`); with each check broken on purpose it fails.
+Stage 1 with `rotation_deg: 0` draws the same homographies as before, to
+the last bit (checked against the previous `simulate.py`).
+
+**Units.** Corner error is the mean distance of the four corners, in reader
+pixels (384 per tile, the unit of `flatten.corner_jitter_px` = 3), after the
+best of the four turns. "Worst 5%" is the mean of the worst 13 of 256
+samples.
+
+**Held-out set.** `labelgen.ACCEPTANCE_SEEDS` (seeds 0 to 255, never drawn
+in training), one fixed frame each (`locator_train.eval_seed` 20261122),
+rendered at camera resolution (1080 x 1080 central square, a tile 154 to 340
+pixels) and shrunk to 384 as the app does. Even seeds are marked by the
+frozen embedder, odd ones are plain. The same 256 frames at every
+evaluation.
+
+**Frozen embedder:** `checkpoints/labels_generated/step_00006056.pt`, the
+end of the one-hour generated-label sanity run.
+
+### Proof run, 2026-11-22
+
+```
+python train.py --config configs/locator.yaml --keep-awake --max-minutes 20
+```
+
+RTX 4070 laptop GPU, 32 samples per step (8 tiles x 4 views, half the tiles
+marked), about 4.1 steps per second, peak GPU memory 1,813 MiB. Rotation 0
+to 360 degrees, tilt up to 30, print edges 0.6 to 4.0 tiles from the
+centre, every effect on at full strength from step 0.
+
+| step | minutes | mean | median | 95th pct | worst 5% | max | marked | plain | best turn not 0 |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 0.1 | 130.11 | 131.79 | 225.63 | 238.17 | 259.71 | 130.90 | 129.32 | 214 |
+| 1,000 | 4.2 | 124.40 | 126.14 | 205.55 | 230.59 | 276.85 | 128.84 | 119.96 | 190 |
+| 2,000 | 8.1 | 115.47 | 117.97 | 184.58 | 195.15 | 217.23 | 116.11 | 114.83 | 196 |
+| 3,000 | 12.2 | 56.11 | 44.86 | 139.53 | 154.86 | 186.32 | 54.01 | 58.21 | 198 |
+| 4,000 | 16.2 | 44.09 | 30.78 | 121.77 | 158.84 | 187.83 | 42.64 | 45.54 | 202 |
+| 4,962 | 20.1 | 37.42 | 26.48 | 103.77 | 145.69 | 202.98 | 38.34 | 36.49 | 195 |
+
+Held-out corner error, reader pixels, 256 samples. Step 0 is the untrained
+locator, which returns the reference square.
+
+It learns, with rotation on. For 2,000 steps it stayed near the reference
+square, then dropped. At the end it is still far from the reader's
+tolerance (3 reader px): the median is 26.48. Marked and plain labels are
+alike, so it is not leaning on the mark. In 195 of 256 samples the best turn
+is not 0: the locator picks its own corner order, as the loss allows, and
+the app's four tries are needed for most frames. No reader accuracy was
+measured in this run. Sample sheets: `training/runs/locator/samples/`.
+Checkpoint `checkpoints/locator/step_00004962.pt`; the full run resumes from
+it with the same config.
 
 ## Generated labels
 

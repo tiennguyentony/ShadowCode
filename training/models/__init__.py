@@ -13,7 +13,7 @@ from .embedder import Embedder
 from .locator import Locator
 from .reader import Reader
 
-__all__ = ["Embedder", "Reader", "Locator", "Models", "build_models", "count_parameters"]
+__all__ = ["Embedder", "Reader", "Locator", "Models", "build_locator", "build_models", "count_parameters"]
 
 
 @dataclass
@@ -64,5 +64,21 @@ def build_models(cfg: dict) -> Models:
         texture=texture,
         pool_norm=rd["pool_norm"],
     )
-    locator = Locator(**m["locator"]) if m.get("locator") else None
+    locator = build_locator(cfg) if m.get("locator") else None
     return Models(embedder=embedder, reader=reader, locator=locator, band=band)
+
+
+def build_locator(cfg: dict) -> Locator:
+    """The locator from ``model.locator``. ``reference_px: auto`` is the geometric middle of the tile sizes it sees."""
+    import math
+
+    from simulate import tile_px_in_frame
+
+    settings = dict(cfg["model"]["locator"])
+    if settings.get("reference_px", "auto") == "auto":
+        span = tile_px_in_frame(cfg)
+        if span is None:
+            raise ValueError("model.locator.reference_px: auto needs simulation.perspective.tile_px_in_frame")
+        settings["reference_px"] = math.sqrt(span[0] * span[1])
+    settings["widths"] = tuple(settings["widths"])
+    return Locator(**settings)

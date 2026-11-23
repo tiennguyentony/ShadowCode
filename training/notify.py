@@ -3,6 +3,9 @@
     python notify.py --test                           one test email, then exit
     python notify.py --run labels_generated --pod root@<pod ip> --port <port> --key ~/.ssh/<key>
     python notify.py --no-pod                         the laptop run only
+    python notify.py --no-pod --locator --laptop-run runs/locator --laptop-match locator.yaml --state runs/notify_locator_state.json --total-steps 200000
+                                                      the laptop locator run (stage 2): one report per
+                                                      held-out evaluation (eval.csv), with its sample sheet
 
 --run names the pod run: its folder is /workspace/runs/<run> on the pod, as
 pod_run.sh writes it.
@@ -73,6 +76,7 @@ EXIT_CODES = {
     4: "automatic stop: the mark piled up at a fixed place (exit code 4)",
     5: "automatic stop: the image loss never switched on (exit code 5)",
     6: "automatic stop: the limit on hours or cost was reached (exit code 6)",
+    7: "automatic stop: the locator's held-out corner error stopped improving (exit code 7)",
     130: "interrupted (Ctrl-C or SIGTERM), checkpoint saved",
 }
 
@@ -152,6 +156,90 @@ class LaptopRun:
     def sheet(self, step: int) -> Path | None:
         path = self.directory / "samples" / f"step_{step:08d}.png"
         return path if path.is_file() else None
+
+
+class LocatorRun(LaptopRun):
+    """A stage-2 (locator) run on this machine. Its reports come from eval.csv, one row per held-out evaluation."""
+
+    def view(self) -> dict:
+        out = super().view()
+        out["spread"] = read_rows(self.directory / "eval.csv")
+        return out
+
+    def report_text(self, row: dict, view: dict, total_steps: int, note: str = "") -> tuple[str, str]:
+        step = int(row["step"])
+        subject = (
+            f"{self.name} step {step:,}: corner error mean {number(row['mean'], 2)} px, "
+            f"worst 5% {number(row['worst5_mean'], 1)} px"
+        )
+        best = min(view["spread"], key=lambda r: float(r["mean"])) if view["spread"] else row
+        body = [
+            f"{self.name}, step {step:,} of {total_steps:,}" + (f"  ({note})" if note else ""),
+            f"Row written {row['local_time']} (the clock of this laptop)",
+            "",
+            f"Held-out corner error, reader pixels (384 per tile), {row['samples']} samples:",
+            f"  mean {number(row['mean'], 2)}, median {number(row['median'], 2)}, 95th percentile {number(row['p95'], 2)}, "
+            f"worst 5% mean {number(row['worst5_mean'], 2)}, max {number(row['max'], 1)}",
+            f"  marked {number(row['marked_mean'], 2)}, plain {number(row['plain_mean'], 2)}",
+            f"  samples whose best turn is not 0: {row['turn_not_zero']}",
+            f"Best mean so far: {number(best['mean'], 2)} at step {int(best['step']):,}",
+            "",
+            *self.pace(view["progress"], total_steps),
+            "",
+            "Latest rows:",
+            *self.table(view["spread"]),
+        ]
+        return subject, "\n".join(body)
+
+    @staticmethod
+    def pace(progress: list[dict], total_steps: int) -> list[str]:
+        if not progress:
+            return []
+        last = progress[-1]
+        lines = [
+            f"Training time so far: {number(last['elapsed_hours'], 2)} h; "
+            f"train corner error {number(last['train_corner_px'], 2)} px (last 1,000 steps)"
+        ]
+        recent = progress[-6:]
+        hours = float(recent[-1]["elapsed_hours"]) - float(recent[0]["elapsed_hours"])
+        steps = int(recent[-1]["step"]) - int(recent[0]["step"])
+        if hours > 0 and steps > 0:
+            left = (total_steps - int(last["step"])) / (steps / hours)
+            lines.append(f"Pace: {steps / hours:,.0f} steps per hour. Estimate: {left:.1f} h to step {total_steps:,} at this pace.")
+        return lines
+
+    @staticmethod
+    def table(rows: list[dict], count: int = 6) -> list[str]:
+        lines = ["step | mean px | 95th pct | worst 5% | marked | plain"]
+        for r in rows[-count:]:
+            lines.append(
+                f"{int(r['step']):,} | {number(r['mean'], 2)} | {number(r['p95'], 2)} | {number(r['worst5_mean'], 2)} | "
+                f"{number(r['marked_mean'], 2)} | {number(r['plain_mean'], 2)}"
+            )
+        return lines
+
+    def situation(self, view: dict, total_steps: int, console_lines: int = 30) -> str:
+        body = []
+        if view.get("spread"):
+            body += ["Latest held-out rows:", *self.table(view["spread"], 4), ""]
+        if view.get("progress"):
+            last = view["progress"][-1]
+            body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}", *self.pace(view["progress"], total_steps), ""]
+        if view.get("console"):
+            body += [f"Last {min(console_lines, len(view['console']))} console lines of {self.name}:", *view["console"][-console_lines:]]
+        return "\n".join(body)
+
+
+def run_report(run, row: dict, view: dict, total_steps: int, note: str = "") -> tuple[str, str]:
+    if isinstance(run, LocatorRun):
+        return run.report_text(row, view, total_steps, note)
+    return report_text(run.name, row, view, total_steps, note)
+
+
+def run_situation(run, view: dict, total_steps: int, console_lines: int = 30) -> str:
+    if isinstance(run, LocatorRun):
+        return run.situation(view, total_steps, console_lines)
+    return situation(run.name, view, total_steps, console_lines)
 
 
 class PodRun:
@@ -390,14 +478,14 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             st["unreachable_told"] = mailer.send(f"ALERT {run.name}: cannot be reached", body)
     else:
         if st.pop("unreachable_since", None) and st.pop("unreachable_told", None):
-            mailer.send(f"{run.name}: reachable again", situation(run.name, view, args.total_steps, 10))
+            mailer.send(f"{run.name}: reachable again", run_situation(run, view, args.total_steps, 10))
         if not view["started"]:
             return
 
         # Reports: one per spread row. The first look sends only the newest row.
         rows = view["spread"]
         if rows and "reported_step" not in st:
-            subject, body = report_text(run.name, rows[-1], view, args.total_steps, "the watcher has just started")
+            subject, body = run_report(run, rows[-1], view, args.total_steps, "the watcher has just started")
             if mailer.send(subject, body, run.sheet(int(rows[-1]["step"]))):
                 st["reported_step"] = int(rows[-1]["step"])
         for row in rows if "reported_step" in st else []:
@@ -405,7 +493,7 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             if step <= st["reported_step"]:
                 continue
             sheet = run.sheet(step)
-            subject, body = report_text(run.name, row, view, args.total_steps)
+            subject, body = run_report(run, row, view, args.total_steps)
             if sheet is None:
                 body += "\n\nThe sample sheet for this step could not be read, so it is not attached."
             if not mailer.send(subject, body, sheet):
@@ -434,7 +522,7 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
                     )
                 if not st.get("was_alive"):
                     body += "\nIt was already stopped when the watcher first looked.\n"
-                if mailer.send(f"ENDED {run.name}: {reason}", body + "\n" + situation(run.name, view, args.total_steps)):
+                if mailer.send(f"ENDED {run.name}: {reason}", body + "\n" + run_situation(run, view, args.total_steps)):
                     st["ended"] = {"reason": reason, "at": now}
 
     # Stalled: no new progress row for too long. Counted from the newest row, or from the first look.
@@ -459,7 +547,7 @@ def check(run, st: dict, mailer: Mailer, args) -> None:
             + (f"The last one is step {last['step']:,} at {last['utc_time']}.\n\n" if last else "No row has been written yet.\n\n")
             + ("The run is hung or very slow, or the pod is gone. A pod that is still running is still billed.\n\n" if isinstance(run, PodRun)
                else "The run is hung or very slow, or the laptop was asleep.\n\n")
-            + (situation(run.name, view, args.total_steps) if view["reachable"] else "The pod could not be reached for this look.")
+            + (run_situation(run, view, args.total_steps) if view["reachable"] else "The pod could not be reached for this look.")
         )
         st["stall_told"] = mailer.send(f"ALERT {run.name}: no new row for {quiet / 60:.0f} minutes", body)
 
@@ -485,11 +573,15 @@ def main() -> int:
     parser.add_argument("--state", default="runs/notify_state.json", help="what has been sent already")
     parser.add_argument("--dry-run", metavar="DIR", help="write the messages to DIR as .eml files instead of sending")
     parser.add_argument("--once", action="store_true", help="look once and exit")
+    parser.add_argument("--locator", action="store_true", help="the laptop run is a stage-2 locator run (reports from eval.csv)")
     args = parser.parse_args()
 
     settings = load_settings()
     mailer = Mailer(settings, Path(args.dry_run) if args.dry_run else None)
-    laptop = LaptopRun("penalty run (laptop)", HERE / args.laptop_run, args.laptop_match)
+    if args.locator:
+        laptop = LocatorRun("locator run (laptop)", HERE / args.laptop_run, args.laptop_match)
+    else:
+        laptop = LaptopRun("penalty run (laptop)", HERE / args.laptop_run, args.laptop_match)
 
     if args.test:
         rows = read_rows(laptop.directory / "spread.csv")

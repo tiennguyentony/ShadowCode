@@ -411,6 +411,87 @@ def check_multi_shot() -> None:
     print("multi-shot checks passed: averaged logits outvote a weak wrong shot; K uses exactly the first K shots")
 
 
+def check_locator_view() -> None:
+    """Stage 2: in-plane rotation, a print that ends inside the frame, the target corners and the turn-free loss.
+
+    Geometry only (every effect but perspective off), float64 on the CPU.
+    """
+    from locator_train import corner_loss, turned
+    from simulate import sample_homography, simulate_view, target_corners
+
+    cfg = load_config(HERE / "configs" / "locator.yaml")
+    cfg["simulation"]["effects"] = {name: name == "perspective" for name in cfg["simulation"]["effects"]}
+    torch.manual_seed(0)
+
+    # 1. Rotation: off gives the surface's x axis along the frame's x axis; 360 spreads it over every angle.
+    def angles(deg: float) -> torch.Tensor:
+        geo = copy.deepcopy(cfg)
+        geo["simulation"]["perspective"]["rotation_deg"] = deg
+        geo["simulation"]["perspective"]["max_tilt_deg"] = 0.0
+        h, _ = sample_homography(512, TILE_PX, geo, 1.0, tile_px=(100.0, 100.0), frame_wh=(384, 384))
+        return torch.atan2(h[:, 1, 0], h[:, 0, 0])
+
+    still, turning = angles(0.0), angles(360.0)
+    assert still.abs().max() < 1e-9, f"rotation_deg 0 still rotates, by up to {still.abs().max():.2e} rad"
+    quarters = torch.histc(torch.remainder(turning, 2 * np.pi), bins=4, min=0.0, max=2 * np.pi)
+    assert quarters.min() > 80, f"rotation_deg 360 does not cover every quarter turn: {quarters.tolist()}"
+
+    # 2. Target corners: flattening the frame with them gives the tile-sized square of the surface
+    #    centred on the point at the middle of the frame, at whatever rotation and tilt.
+    generator = torch.Generator().manual_seed(1)
+    coarse = torch.rand(4, 3, 6, 6, generator=generator, dtype=torch.float64)
+    smooth = F.interpolate(coarse.repeat(1, 1, 3, 3), scale_factor=TILE_PX / 6, mode="bicubic", align_corners=False)
+    tile = smooth[..., TILE_PX : 2 * TILE_PX, TILE_PX : 2 * TILE_PX].clamp(0.0, 1.0).contiguous()
+    geo = copy.deepcopy(cfg)
+    geo["simulation"]["surface_extent_tiles"] = None
+    view = simulate_view(tile, geo, 1.0, (768, 768), (330.0, 380.0))
+    assert torch.allclose(view.corners, target_corners(view.homography, 768, 768)), "returned corners are not the target"
+    patch = flatten_from_corners(view.frame, view.corners, TILE_PX)
+    on_surface = apply_homography(torch.linalg.inv(view.homography), view.corners)
+    straight = warp_periodic(tile, _square_to(on_surface), (TILE_PX, TILE_PX))
+    gap = (patch - straight)[..., 8:-8, 8:-8].abs().max().item()
+    assert gap < 0.02, f"the target square flattens to the wrong part of the surface (off by {gap:.3f})"
+    at_middle = apply_homography(torch.linalg.inv(view.homography), torch.full((4, 1, 2), 384.0, dtype=torch.float64))
+    off_centre = (on_surface.mean(dim=1, keepdim=True) - at_middle).norm(dim=-1).max().item()
+    assert off_centre < 1e-6, f"the target square is not centred on the point at the middle of the frame ({off_centre:.3f} px off)"
+    side = (on_surface[:, 1] - on_surface[:, 0]).norm(dim=-1)
+    assert torch.allclose(side, torch.full_like(side, float(TILE_PX)), atol=1e-6), f"target square sides {side.tolist()}"
+
+    # 3. The print ends: a flat tile on a background of another colour. The target square is all print,
+    #    and with the edges 0.6 to 1.0 tiles away every frame shows background too.
+    geo = copy.deepcopy(cfg)
+    geo["simulation"]["surface_extent_tiles"] = [0.6, 1.0]
+    flat = torch.full((8, 3, TILE_PX, TILE_PX), 0.25, dtype=torch.float64)
+    background = torch.full((8, 3, TILE_PX, TILE_PX), 0.9, dtype=torch.float64)
+    view = simulate_view(flat, geo, 1.0, (384, 384), (55.0, 121.0), background)
+    print_px = ((view.frame - 0.25).abs().amax(dim=1) < 1e-6).float()
+    square = flatten_from_corners(print_px.unsqueeze(1), view.corners, 64)[..., 4:-4, 4:-4]
+    assert square.min() > 0.99, "background inside the target square"
+    shown = print_px.mean(dim=(1, 2))
+    assert shown.max() < 0.9, f"the print fills the frame although it ends within a tile: {shown.tolist()}"
+    endless = simulate_view(flat, cfg | {"simulation": {**cfg["simulation"], "surface_extent_tiles": None}}, 1.0, (384, 384), (55.0, 121.0))
+    assert ((endless.frame - 0.25).abs() < 1e-6).all(), "surface_extent_tiles null still shows background"
+
+    # 4. The loss takes any of the four turns of the target, and nothing else.
+    target = view.corners
+    size = view.tile_px
+    for r in range(4):
+        assert corner_loss(turned(target, r), target, size, 3.0).item() < 1e-9, f"turn {r} is not free"
+    mirrored = target[:, [1, 0, 3, 2]]
+    assert corner_loss(mirrored, target, size, 3.0).item() > 10.0, "a mirrored square costs nothing"
+    print(
+        "locator view checks passed: rotation off and over every quarter turn, target square is the tile-sized "
+        "square at the middle, the print ends with background beyond it, all four turns free in the loss"
+    )
+
+
+def _square_to(corners: torch.Tensor) -> torch.Tensor:
+    """Homography from the TILE_PX output square to ``corners`` (B,4,2)."""
+    from geometry import homography_from_points
+
+    return homography_from_points(square_corners(float(TILE_PX), corners.shape[0], dtype=corners.dtype), corners)
+
+
 def describe_simulation(cfg: dict) -> str:
     sim = cfg["simulation"]
     if not sim["enabled"]:
@@ -457,6 +538,7 @@ def run_smoke(
         check_holdout()
         check_generated_labels()
         check_multi_shot()
+        check_locator_view()
 
         batches = infinite(loader)
         history: list[dict[str, float]] = []

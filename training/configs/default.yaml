@@ -133,6 +133,15 @@ simulation:                    # every range below is its value at strength 1 an
   perspective:
     max_tilt_deg: 30.0
     distance_tiles: [3.0, 6.0] # camera distance in tile widths; closer means stronger perspective
+    rotation_deg: 0.0          # in-plane rotation, uniform in [0, this]; 0 keeps stage 1 as it was (the locator uses 360)
+    # Frame pixels per tile, [low, high], log-uniform, instead of fitting two
+    # tiles into the frame. null: fit (stage 1). auto: camera_px_per_tile
+    # shrunk as the app shrinks the stream for the locator (locator_train.input_px).
+    tile_px_in_frame: null
+  # The print ends: [low, high] tiles from the frame's centre point to each of
+  # its four edges, drawn per edge; background beyond. null: endless tiling.
+  # Used by the locator's view (simulate_view) only.
+  surface_extent_tiles: null
   blur:                        # in frame pixels (one tile is TILE_PX frame pixels at scale 1)
     defocus_radius_px: 2.5     # radius of the defocus disc, uniform in [0, this]
     motion_length_px: 6.0      # length of the motion streak, uniform in [0, this], random direction
