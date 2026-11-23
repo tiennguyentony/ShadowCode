@@ -257,6 +257,89 @@ for a typical frame. The located corners cost the reader 3 points of bit
 accuracy on the best turn (82.0 to 79.1). The early stop came at a high
 learning rate.
 
+### Reader diagnosis, 2026-11-23
+
+Measured on the laptop GPU, no training and no config change.
+`python reader_diagnosis.py --locator <copy of checkpoints/locator/step_00052000.pt> --reader ... --jitter 0 3 6 12 20 --out runs/locator/reader_diagnosis`.
+Same 256 held-out frames as the locator runs, but **all 256 marked**, each by
+the reader's own embedder (the training evaluation marks only the even 128,
+see "128 and 256" below; the script checks that the corners are the same
+either way). Its numbers equal `HeldOut.evaluate` on the same all-marked set,
+which it also runs.
+
+**BCH.** BCH(63,39), t = 4: it corrects up to 4 wrong bits among the 63
+codeword bits (indices 0 to 62); the spare bit 63 is not protected
+(`/docs/message-format.md`). "Decodes" = at most 4 of the 63 codeword bits
+wrong. Bit accuracy and wrong bits per sample are over all 64 bits.
+
+**The pod could not be reached.** ssh to every address the laptop knows for
+it (213.173.104.87:40703, 213.173.102.17:40976 and :14380, the last two the
+fix check's) was refused: the pod is stopped or has a new address. Nothing on
+the pod was started, stopped or changed, and the two laptop watchers (PIDs
+4904 and 29108) were not touched. So the pod's checkpoints were not listed
+from the pod itself. What is known from the laptop's copies of its logs:
+
+| reader checkpoint | where | saved (UTC) | logged bit accuracy |
+|---|---|---|---|
+| `labels_generated` step 34,000 | pod; copy on the laptop (`runs/pod/labels_generated/`) | 2026-11-23 02:38 | 0.9458 (training, mean of 1,000 steps) |
+| `labels_generated` step 36,000 | pod; copy on the laptop | 2026-11-23 02:46 | 0.9479 (training), the best logged of the three |
+| `labels_generated` step 38,000 | pod; kept `20261123-6cc7062` | 2026-11-23 02:53 | 0.9477 (training); 225 of 256 decode in the earlier diagnosis |
+| `labels_generated_fix` step 36,000 | pod only, staged as `kept/20261123-a452a15`, **not fetched** | 2026-11-23 04:16 | 0.9409 (training); final eval mode 0.967, within BCH reach 0.891 (8 fresh batches) |
+| laptop `labels_generated` step 6,056 (baseline) | laptop | 2026-11-22 08:17 | final eval 0.873 |
+
+Whether the fix run went on past step 36,000 on the pod is not known here.
+The newest reader measured below is therefore pod step 38,000, not the fix
+run's.
+
+**Results**, locator step 52,000, 256 samples each:
+
+| reader | corners | bit accuracy | mean wrong bits (of 64) | decodes (of 256) |
+|---|---|---|---|---|
+| laptop 6,056 | true | 82.23% | 11.37 | 3 |
+| laptop 6,056 | locator, best of 4 turns | 79.15% | 13.34 | 4 |
+| pod 34,000 | true | 97.81% | 1.40 | **235** |
+| pod 34,000 | locator, best of 4 turns | 95.72% | 2.74 | 210 |
+| pod 36,000 | true | 96.69% | 2.12 | 222 |
+| pod 36,000 | locator, best of 4 turns | 94.95% | 3.23 | 204 |
+| pod 38,000 | true | 96.90% | 1.98 | 222 |
+| pod 38,000 | locator, best of 4 turns | 95.18% | 3.08 | 203 |
+
+"Best of 4 turns": bit accuracy and wrong bits at the turn with the fewest
+wrong bits; a sample decodes when any of its four turns decodes, as the app
+tries all four. The best turn is not 0 in 196 to 198 of 256. Locator corner
+error on these all-marked frames: mean 14.70 to 16.01, median 11.53 to 11.80
+reader px with the pod readers' marks (19.13 / 12.95 with the 6,056 marks).
+
+**Corner jitter**, best reader (pod 34,000), true corners with each corner
+moved by exactly d reader px in a random direction (so d is the mean corner
+error, the locator's unit); 4 draws per sample, decodes are the mean of the 4
+(each draw's count in brackets):
+
+| d (reader px) | bit accuracy | mean wrong bits | decodes (of 256) |
+|---|---|---|---|
+| 0 | 97.81% | 1.40 | 235 |
+| 3 | 97.85% | 1.38 | 236.0 (235, 237, 236, 236) |
+| 6 | 97.83% | 1.39 | 234.0 (235, 233, 234, 234) |
+| 12 | 97.56% | 1.56 | 231.0 (229, 232, 231, 232) |
+| 20 | 96.65% | 2.14 | 224.75 (223, 221, 226, 229) |
+
+What it shows: the reader is not what held reading back in the locator
+report; the 6,056 reader was (3 of 256 with true corners). The pod readers
+decode 222 to 235 of 256 with true corners. The reader also tolerates far
+more corner error than the 3 px it was trained with: 12 px costs 4 decodes,
+20 px costs 10. The locator (median 11.8, mean 16.0 on these frames) costs
+25 decodes (235 to 210), more than a uniform 20 px offset does, so its loss
+is in the tail (worst 5 percent near 100 px in the training evaluation), not
+in the typical frame.
+
+**128 and 256.** Not a bug. `HeldOut` marks only the even positions
+(`self.marked = arange(count) % 2 == 0`); the odd 128 stay plain on purpose,
+so the marked/plain corner columns can show the locator does not lean on the
+mark. A plain frame has no message, so reads are counted over the 128 marked
+frames and corners over all 256. The locator report's "within BCH reach"
+rows are therefore out of 128. Nothing changed in `locator_train.py`; this
+diagnosis marks all 256 so its reads are out of 256.
+
 ## Generated labels
 
 From 2026-11-21 there is a second source of training tiles:
