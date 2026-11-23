@@ -284,6 +284,68 @@ One thing that cost time: `ort.env.wasm.wasmPaths` has to be an absolute URL. A 
 
 `exported_with` lists the library versions used.
 
+## The locator: design note
+
+**Status: proposed 2026-11-22, not approved. Nothing below is built or trained. No locator training starts before this note is approved.**
+
+The locator is stage 2. It takes the camera view and returns the four corners the flatten step needs. The embedder and the reader are not changed by it and are not trained in stage 2.
+
+### What the app does with it
+
+1. Take the central square of the camera stream, as wide as the short side: 1080 x 1080 of the 1080 x 1920 portrait stream. This is the part the user aims at the label.
+2. Shrink it to 384 x 384 with smoothing (canvas `drawImage` scaling is fine). That is the locator input: RGB, NCHW, values 0 to 1, as for the reader.
+3. Run the locator. Out come four corners, `[1, 4, 2]`, in locator-input pixels, same pixel convention as `flatten.coordinates`.
+4. Map each corner back to stream pixels: multiply by 1080 / 384 = 2.8125, then add the crop's top-left (0, 420).
+5. Flatten from the full-resolution stream with those corners and read, four times: once with the corners as returned and once with the list rolled by one, two and three places (rolling by r puts returned corner (k + r) mod 4 in place k). That is the same square turned by 0, 90, 180 and 270 degrees.
+6. Keep the read whose message decodes and whose CRC passes. If none passes, there is no read for this frame.
+
+**Why step 5.** The tile is square and repeats, so a view of the surface looks the same, as far as geometry goes, at all four right-angle turns. The locator is not asked to tell them apart, and it would have to read the mark to do so, which is the reader's job. The reader is not trained on turned patches, so only one of the four reads should pass. Cost: up to four reader runs per frame instead of one. Risk: each of the three wrong turns is another chance for a wrong message to get past BCH and the 7-bit CRC. That chance has not been measured; it should be, on held-out samples, before the app relies on it.
+
+### What the corners are
+
+The square the locator returns is one tile period on a side, on the surface, centred on the surface point seen at the middle of the locator input, with its sides along the surface's rows and columns. Any such square holds the whole message, because the reader is trained on every offset within the tile pattern. The order is top-left, top-right, bottom-right, bottom-left, up to the turn in step 5 (the true top is not known to the locator). Mirror images do not occur.
+
+### Network
+
+- Input 384 x 384 x 3. At the camera's 154 to 340 pixels per printed tile (`camera_px_per_tile`), one tile is 55 to 121 locator-input pixels, so the input shows about 3 to 7 tiles across.
+- A plain CNN: six stride-2 stages, one residual block each, widths 32, 64, 96, 128, 160, 192 (BatchNorm, ReLU), giving a 6 x 6 map; a 1 x 1 convolution to 64 channels; flatten (2,304 values); a fully connected layer of 128; a fully connected layer of 8. The map is flattened, not pooled, so the output keeps where things are.
+- The 8 outputs are the four corners as offsets from a reference square (centred on the input middle, 82 pixels on a side, the geometric middle of 55 and 121), in units of that side. The exported model adds the reference back, so `locator.onnx` returns plain corners in locator-input pixels.
+- 2,637,768 parameters (counted for these layers in PyTorch), under the reader's 3 million target. Same ONNX opset and operator limits as the reader.
+
+### Training targets
+
+Taken from the homography the simulation already returns (surface pixels to frame pixels, exact), nothing else. With H that homography and m the middle of the frame:
+
+- c = H⁻¹(m), the surface point seen at the middle;
+- the corners on the surface are c + (−192, −192), c + (192, −192), c + (192, 192), c + (−192, 192);
+- the targets are those four points carried through H.
+
+The frame here is the locator input itself: the simulation renders it directly at 384 x 384, at 55 to 121 pixels per tile, instead of at the reader's 384 pixels per tile.
+
+### Loss
+
+For each sample, the corner error under turn r is the mean over the four corners of the distance between predicted corner k and target corner (k + r) mod 4. The loss takes the smallest over r = 0, 1, 2, 3 (step 5 above), with distances measured as smooth L1 on x and y, switching from squared to linear at 3 reader pixels.
+
+**Reader pixels** are the unit for the loss and for every corner error reported: locator-input pixels times 384 / (tile side in locator-input pixels for that sample), that is, pixels at the reader's scale of 384 per tile. In those units `flatten.corner_jitter_px` = 3 is the corner error the reader is trained to tolerate (each corner up to ±3 in x and y). That is 0.43 to 0.95 locator-input pixels, a hard target for a first locator; the reader-accuracy comparison below shows what any shortfall costs.
+
+### Simulation changes it needs
+
+- **In-plane rotation** in `sample_homography`, from `simulation.perspective.rotation_deg` (uniform in [0, rotation_deg]). Default 0, so stage-1 configs train exactly as before; 360 for the locator. Because of the turn-free loss, only the angle modulo 90 degrees matters to the locator.
+- **Tile size in the frame**, new `simulation.perspective.tile_px_in_frame: [low, high]` (log-uniform), replacing the fit-to-frame scale when set. Default null (stage 1 as before). For the locator, `auto`: `camera_px_per_tile` times 384 / `demo.stream_px` short side, which gives [55, 121].
+- **Only part of the tiled surface in the frame.** My reading of the request: the printed, tiled area ends somewhere in the view, as a label does. New `simulation.surface_extent_tiles: [low, high]`: from the centre point c to each of the four edges of the printed area, uniform per edge, in tiles; [0.6, 4.0] for the locator. Outside it the frame shows background: another generated label from a training seed, not tiled, at a random scale, or a flat colour, half and half. The target square always lies inside the printed area and inside the frame; a sample where it would not is drawn again. Default null (endless tiling, as before).
+- Tilt, blur, colour, noise and JPEG as in stage 1. Blur lengths are given at 384 pixels per tile and are scaled to the frame's tile size. The loss-of-resolution step does nothing here: the locator input is coarser than the camera at every tile size in the range. The surface is shrunk with smoothing before the warp, as the app's shrink in step 2 is.
+- `smoke_test.py` gets a check for each of the first three.
+
+### Training data
+
+- Tiles from `data.source: generated_labels`, training seeds only (1,000,000 and up). Half the samples are the plain label (unmarked), half are marked by the frozen embedder of a stage-1 checkpoint with random messages, so the locator learns the geometry of the label and not one embedder's mark. The checkpoint is named in `docs/runs.md` when the run starts.
+- Held-out evaluation: seeds 0 to 255 (the acceptance seeds; never drawn in training), one fixed frame per seed with a fixed geometry seed, so every report is on the same 256 samples. Training never sees them.
+- Adam, learning rate 1e-3 falling to 1e-5 (cosine), batch 32, everything at full strength from step 0 (there is no mark to protect).
+
+### What is measured
+
+On the held-out samples: corner error in reader pixels, mean and worst 5 percent; how many samples needed a turn other than 0; and the reader's bit accuracy on patches flattened with the locator's corners next to the same reader with the true corners. For that comparison one camera-resolution frame is rendered per sample, the locator gets it shrunk as in step 2, and both patches are flattened from the same full-resolution frame, as the app will do.
+
 ## Not in the bundle yet
 
 - **Locator.** `models.locator` is `null`. When it exists it will take a frame and return four corners in the order and coordinates above, ready for the flatten step. Its export code is written but has never run.
