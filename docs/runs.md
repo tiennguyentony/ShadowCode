@@ -170,8 +170,31 @@ checks pass, bit accuracy 0.865 (train) / 0.851 (eval) after 300 steps.
 copy of the old run's step 36,000 (the same model as the fix's 36,000) for
 40 steps, output in a temporary folder: it printed peak penalty weight 24,
 texture mask on, "up at or above 0.945, down below 0.94, by 1/5000 per
-step", resumed at step 36,000, trained and saved step 36,040. No v2 step
-has run on the pod.
+step", resumed at step 36,000, trained and saved step 36,040.
+
+**The v2 check passed**, 2026-11-23, ended 10:20:59 UTC, 36,000 to 38,000,
+commit `25ee1bc`, 4.20 steps per second, $0.09 of GPU time. Kept on the pod
+volume: `20261123-25ee1bc` (not copied to the laptop). Spread rows, 256 fixed
+images:
+
+| Step | Fixed place | Strongest spot | Square share | Busier half | PSNR fixed | Bit acc (last 1,000) | Image-loss weight |
+|---|---|---|---|---|---|---|---|
+| 36,000 (start) | 2.09 | 4.18 | 21.2% | 67% | 23.51 dB | | 0.196 |
+| 38,000 | **1.79** | 4.04 | 20.3% | **69%** | **24.2 dB** | **0.942** | 0.196 |
+
+All four lines pass: fixed place under 2, bit accuracy 0.94 or more, PSNR
+and busier half not falling. The notify email's PSNR column holds the
+training PSNR (24.67 dB) at 38,000 and the fixed-image PSNR at 36,000; the
+fixed-image comparison is 23.51 to 24.2 dB (console). Final eval at 38,000:
+bit accuracy 0.968, within BCH reach 0.859 (0.891 at the fix's 36,000),
+0.960 with regions blanked.
+
+The image-loss weight did not move (0.197 at 37,000, 0.196 at 38,000): the
+smoothed training bit accuracy sat between 0.94 and 0.945, where it is held.
+The PSNR gain came from the penalty and the mask moving the mark, not from
+more image loss. If the weight is still near 0.2 at 50,000 with PSNR flat,
+the next step is the minimum image-loss weight (RUNPOD.md, v2 failure table).
+The full run resumes from 38,000.
 
 ## Locator (stage 2)
 
