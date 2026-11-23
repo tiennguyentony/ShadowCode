@@ -1,0 +1,44 @@
+# The generated-label pod run, second fix. Same model, 64-bit message and
+# 384 px tile as configs/runpod_labels_generated.yaml, so its checkpoints load.
+# Only loss weights and schedules change (docs/runs.md, "Generated-label pod
+# run: the stop and the fix", "The fix's 2,000-step check, and v2").
+#
+# configs/runpod_labels_generated_fix.yaml (peak penalty 16, texture mask on)
+# with these changes:
+#
+# - spread.peak_penalty.weight 16 -> 24. Measured in the fix's check (34,000
+#   to 36,000): weight 16 took the fixed-place measure from 3.20 to 2.17 and
+#   2.09, slowing; 24 is a guess at what gets it under 2.
+# - schedule.image_loss.follow_accuracy {floor 0.95, band 0.01} ->
+#   {floor 0.945, band 0.005}: the weight now rises at a smoothed training bit
+#   accuracy of 0.945 or more (was 0.95) and still only falls below 0.94. The
+#   training bit accuracy settles between the two, so about 0.9425 instead of
+#   0.945 (measured: the old run sat at 0.943 to 0.948 under 0.95/0.01).
+# - schedule.image_loss.ramp_steps 15,000 -> 5,000: the weight moves three
+#   times as fast, at most 0.4 per 2,000 steps instead of 0.13.
+#   The ceiling stays 1.0; bit accuracy, not a target, decides how high it gets.
+# - log.sheet_every 1,000 -> 2,000: sample sheet, spread check and its
+#   automatic stop every 2,000 steps, with the checkpoints. Emails stay at one
+#   every 10,000 steps (notify.every_steps), the end and alerts at once.
+#
+# spread.stop_above stays 4. Texture mask stays on (from the fix).
+#
+# Resumed from the fix check's step 36,000 (step 32,000 no longer exists).
+# Commands: training/RUNPOD.md, "The generated-label run, v2".
+base: runpod_labels_generated_fix.yaml
+
+schedule:
+  image_loss:
+    ramp_steps: 5000
+    follow_accuracy: {floor: 0.945, band: 0.005}
+
+spread:
+  peak_penalty:
+    weight: 24.0
+
+log:
+  dir: /workspace/runs/labels_generated_v2/logs
+  sheet_every: 2000
+
+checkpoint:
+  dir: /workspace/runs/labels_generated_v2/checkpoints

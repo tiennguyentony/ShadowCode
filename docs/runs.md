@@ -7,7 +7,7 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
-| Generated-label run (RunPod) | **Stopped itself** at step 38,000 of 140,000 on 2026-11-23 02:53 UTC, exit code 4: the fixed-place measure rose 1.10 (step 30,000), 1.60 (32,000), 3.20 (34,000), 3.54 (36,000), 4.20 (38,000), above the limit of 4 (`spread.stop_above`); 27.4 percent of the mark's energy in one 96 px square. Bit accuracy flat at about 0.948 from step 34,000; PSNR 23.7 to 24.8 dB and the mark still clearly visible; 54 percent of it on the busier half; image-loss weight 0.295 to 0.335. `configs/runpod_labels_generated.yaml`, commit `6cc7062`, one RTX PRO 4000 Blackwell at $0.69 per hour: **2.37 GPU hours, $1.63**. Kept: `20261123-6cc7062` (step 38,000, checksums equal to the pod's). Checkpoints 30,000 and 32,000 were deleted by the run itself when 36,000 and 38,000 were saved (`checkpoint.keep: 3`); 34,000 and 36,000 and the TensorBoard log were copied to the laptop on 2026-11-22 (`training/runs/pod/labels_generated/`; both checkpoints reproduce the pod's spread rows exactly) and are also on the pod volume. Pod stopped, not terminated. Diagnosis and the fix: "Generated-label pod run: the stop and the fix". |
+| Generated-label run (RunPod) | **Stopped itself** at step 38,000 of 140,000 on 2026-11-23 02:53 UTC, exit code 4: the fixed-place measure rose 1.10 (step 30,000), 1.60 (32,000), 3.20 (34,000), 3.54 (36,000), 4.20 (38,000), above the limit of 4 (`spread.stop_above`); 27.4 percent of the mark's energy in one 96 px square. Bit accuracy flat at about 0.948 from step 34,000; PSNR 23.7 to 24.8 dB and the mark still clearly visible; 54 percent of it on the busier half; image-loss weight 0.295 to 0.335. `configs/runpod_labels_generated.yaml`, commit `6cc7062`, one RTX PRO 4000 Blackwell at $0.69 per hour: **2.37 GPU hours, $1.63**. Kept: `20261123-6cc7062` (step 38,000, checksums equal to the pod's). Checkpoints 30,000 and 32,000 were deleted by the run itself when 36,000 and 38,000 were saved (`checkpoint.keep: 3`); 34,000 and 36,000 and the TensorBoard log were copied to the laptop on 2026-11-22 (`training/runs/pod/labels_generated/`; both checkpoints reproduce the pod's spread rows exactly) and are also on the pod volume. Pod stopped, not terminated. Diagnosis and the fix: "Generated-label pod run: the stop and the fix". The fix's 2,000-step check (34,000 to 36,000) ran on 2026-11-23 and failed on fixed place (2.09, line under 2); v2 (`configs/runpod_labels_generated_v2.yaml`) resumes from its step 36,000: "The fix's 2,000-step check, and v2". |
 | Locator proof run (stage 2, laptop) | **Done**, 20 minutes on 2026-11-22, step 0 to 4,962, `configs/locator.yaml`. It learns: held-out mean corner error 130.11 reader px at step 0, 37.42 at the end (worst 5 percent 238.17 to 145.69). See "Locator (stage 2)". The full run is not started yet. |
 | Generated-label sanity run (laptop) | **Done**, one hour on 2026-11-21/22, step 0 to 6,056, on `labelgen.py` tiles (`configs/labels_generated.yaml`). It learns: bit accuracy 0.863 over the last 1,000 steps and still rising, final eval 0.873. The image loss never switched on (needs 0.95), so PSNR is 12.5 dB. Acceptance fails, as expected after one hour. See "Generated labels". No pod run. |
 | Label run (laptop) | **Done**, two hours on 2026-11-21, from step 0 to 15,087, on Open Food Facts label photos with the image-loss weight following bit accuracy. Bit accuracy held at 0.948; the image-loss weight stopped at 0.22 and PSNR at 24 dB. **Acceptance failed** on reading (0.53 of held-out tiles within reach of the error correction, line 0.80) and the mark is visible. No fixed patch (1.36). See "Label run". |
@@ -105,6 +105,72 @@ left), then the full run if it passes; commands and pass lines in
 `training/RUNPOD.md`, "The generated-label fix". Estimates at 15,990 steps
 per hour and $0.69 per hour: check 0.125 h, $0.09; the rest of the run (36,000
 to 140,000) 6.5 h, $4.49; a fresh start instead 8.8 h, $6.04.
+
+### The fix's 2,000-step check, and v2
+
+**The check ran** on 2026-11-23, 04:07 to 04:16 UTC, on the same pod, from
+the old run's step 34,000 to 36,000, run name `labels_generated_fix`, commit
+`a452a15`, $0.09 of GPU time. It ended normally (exit code 0), kept
+`20261123-a452a15` on the pod volume (not copied to the laptop) and stopped
+the pod. Its logs and console are in
+`training/runs/pod/labels_generated_fix/`. Spread rows, 256 fixed images:
+
+| Step | Fixed place | Square share | Busier half | PSNR fixed | Bit acc (last 1,000) | Image-loss weight |
+|---|---|---|---|---|---|---|
+| 34,000 (start) | 3.20 | 23.4% | 49% | 23.48 dB | | 0.29 |
+| 35,000 | 2.17 | 21.5% | 64% | 25.02 dB | 0.928 | 0.230 |
+| 36,000 | 2.09 | 21.2% | 67% | 23.51 dB | 0.941 | 0.196 |
+
+Against its pass lines: **fixed place 2.09, failed** (line: under 2); bit
+accuracy 0.941, PSNR 23.51 against 23.48, busier half 67 percent passed.
+Final eval at 36,000 (eval mode, full patch): bit accuracy 0.967, within BCH
+reach 0.891.
+
+Loss terms (training means, 34,000 to 36,000, s the image-loss weight 0.234):
+bit 0.171 (0.139 in the old run over the same steps), L2 with the texture
+mask 0.0021, peak 0.0066 (0.0147 before), LPIPS 0.174 (0.161). Weighted:
+s x 16 x peak 0.025, s x LPIPS 0.041, s x 2 x L2 0.001.
+
+**Reading.** The penalty and the mask did spread the mark (fixed place down
+by a third, busier half up from 49 to 67 percent), but spreading cost
+reading (bit loss up by a quarter), the smoothed training bit accuracy sat
+under 0.94 most of the time, and the image-loss weight follows it: it fell
+from 0.29 to 0.20. With less image loss the mark got stronger again and the
+PSNR on the fixed images went back to where it started. The fixed-place
+measure was still falling at the end, but slower (2.17, 2.09).
+
+**Step 32,000 is gone.** The old run deleted it when it saved 38,000
+(`checkpoint.keep: 3`); neither the pod nor the laptop has it. The least
+piled-up checkpoint that exists is the check's step 36,000 (fixed place
+2.09), on the pod only: `/workspace/runs/labels_generated_fix/checkpoints/`.
+v2 resumes from it.
+
+**v2**, `configs/runpod_labels_generated_v2.yaml` (base: the fix config;
+same model, message and tile, so the fix's step 36,000 loads):
+
+| Setting | Fix | v2 | Why |
+|---|---|---|---|
+| `spread.peak_penalty.weight` | 16 | 24 | Measured: 16 took fixed place from 3.20 to 2.09 in 2,000 steps, slowing. 24 is a guess at what gets it under 2. It is multiplied by the image-loss weight, so with that weight held up (next rows) the push is about 1.5 to 2 times the check's. |
+| `schedule.image_loss.follow_accuracy` | floor 0.95, band 0.01 | floor 0.945, band 0.005 | The weight rises at a smoothed training bit accuracy of 0.945 or more (was 0.95) and falls only below 0.94 (unchanged). Measured: with 0.95/0.01 the old run's training bit accuracy sat between the two thresholds, 0.943 to 0.948. Estimate: it now sits at about 0.9425, still above the 0.94 pass line, and the weight climbs whenever reading allows instead of waiting for 0.95. |
+| `schedule.image_loss.ramp_steps` | 15,000 | 5,000 | The weight moves by 1/5,000 per step instead of 1/15,000: up to 0.4 per 2,000 steps. It also falls three times as fast below 0.94. The smoothing of the bit accuracy (0.98, about 50 steps) is much shorter than the ramp, so it does not swing. |
+| `log.sheet_every` | 1,000 | 2,000 | Sample sheet, spread check and its automatic stop every 2,000 steps, with the checkpoints. Progress emails stay at one every 10,000 steps; the end, a failure and the automatic stops are emailed at once (notify.py). |
+| `loss.texture_mask` | on | on | unchanged |
+| `spread.stop_above` | 4 | 4 | unchanged |
+
+Not changed, and why: the ceiling of the image-loss weight is already 1.0; it
+never got near it, because bit accuracy holds it. So "higher" can only mean
+letting it rise at a lower bit accuracy, which the 0.94 pass line limits to
+the 0.005 above. A minimum weight would make the mark fade whatever reading
+does; it is the next step if v2 holds reading but does not fade (RUNPOD.md).
+
+**Smoke test, 2026-11-23, laptop RTX 4070.** `python smoke_test.py`: all
+checks pass, bit accuracy 0.865 (train) / 0.851 (eval) after 300 steps.
+`train.py --config configs/runpod_labels_generated_v2.yaml` resumed from a
+copy of the old run's step 36,000 (the same model as the fix's 36,000) for
+40 steps, output in a temporary folder: it printed peak penalty weight 24,
+texture mask on, "up at or above 0.945, down below 0.94, by 1/5000 per
+step", resumed at step 36,000, trained and saved step 36,040. No v2 step
+has run on the pod.
 
 ## Locator (stage 2)
 

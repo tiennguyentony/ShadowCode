@@ -204,6 +204,87 @@ under a new name; the image loss only switches on near step 16,000, so its
 first useful look is the spread row at about 20,000 (1.25 hours, $0.86), and
 the whole run is about 8.8 hours and $6.04.
 
+## The generated-label run, v2: 2,000-step check, then the run
+
+The fix's check (above) ran on 2026-11-23 and failed on one line: fixed place
+2.09 at 36,000 (line: under 2). The image-loss weight fell from 0.29 to 0.20
+during it, so the mark did not fade (`/docs/runs.md`, "The fix's 2,000-step
+check, and v2"). `configs/runpod_labels_generated_v2.yaml`: peak penalty 24,
+the image-loss weight rises from a bit accuracy of 0.945 (was 0.95) and three
+times as fast, spread check and sheets every 2,000 steps. Run name
+`labels_generated_v2`, resumed from the fix check's step 36,000.
+
+**Keep `/workspace/runs/labels_generated_fix/`** until v2 has passed: its
+`checkpoints/step_00036000.pt` is the start, and it is only on the pod. Copy
+it to the laptop first (in the repository root):
+
+```powershell
+scp -P <port> -i $HOME\.ssh\runpod_key root@<pod ip>:/workspace/runs/labels_generated_fix/checkpoints/step_00036000.pt training\runs\pod\labels_generated_fix\
+```
+
+**On the pod**
+
+1. `tmux new -s v2`, then
+   `cd /workspace/ShadowCode && git fetch origin && git checkout training/labels-generated-v2 && git pull && git log -1 --oneline`.
+2. `cd training && CONFIG=configs/runpod_labels_generated_v2.yaml bash setup_runpod.sh`
+   (stopping wiped the container disk). The fix used 8 workers.
+3. The start checkpoint:
+
+   ```bash
+   mkdir -p /workspace/runs/labels_generated_v2/checkpoints
+   cp /workspace/runs/labels_generated_fix/checkpoints/step_00036000.pt /workspace/runs/labels_generated_v2/checkpoints/
+   ```
+
+4. **The check**, 36,000 to 38,000:
+
+   ```bash
+   bash pod_run.sh labels_generated_v2 configs/runpod_labels_generated_v2.yaml --price-per-hour 0.69 --max-minutes 15 train.total_steps=38000 data.num_workers=8
+   ```
+
+   The first lines have to show `peak penalty on (weight 24, ...)`,
+   `texture mask on`, `up at or above 0.945, down below 0.94, by 1/5000 per step`
+   and `resumed from /workspace/runs/labels_generated_v2/checkpoints/step_00036000.pt at step 36000`.
+
+**On the laptop**, in `training`, one email at the end only:
+
+```powershell
+python notify.py --no-laptop --run labels_generated_v2 --every-steps 0 --pod root@<pod ip> --port <port> --key $HOME\.ssh\runpod_key
+```
+
+**Pass lines**, the step 38,000 row of the ENDED email against the 36,000
+row (the start, measured at resume):
+
+| Line | Pass |
+|---|---|
+| Fixed place | under 2 (2.09 at the fix's 36,000) |
+| Bit accuracy, mean of the last 1,000 training steps | 0.94 or more |
+| PSNR on the fixed images | not below the 36,000 row (23.51 dB at the fix's 36,000) |
+| Energy on the busier half | not below the 36,000 row (67 percent) |
+
+**If it passes**, start the pod again (the IP and port may change), repeat
+steps 1 and 2, and resume the same name from 38,000 to 140,000:
+
+```bash
+bash pod_run.sh labels_generated_v2 configs/runpod_labels_generated_v2.yaml --price-per-hour 0.69 --max-minutes 480 data.num_workers=8
+```
+
+```powershell
+python notify.py --no-laptop --run labels_generated_v2 --pod root@<pod ip> --port <port> --key $HOME\.ssh\runpod_key
+```
+
+102,000 steps: about 6.5 hours of training and $4.50 of GPU time at about
+15,900 steps per hour and $0.69 per hour (estimate). `--max-minutes 480`
+caps it at 8 hours ($5.52).
+
+**If it fails**, one change, by which line failed:
+
+| Failed | Next |
+|---|---|
+| Fixed place 2 or more, but below 2.09 and the rest pass | `spread.peak_penalty.weight` 24 -> 32, resumed from v2's 38,000 |
+| Bit accuracy below 0.94, the rest pass | `follow_accuracy` back to floor 0.95, band 0.01, resumed from 36,000 again |
+| PSNR or busier half fell, bit accuracy 0.94 or more | a minimum image-loss weight (a new schedule option, code change), resumed from 36,000 again |
+| Fixed place rose above 2.09, or two or more lines failed | resuming does not work: v2 from step 0 under a new name, about 8.8 hours and $6 |
+
 ## The spread run
 
 The pod trains `configs/runpod_spread.yaml`: the long run's settings
