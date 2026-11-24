@@ -285,6 +285,77 @@ caps it at 8 hours ($5.52).
 | PSNR or busier half fell, bit accuracy 0.94 or more | a minimum image-loss weight (a new schedule option, code change), resumed from 36,000 again |
 | Fixed place rose above 2.09, or two or more lines failed | resuming does not work: v2 from step 0 under a new name, about 8.8 hours and $6 |
 
+## The generated-label run, v2 from step 0
+
+The v2 full run, resumed from 38,000, still had the first run's lower-right
+patch in its sample sheets (38,000 and 40,000), and fixed place went back up
+from 1.79 to 1.93 (`/docs/runs.md`, "v2 from step 0"). Every resumed run
+carries that patch, so v2 starts again from step 0:
+`configs/runpod_labels_generated_fresh.yaml`, the v2 settings with the spread
+stop at 2.5 instead of 4. Run name `labels_generated_fresh`.
+
+**1. Stop the v2 run, keep the pod up.** In the pod's tmux session (`tmux
+attach -t v2` if you are not in it):
+
+- Ctrl-c once. train.py saves a checkpoint and exits; the bundle is exported
+  and kept (a minute or two).
+- When it prints `stopping the pod in 180 s`, press Ctrl-b then d (detach),
+  and within those 180 s:
+
+  ```bash
+  tmux kill-session -t v2
+  pkill -f watchdog.sh
+  pgrep -af "train.py|pod_run.sh|watchdog.sh" || echo "nothing left running"
+  ```
+
+  The watchdog is only ended by pod_run.sh after the 180 s, so end it by
+  hand: left running, it would stop the pod an hour later. If you miss the
+  180 s the pod stops itself; start it again in the console (the IP and port
+  may change) and run the setup line in step 2.
+
+On the laptop, stop the notify.py that watches `labels_generated_v2` (Ctrl-c
+in its window) once its ENDED email has come.
+
+**2. Start from step 0.**
+
+```bash
+tmux new -s fresh
+cd /workspace/ShadowCode && git pull && git log -1 --oneline
+cd training
+bash pod_run.sh labels_generated_fresh configs/runpod_labels_generated_fresh.yaml --price-per-hour 0.69 --max-minutes 600 data.num_workers=8
+```
+
+Only if the pod was stopped and started again, run
+`CONFIG=configs/runpod_labels_generated_fresh.yaml bash setup_runpod.sh`
+before `pod_run.sh` (stopping wipes the container disk).
+
+The first lines have to show `starting from step 0`, `peak penalty on
+(weight 24, ...)`, `texture mask on` and `the run stops if the fixed-place
+measure goes above 2.5`.
+
+**On the laptop**, in `training`, a report every 10,000 steps, the end and
+alerts at once:
+
+```powershell
+python notify.py --no-laptop --run labels_generated_fresh --pod root@<pod ip> --port <port> --key $HOME\.ssh\runpod_key
+```
+
+140,000 steps: about 9.3 hours and $6.40 at about 15,000 steps per hour and
+$0.69 per hour (estimate). `--max-minutes 600` caps it at 10 hours ($6.90).
+
+**What to look at, and when.** Read the sample sheet in each email, not only
+the numbers: a patch shows as a block of dots in the same place on every
+flat tile (third column).
+
+| Step | About | What should be true |
+|---|---|---|
+| 10,000 | 0.7 h, $0.46 | bit accuracy rising (the learning check at 45 minutes needs 0.75) |
+| 20,000 | 1.3 h, $0.92 | the image loss is on (it switched on at 16,304 in the first run) and PSNR is rising; fixed place near 1 |
+| 30,000 | 2.0 h, $1.38 | the first run's patch formed at 26,000 to 28,000: fixed place still under 2, no block on the flat tiles. This is the email that says whether starting fresh worked. |
+
+The run stops itself, with a checkpoint, if fixed place goes above 2.5 at
+any spread check (exit code 4).
+
 ## The spread run
 
 The pod trains `configs/runpod_spread.yaml`: the long run's settings

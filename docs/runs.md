@@ -196,6 +196,46 @@ more image loss. If the weight is still near 0.2 at 50,000 with PSNR flat,
 the next step is the minimum image-loss weight (RUNPOD.md, v2 failure table).
 The full run resumes from 38,000.
 
+### v2 from step 0
+
+**The check passed on its numbers but not on its sheet.** The v2 full run
+resumed from 38,000 on 2026-11-24 02:07 UTC. Its sample sheets at 38,000
+(the check's own) and 40,000 show the mark (third column, x10) mostly in the
+lower-right part of every tile: on flat tiles almost all of it, on text
+tiles a part goes onto the letters and edges (the texture mask) and the
+lower-right block stays. It is the first run's patch, smaller. The check was
+read from the four numbers only; the 38,000 sheet already showed it.
+
+| Step | Fixed place | Strongest spot | Square share | Busier half | PSNR fixed | Bit acc | Image-loss weight |
+|---|---|---|---|---|---|---|---|
+| 38,000 | 1.79 | 4.04 | 20.3% | 69% | 24.22 dB | 0.9419 | 0.196 |
+| 40,000 | 1.93 | 4.26 | 21.0% | 70% | 25.47 dB | 0.9425 | 0.1995 |
+
+A strongest spot near 4 is what a mark spread evenly over about a quarter
+of the tile gives. Fixed place went back up after the check.
+
+**Why.** Every run since the first resumed from that run's checkpoints, and
+the embedder and the reader both rely on the spot it settled on near step
+26,000 to 28,000. The penalty and the mask made the patch smaller and moved
+part of the mark onto detail, but on a flat tile there is no detail to move
+to, and keeping the mark in one place is still cheaper in LPIPS than the
+penalty charges for it (measured at 38,000 in the first run: +0.075 LPIPS to
+spread it evenly). Which corner is chance: the tile repeats, so any one spot
+works for the reader.
+
+**Decision, 2026-11-24:** the v2 full run is stopped by hand and v2 starts
+again from step 0 (`configs/runpod_labels_generated_fresh.yaml`, run name
+`labels_generated_fresh`), so the penalty (24) and the mask are on before
+any patch forms. One change against v2: `spread.stop_above` 4 -> 2.5, the
+acceptance line, so a patch that forms stops the run at the next spread
+check. Whether it stays spread is not known: the first run formed its patch
+with penalty 4 and no mask. Look at the 30,000 sheet. Estimate: 9.3 hours,
+$6.40 for 140,000 steps.
+
+Checked on the laptop GPU: the config starts from step 0, prints peak
+penalty 24, texture mask on, the 0.945/0.94 image-loss thresholds and the
+spread stop at 2.5, and trains 40 steps (fixed place 1.01 to 1.02).
+
 ## Locator (stage 2)
 
 Design: `docs/model-contract.md`, "The locator: design note" (approved

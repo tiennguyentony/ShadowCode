@@ -1,0 +1,36 @@
+# The generated-label run with the v2 settings, from step 0, under the run
+# name labels_generated_fresh (docs/runs.md, "v2 from step 0").
+#
+# Every run so far resumed from the first run's checkpoints, and kept the
+# lower-right patch that run settled on near step 26,000 to 28,000. v2's own
+# sample sheets at 38,000 and 40,000 still show it, and its fixed-place
+# measure went back up from 1.79 to 1.93. From step 0 the peak penalty (24)
+# and the texture mask are on before any patch can form.
+#
+# configs/runpod_labels_generated_v2.yaml with one change:
+#
+# - spread.stop_above 4 -> 2.5, the acceptance line (acceptance.py,
+#   MAX_FIXED_PLACE). The first run measured 1.10 at 30,000, 1.60 at 32,000
+#   and 3.20 at 34,000; at 2.5 a patch that forms stops the run at the next
+#   spread check (every 2,000 steps), not one or two checks later. To go
+#   back to 4, add spread.stop_above=4 to the command line.
+#
+# Everything else is v2: same model, 64-bit message, 384 px tile, peak
+# penalty 24, texture mask on, image-loss weight up at 0.945 and down below
+# 0.94 by 1/5,000 per step, spread check, sheets and checkpoints every 2,000
+# steps, newest 15 checkpoints kept, 140,000 steps, the learning check at 45
+# minutes, the image-loss check at 15,000 and 24 hours of training at most.
+#
+# Started on the pod (training/RUNPOD.md, "v2 from step 0"):
+#
+#   bash pod_run.sh labels_generated_fresh configs/runpod_labels_generated_fresh.yaml --price-per-hour 0.69 --max-minutes 600 data.num_workers=8
+base: runpod_labels_generated_v2.yaml
+
+spread:
+  stop_above: 2.5
+
+log:
+  dir: /workspace/runs/labels_generated_fresh/logs
+
+checkpoint:
+  dir: /workspace/runs/labels_generated_fresh/checkpoints
