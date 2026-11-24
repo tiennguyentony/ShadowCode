@@ -24,7 +24,16 @@
 # Started on the pod (training/RUNPOD.md, "v2 from step 0"):
 #
 #   bash pod_run.sh labels_generated_fresh configs/runpod_labels_generated_fresh.yaml --price-per-hour 0.69 --max-minutes 600 data.num_workers=8
+# - image_loss_check.at_step 15,000 -> 24,000. The image loss switches on
+#   when the smoothed bit accuracy passes 0.95; the first run got there at
+#   step 16,350 and its PSNR at 15,000 was 12.8 dB, so a check at 15,000
+#   (required 14 dB) would stop a healthy run. That run had no such check
+#   (its console has no "image-loss check" line). At 24,000 the first run
+#   was at 21.7 dB.
 base: runpod_labels_generated_v2.yaml
+
+image_loss_check:
+  at_step: 24000
 
 spread:
   stop_above: 2.5

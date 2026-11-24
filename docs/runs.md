@@ -236,6 +236,18 @@ Checked on the laptop GPU: the config starts from step 0, prints peak
 penalty 24, texture mask on, the 0.945/0.94 image-loss thresholds and the
 spread stop at 2.5, and trains 40 steps (fixed place 1.01 to 1.02).
 
+**Image-loss check moved to 24,000.** The fresh run started on 2026-11-24
+02:42 UTC (commit `0aabc73`, new pod) printed `image-loss check: the run
+stops if mean PSNR is still below 14 dB at step 15000`. Before step 16,000
+this config trains like the first run (the image loss, the penalty and the
+mask are all off until the smoothed bit accuracy passes 0.95), and the first
+run's PSNR was 12.8 dB over steps 14,800 to 15,100; its image loss switched
+on at 16,350. The first run did not have the check (no "image-loss check"
+line in its console, `image_loss_check: null` in its run state), so this is
+the first run it would have fired on, wrongly. `runpod_labels_generated_fresh.yaml`
+now checks at 24,000 (first run: 21.7 dB there). The run started at 02:42
+is to be stopped before 15,000 and resumed with it (RUNPOD.md).
+
 ## Locator (stage 2)
 
 Design: `docs/model-contract.md`, "The locator: design note" (approved

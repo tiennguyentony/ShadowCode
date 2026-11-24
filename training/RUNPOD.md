@@ -330,8 +330,25 @@ Only if the pod was stopped and started again, run
 before `pod_run.sh` (stopping wipes the container disk).
 
 The first lines have to show `starting from step 0`, `peak penalty on
-(weight 24, ...)`, `texture mask on` and `the run stops if the fixed-place
-measure goes above 2.5`.
+(weight 24, ...)`, `texture mask on`, `image-loss check: ... at step 24000`
+and `the run stops if the fixed-place measure goes above 2.5`.
+
+**If a run shows `at step 15000` instead** (started from commit `0aabc73`,
+before the config moved the check): it will stop itself at step
+15,000, because the image loss only switches on near 16,000 and the PSNR is
+about 12.8 dB until then. Stop it as in step 1 (tmux session `fresh`, Ctrl-c,
+detach, kill the session and the watchdog within the 180 s), then:
+
+```bash
+tmux new -s fresh
+cd /workspace/ShadowCode && git pull && git log -1 --oneline
+cd training
+bash pod_run.sh labels_generated_fresh configs/runpod_labels_generated_fresh.yaml --price-per-hour 0.69 --max-minutes 600 data.num_workers=8
+```
+
+It resumes from the checkpoint Ctrl-c saved and checks at 24,000. If it
+already stopped at 15,000 (exit code 5), it resumes only with
+`image_loss_check.enabled=false` added to that line.
 
 **On the laptop**, in `training`, a report every 10,000 steps, the end and
 alerts at once:
