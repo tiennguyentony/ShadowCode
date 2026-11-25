@@ -432,6 +432,18 @@ def pick_pairs(tiles: torch.Tensor, cfg: dict, each: int) -> list[tuple[int, str
     return [(i, "large flat areas") for i in flat_picks] + [(i, "busy content") for i in busy_picks]
 
 
+PAGE_CSS = """  @page { size: A4; margin: 12mm 12mm 18mm; }
+  body { font: 11pt/1.4 system-ui, sans-serif; color: #111; background: #fff; margin: 12mm 12mm 20mm; }
+  h1 { font-size: 15pt; margin: 0 0 3mm; }
+  h2 { font-size: 12pt; margin: 8mm 0 4mm; }
+  p { max-width: 150mm; margin: 0 0 3mm; }
+  .pair { display: flex; align-items: center; gap: 8mm; margin: 0 0 7mm; break-inside: avoid; }
+  .pair img { width: 50mm; height: 50mm; display: block; }
+  .n { width: 9mm; font-weight: 600; text-align: right; }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 2mm 12mm; font-size: 9pt;
+            background: #fff; border-top: 0.3mm solid #999; }"""
+
+
 def write_blind(
     directory: Path, step: int, alpha: float, sections: list[dict], credit: str | None, seed: int
 ) -> tuple[Path, Path]:
@@ -474,16 +486,7 @@ def write_blind(
 <meta name="robots" content="noindex, nofollow">
 <title>Which tile carries the mark? Step {step}</title>
 <style>
-  @page {{ size: A4; margin: 12mm 12mm 18mm; }}
-  body {{ font: 11pt/1.4 system-ui, sans-serif; color: #111; background: #fff; margin: 12mm 12mm 20mm; }}
-  h1 {{ font-size: 15pt; margin: 0 0 3mm; }}
-  h2 {{ font-size: 12pt; margin: 8mm 0 4mm; }}
-  p {{ max-width: 150mm; margin: 0 0 3mm; }}
-  .pair {{ display: flex; align-items: center; gap: 8mm; margin: 0 0 7mm; break-inside: avoid; }}
-  .pair img {{ width: 50mm; height: 50mm; display: block; }}
-  .n {{ width: 9mm; font-weight: 600; text-align: right; }}
-  footer {{ position: fixed; left: 0; right: 0; bottom: 0; padding: 2mm 12mm; font-size: 9pt;
-            background: #fff; border-top: 0.3mm solid #999; }}
+{PAGE_CSS}
 </style>
 </head>
 <body>

@@ -463,6 +463,78 @@ def check_visibility() -> None:
     )
 
 
+def check_calibration_levels() -> None:
+    """calibration_sheet.py: scaled tiles hit their levels; --seen applies the design's rules."""
+    from calibration_sheet import LEVELS, decide, scale_to_level
+    from data import label_tile
+    import labelgen
+
+    cfg = load_config(HERE / "configs" / "default.yaml")
+    x = torch.arange(TILE_PX, dtype=torch.float32)
+    wave = torch.cos(2 * torch.pi * 12 * x / TILE_PX).expand(TILE_PX, TILE_PX)
+    residual = (wave[None] * torch.tensor([0.05, 0.03, -0.04]).view(3, 1, 1)).unsqueeze(0)
+    flat = torch.full((1, 3, TILE_PX, TILE_PX), 0.5)
+    busy = label_tile(labelgen.ACCEPTANCE_SEEDS[0])[None]
+    for name, clean in (("flat", flat), ("busy", busy)):
+        for level in LEVELS:
+            marked = scale_to_level(clean, residual, level, cfg)
+            got = float(tile_visibility(clean, marked, cfg)["p95"][0])
+            assert abs(got - level) <= 0.05 * level, f"{name} tile at level {level}: p95 {got:.3f}"
+    try:
+        scale_to_level(flat, residual * 1e-4, 8.0, cfg)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unreachable level was not refused")
+
+    # --seen on a synthetic key: per level one pair each of two flat labels, a busy label, a 74-cycle
+    # luminance grating and a 23-cycle blue-yellow grating.
+    pairs = []
+    for i, level in enumerate(LEVELS):
+        for j, (kind, extra) in enumerate(
+            [("flat label", {}), ("flat label", {}), ("busy label", {}),
+             ("grating", {"channel": "luminance", "cycles": 74}), ("grating", {"channel": "blue-yellow", "cycles": 23})]
+        ):
+            pairs.append({"pair": 1 + 5 * i + j, "kind": kind, "level": level, **extra})
+    key = {"levels": list(LEVELS), "pairs": pairs}
+
+    def at(kind: str, level: float, k: int = 0) -> int:
+        return [p["pair"] for p in pairs if p["kind"] == kind and p["level"] == level][k]
+
+    p95 = lambda p, floor: 10.0 * floor
+    d = decide(key, [], p95)
+    assert d["target"] == 8 and d["floor"] is None and not d["wait"] and not d["fired"], f"nothing seen: {d}"
+    d = decide(key, [at("flat label", 8)], p95)
+    assert d["target"] == 5 and not d["wait"], f"flat seen at 8: {d}"
+    d = decide(key, [at("flat label", 3, 1), at("flat label", 8)], p95)
+    assert d["target"] == 2, f"flat seen at 3 and 8: the target stays under the lowest seen level: {d}"
+    d = decide(key, [at("flat label", 0.5)], p95)
+    assert d["wait"] and d["target"] is None, f"flat seen at the lowest level: {d}"
+    d = decide(key, [at("flat label", level, k) for level in LEVELS for k in (0, 1)], p95)
+    assert d["wait"] and d["target"] is None and "every level seen: the run waits" in d["fired"][0], f"every level seen: {d}"
+    d = decide(key, [at("flat label", 8), at("busy label", 3)], p95)
+    assert d["target"] == 5 and d["floor"] == 0.6, f"busy seen at 3, target 5: {d}"
+    d = decide(key, [at("flat label", 8), at("busy label", 5)], p95)
+    assert d["floor"] == 0.6, f"busy seen at the target: {d}"
+    d = decide(key, [at("flat label", 5), at("busy label", 8)], p95)
+    assert d["target"] == 3 and d["floor"] is None, f"busy seen above the target must not move the floor: {d}"
+    d = decide(key, [at("busy label", 1)], lambda p, floor: 1.0)
+    assert d["floor"] == 1.0 and any("no floor" in line for line in d["fired"]), f"floor cannot reach the target: {d}"
+    d = decide(key, [at("flat label", 8), at("grating", 3, 0)], p95)
+    assert d["target"] == 2, f"74-cycle grating seen at 3: {d}"
+    d = decide(key, [at("grating", 5, 0), at("grating", 3, 0)], p95)
+    assert d["target"] == 2, f"74-cycle gratings seen at 3 and 5: {d}"
+    d = decide(key, [at("grating", 8, 0)], p95)
+    assert d["target"] == 5, f"74-cycle grating seen at 8: {d}"
+    d = decide(key, [at("flat label", 3), at("grating", 5, 0)], p95)
+    assert d["target"] == 2, f"flat seen at 3 puts the target at 2; the grating at 5 is above it: {d}"
+    d = decide(key, [at("grating", 8, 1)], p95)
+    assert d["target"] == 8, f"a 23-cycle grating does not lower the target: {d}"
+    d = decide(key, [at("grating", 0.5, 0)], p95)
+    assert d["wait"], f"the 74-cycle grating seen at the lowest level: {d}"
+    print("calibration checks passed: scaled tiles within 5 percent of 0.5 to 8, an unreachable level refused, --seen rules")
+
+
 def check_follow_accuracy(trainer: Trainer) -> None:
     """schedule.image_loss.follow_accuracy: the image-loss weight rises while the mark reads and falls when it does not.
 
@@ -1107,6 +1179,7 @@ def run_smoke(
         check_follow_accuracy(trainer)
         check_follow_visibility(trainer)
         check_visibility_step(trainer)
+        check_calibration_levels()
         check_center_fraction()
         check_rotation_tag()
         check_holdout()
