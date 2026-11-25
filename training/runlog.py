@@ -157,7 +157,16 @@ SPREAD_COLUMNS = [
     "psnr_fixed_db",
     "bit_acc",
     "psnr_db",
+    "visibility_p90",
+    "visibility_mean",
+    "mark_cycles",
+    "colour_share",
 ]
+
+
+def _maybe(value: float, digits: int) -> str:
+    """A number for the CSV, or an empty cell for NaN (the measure was off)."""
+    return "" if value is None or value != value else f"{value:.{digits}f}"
 
 
 class SpreadLog:
@@ -211,7 +220,17 @@ class SpreadLog:
             f"{report['psnr']:.2f}",
             "" if bit_acc is None else f"{bit_acc:.4f}",
             "" if psnr_db is None else f"{psnr_db:.2f}",
+            _maybe(report.get("visibility_p90"), 3),
+            _maybe(report.get("visibility_mean"), 3),
+            _maybe(report.get("mark_cycles"), 2),
+            _maybe(report.get("colour_share"), 4),
         ]
+        seen = report.get("visibility_p90", float("nan"))
+        seen_text = (
+            "" if seen != seen
+            else f"visibility p90 {seen:.2f}  mark at {report['mark_cycles']:.1f} cycles per tile  "
+            f"{report['colour_share'] * 100:.0f} percent in colour  "
+        )
         with open(self.path, "a", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(row)
         self.update_markdown()
@@ -220,7 +239,7 @@ class SpreadLog:
             f"strongest spot {report['strongest_spot']:.2f}  "
             f"{report['square_share'] * 100:.1f} percent of the mark's energy in one 96 px square  "
             f"{report['busy_share'] * 100:.0f} percent on the busier half of the image  "
-            f"psnr {report['psnr']:.1f} dB  ({report['images']} fixed images)"
+            f"{seen_text}psnr {report['psnr']:.1f} dB  ({report['images']} fixed images)"
         )
 
     def update_markdown(self) -> None:

@@ -865,6 +865,10 @@ def main() -> int:
                 writer.add_scalar("image/busy_share_fixed", report["busy_share"], step)
                 writer.add_scalar("image/strongest_spot_fixed", report["strongest_spot"], step)
                 writer.add_scalar("image/square_share_fixed", report["square_share"], step)
+                if report["visibility_p90"] == report["visibility_p90"]:  # not NaN: loss.visibility is on
+                    writer.add_scalar("image/visibility_fixed", report["visibility_p90"], step)
+                    writer.add_scalar("image/mark_cycles", report["mark_cycles"], step)
+                    writer.add_scalar("image/colour_share", report["colour_share"], step)
                 if stop_above is not None and report["fixed_place"] > float(stop_above):
                     piled_up = report
                     break

@@ -40,7 +40,8 @@ from losses import texture_settings, texture_weights
 from geometry import apply_homography, flatten_from_corners, flatten_random_patch, square_corners, warp_periodic
 from models import count_parameters
 from simulate import simulate
-from spread import concentration, hide_mask, hide_regions, hide_settings, local_energy, peak_penalty, peak_settings
+from visibility import batch_statistic, from_opponent, opponent, tile_visibility, visibility_settings
+from spread import concentration, spread_report, hide_mask, hide_regions, hide_settings, local_energy, peak_penalty, peak_settings
 from train import Trainer
 from viz import sample_sheet, save_image
 
@@ -204,10 +205,56 @@ def check_spread(trainer: Trainer) -> None:
     assert to_reader > 0, "with hiding on, the bit loss gives the reader no gradient"
     assert norm(from_peak) > 0, "the peak penalty gives the embedder no gradient"
     torch.random.set_rng_state(generator_state)
+
+    # The visibility columns of the spread report, on synthetic embedders whose mark is known.
+    class FixedMark(nn.Module):
+        def __init__(self, mark: torch.Tensor):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(1))
+            self.register_buffer("mark", mark)
+
+        def forward(self, tile, bits):
+            return self.mark.expand_as(tile).to(tile)
+
+    axis = torch.arange(TILE_PX, dtype=torch.float32) / TILE_PX
+    wave = torch.cos(2.0 * math.pi * 18.0 * axis).view(1, 1, 1, TILE_PX).expand(1, 1, TILE_PX, TILE_PX)
+    luma_mark = 0.02 * wave.expand(1, 3, TILE_PX, TILE_PX)
+    gen = torch.Generator().manual_seed(3)
+    # Grey noise (the same in all channels): an equal change in all three is then luminance only.
+    luma_tiles = (0.2 + 0.6 * torch.rand(4, 1, TILE_PX, TILE_PX, generator=gen)).expand(4, 3, TILE_PX, TILE_PX).contiguous()
+    # Blue-yellow: on flat grey, move along the blue-yellow opponent axis only (luminance and red-green stay put).
+    grey = torch.full((4, 3, TILE_PX, TILE_PX), 0.5)
+    axis_o3 = torch.tensor([0.0, 0.0, 0.02]).view(1, 3, 1, 1) * wave
+    blue_yellow_mark = from_opponent(opponent(grey[:1]) + axis_o3) - grey[:1]
+    probe_bits = torch.zeros(4, MESSAGE_BITS)
+    vis_cfg = copy.deepcopy(cfg)
+    vis_cfg["loss"]["visibility"] = {**visibility_settings(cfg), "enabled": True}
+    off_cfg = copy.deepcopy(cfg)
+    off_cfg["loss"]["visibility"] = {**visibility_settings(cfg), "enabled": False}
+    measured = {}
+    for name, mark, probe_tiles in (("luminance", luma_mark, luma_tiles), ("blue-yellow", blue_yellow_mark, grey)):
+        embedder = FixedMark(mark)
+        report = spread_report(embedder, probe_tiles, probe_bits, vis_cfg, chunk=3)
+        measured[name] = report
+        marked = probe_tiles + mark
+        direct = tile_visibility(probe_tiles, marked, vis_cfg)
+        assert abs(report["visibility_mean"] - direct["mean"].mean().item()) < 1e-4 * max(1.0, direct["mean"].mean().item()), name
+        want_p90 = batch_statistic(direct["p95"], 0.9).item()
+        assert abs(report["visibility_p90"] - want_p90) < 1e-4 * max(1.0, want_p90), f"{name}: p90 {report['visibility_p90']} vs {want_p90}"
+        assert embedder.training, "spread_report must leave the embedder in training mode"
+        quiet = spread_report(embedder, probe_tiles, probe_bits, off_cfg, chunk=3)
+        assert all(math.isnan(quiet[k]) for k in ("visibility_p90", "visibility_mean", "mark_cycles", "colour_share")), "off: not NaN"
+    luma, colour = measured["luminance"], measured["blue-yellow"]
+    assert abs(luma["mark_cycles"] - 18.0) < 1.0, f"mark_cycles {luma['mark_cycles']:.2f} for an 18 cycle cosine"
+    assert luma["colour_share"] < 0.1, f"a luminance mark has colour share {luma['colour_share']:.3f}"
+    assert colour["colour_share"] > 0.8, f"a blue-yellow mark has colour share {colour['colour_share']:.3f}"
+    assert luma["visibility_p90"] > 0.0 and colour["visibility_p90"] > 0.0
     print(
         f"spread checks passed: bit-loss gradient norm {to_embedder:.3g} at the embedder and {to_reader:.3g} at the "
         f"reader with {out['hidden_fraction'] * 100:.0f} percent of the patch blanked; "
-        f"peak-penalty gradient norm {norm(from_peak):.3g} at the embedder"
+        f"peak-penalty gradient norm {norm(from_peak):.3g} at the embedder; "
+        f"18 cycle luminance mark: {luma['mark_cycles']:.2f} cycles, colour share {luma['colour_share']:.3f}; "
+        f"blue-yellow mark: colour share {colour['colour_share']:.3f}"
     )
 
 

@@ -22,6 +22,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from visibility import batch_statistic, opponent, tile_visibility, visibility_settings
+
 # Used when the config has no ``spread`` section (checkpoints saved before it existed).
 PEAK_DEFAULTS = {"enabled": False, "weight": 4.0, "window_px": 48, "stride_px": 8, "top_fraction": 0.02}
 HIDE_DEFAULTS = {"enabled": False, "max_fraction": 0.5, "cells": [2, 3, 4, 6, 8]}
@@ -210,6 +212,14 @@ def spread_report(
     * ``busy_share``: share of the mark's energy on the busier half of each
       image (``busy`` from ``busy_windows``). 0.5 means the mark ignores the image.
     * ``psnr``: marked against original, over all the images.
+    * ``visibility_p90`` and ``visibility_mean`` (visibility.py): the 90th
+      percentile over the images of each image's p95 masked S-CIELAB delta E,
+      and the mean delta E. ``mark_cycles``: the residual's energy-weighted
+      mean radial frequency in cycles per tile (2-D FFT power summed over the
+      colour channels, DC left out), averaged over the images.
+      ``colour_share``: share of the residual's opponent-space energy in the
+      red-green and blue-yellow channels. All four are NaN unless
+      ``loss.visibility.enabled``.
 
     ``tiles`` and ``bits`` may stay on the CPU; they are moved to the
     embedder's device a chunk at a time. The embedder is left in training mode.
@@ -220,7 +230,11 @@ def spread_report(
     square = min(SQUARE_PX, tiles.shape[-1])
     area = square * square / (tiles.shape[-1] * tiles.shape[-2])
     count = len(tiles)
-    totals = {"strongest_spot": 0.0, "square_share": 0.0, "busy_share": 0.0, "squared_error": 0.0}
+    totals = {"strongest_spot": 0.0, "square_share": 0.0, "busy_share": 0.0, "squared_error": 0.0,
+              "visibility_mean": 0.0, "mark_cycles": 0.0, "colour_share": 0.0}
+    measure_visibility = bool(visibility_settings(cfg)["enabled"])
+    p95_parts = []
+    radius = None
     map_sum = None
     embedder.eval()
     for i in range(0, count, chunk):
@@ -237,9 +251,25 @@ def spread_report(
             on_busy = (energy * busy[i : i + chunk].to(device)).sum(dim=(1, 2)) / energy.sum(dim=(1, 2)).clamp_min(1e-12)
             totals["busy_share"] += on_busy.sum().item()
         totals["squared_error"] += ((tile + residual).clamp(0.0, 1.0) - tile).pow(2).mean(dim=(1, 2, 3)).sum().item()
+        if measure_visibility:
+            marked = (tile + residual).clamp(0.0, 1.0)
+            seen = tile_visibility(tile, marked, cfg)
+            p95_parts.append(seen["p95"].float().cpu())
+            totals["visibility_mean"] += seen["mean"].sum().item()
+            if radius is None:
+                freq = torch.fft.fftfreq(residual.shape[-1], device=device) * residual.shape[-1]
+                freq_y = torch.fft.fftfreq(residual.shape[-2], device=device) * residual.shape[-2]
+                radius = (freq_y[:, None] ** 2 + freq[None, :] ** 2).sqrt()
+            power = torch.fft.fft2(residual.float()).abs().pow(2).sum(dim=1)  # (B, H, W)
+            power[:, 0, 0] = 0.0  # DC left out
+            totals["mark_cycles"] += ((power * radius).sum(dim=(1, 2)) / power.sum(dim=(1, 2)).clamp_min(1e-20)).sum().item()
+            change = opponent(tile + residual) - opponent(tile)
+            channel = change.pow(2).sum(dim=(2, 3))  # (B, 3)
+            totals["colour_share"] += (channel[:, 1:].sum(dim=1) / channel.sum(dim=1).clamp_min(1e-20)).sum().item()
         scaled = (energy / mean[:, None, None]).sum(dim=0)
         map_sum = scaled if map_sum is None else map_sum + scaled
     embedder.train()
+    nan = float("nan")
     mean_map = (map_sum / count).flatten()
     fixed = mean_map.topk(max(1, round(top * mean_map.numel()))).values.mean() / mean_map.mean()
     return {
@@ -249,4 +279,8 @@ def spread_report(
         "square_share": totals["square_share"] / count,
         "busy_share": totals["busy_share"] / count if busy is not None else float("nan"),
         "psnr": -10.0 * math.log10(max(totals["squared_error"] / count, 1e-10)),
+        "visibility_p90": batch_statistic(torch.cat(p95_parts), 0.9).item() if measure_visibility else nan,
+        "visibility_mean": totals["visibility_mean"] / count if measure_visibility else nan,
+        "mark_cycles": totals["mark_cycles"] / count if measure_visibility else nan,
+        "colour_share": totals["colour_share"] / count if measure_visibility else nan,
     }
