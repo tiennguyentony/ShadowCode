@@ -35,6 +35,7 @@ import argparse
 import copy
 import html
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -60,17 +61,28 @@ def _p95(clean: torch.Tensor, marked: torch.Tensor, cfg: dict) -> float:
     return float(tile_visibility(clean, marked, cfg)["p95"][0])
 
 
+def quantise(x: torch.Tensor) -> torch.Tensor:
+    """x as an 8-bit PNG holds it (viz.save_image rounds the same way), back in [0, 1]."""
+    return (x.clamp(0.0, 1.0) * 255.0 + 0.5).floor() / 255.0
+
+
 @torch.no_grad()
 def scale_factor(clean: torch.Tensor, residual: torch.Tensor, level: float, cfg: dict) -> tuple[float, torch.Tensor]:
     """The factor in [0, MAX_FACTOR] that makes ``(clean + factor * residual).clamp(0, 1)`` have a masked
     p95 delta E within 5 percent of ``level``, and that tile. ``clean`` and ``residual`` are one tile, (1,3,H,W).
 
+    The marked tile is quantised to 8 bits inside the search, so the p95 is that of the tile as printed
+    (the p95 is then a step function of the factor, and the search keeps the closest tile it saw). The
+    clean tile is quantised too: it is saved the same way.
+
     Raises ValueError when even the largest factor falls short, which clamping to [0, 1] can cause.
     """
     assert clean.shape[0] == 1 and residual.shape == clean.shape, f"one tile at a time, got {tuple(clean.shape)}"
 
+    clean = quantise(clean)
+
     def make(factor: float) -> torch.Tensor:
-        return (clean + factor * residual).clamp(0.0, 1.0)
+        return quantise(clean + factor * residual)
 
     top = _p95(clean, make(MAX_FACTOR), cfg)
     if top < level * (1.0 - TOLERANCE):
@@ -92,7 +104,7 @@ def scale_factor(clean: torch.Tensor, residual: torch.Tensor, level: float, cfg:
 
 
 def scale_to_level(clean: torch.Tensor, residual: torch.Tensor, level: float, cfg: dict) -> torch.Tensor:
-    """The marked tile ``(clean + factor * residual).clamp(0, 1)`` whose masked p95 delta E is within 5 percent of ``level``."""
+    """The marked tile ``quantise(clean + factor * residual)`` whose masked p95 delta E is within 5 percent of ``level``."""
     return scale_factor(clean, residual, level, cfg)[1]
 
 
@@ -184,10 +196,18 @@ def _recompute(key: dict, pair: dict, floor: float) -> float:
     directory = Path(key["directory"])
     left, right = (_read(directory / "pairs" / f"{pair['pair']:02d}_{side}.png") for side in ("left", "right"))
     marked, clean = (left, right) if pair["marked"] == "left" else (right, left)
-    cfg = load_config(key["config"])
+    cfg = load_config(directory / key["config"])  # relative to the sheet's folder, or absolute
     loss = cfg.get("loss") or {}
     cfg["loss"] = {**loss, "visibility": {**(loss.get("visibility") or {}), "masking_floor": floor}}
     return _p95(clean, marked, cfg)
+
+
+def _relative(path: Path, folder: Path) -> str:
+    """``path`` relative to ``folder`` so a moved sheet still finds it; absolute when they share no drive."""
+    try:
+        return Path(os.path.relpath(path.resolve(), folder.resolve())).as_posix()
+    except ValueError:
+        return str(path.resolve())
 
 
 def kind_text(desc: dict) -> str:
@@ -235,7 +255,7 @@ def build(args: argparse.Namespace) -> int:
         except ValueError as error:
             skipped.append(f"{kind_text(desc)} {desc.get('source', '')} level {level:g}: {error}")
             return
-        items.append(({**desc, "level": level, "factor": factor}, clean.cpu(), marked.cpu()))
+        items.append(({**desc, "level": level, "factor": factor}, quantise(clean).cpu(), marked.cpu()))
 
     with torch.no_grad():
         for n, (index, kind) in enumerate(labels):
@@ -289,8 +309,8 @@ in calibration_key.json; do not open it first.</p>
 """
     (out / "calibration.html").write_text(page, encoding="utf-8")
     key = {
-        "config": str(Path(args.config).resolve()), "checkpoint": str(path), "step": trainer.step, "alpha": ALPHA,
-        "directory": str(out.resolve()), "levels": list(LEVELS), "seed": SEED, "pairs": key_pairs,
+        "config": _relative(Path(args.config), out), "checkpoint": str(path), "step": trainer.step, "alpha": ALPHA,
+        "levels": list(LEVELS), "seed": SEED, "pairs": key_pairs,
         "skipped": skipped,
     }
     (out / "calibration_key.json").write_text(json.dumps(key, indent=2) + "\n", encoding="utf-8")
@@ -305,6 +325,7 @@ in calibration_key.json; do not open it first.</p>
 def seen_mode(args: argparse.Namespace) -> int:
     out = Path(args.out)
     key = json.loads((out / "calibration_key.json").read_text(encoding="utf-8"))
+    key["directory"] = str(out)  # wherever the sheet folder is now
     seen = [int(x) for x in args.seen.split(",") if x.strip()]
     d = decide(key, seen)
     for line in d["fired"]:
@@ -314,6 +335,8 @@ def seen_mode(args: argparse.Namespace) -> int:
     else:
         print(f"target: p95 masked delta E {d['target']:g}")
         print(f"masking floor: {d['floor']:g}" if d["floor"] is not None else "masking floor: unchanged")
+        if d["floor"] is not None:
+            print(f"re-run the sheet with loss.visibility.masking_floor={d['floor']:g} and check the busy rows")
     (out / "calibration_result.json").write_text(json.dumps({"seen": seen, **d}, indent=2) + "\n", encoding="utf-8")
     return 1 if d["wait"] else 0
 

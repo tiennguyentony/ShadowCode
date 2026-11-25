@@ -475,7 +475,9 @@ def check_calibration_levels() -> None:
     residual = (wave[None] * torch.tensor([0.05, 0.03, -0.04]).view(3, 1, 1)).unsqueeze(0)
     flat = torch.full((1, 3, TILE_PX, TILE_PX), 0.5)
     busy = label_tile(labelgen.ACCEPTANCE_SEEDS[0])[None]
-    for name, clean in (("flat", flat), ("busy", busy)):
+    from calibration_sheet import quantise
+
+    for name, clean in (("flat", quantise(flat)), ("busy", quantise(busy))):
         for level in LEVELS:
             marked = scale_to_level(clean, residual, level, cfg)
             got = float(tile_visibility(clean, marked, cfg)["p95"][0])
@@ -486,6 +488,25 @@ def check_calibration_levels() -> None:
         pass
     else:
         raise AssertionError("an unreachable level was not refused")
+
+    # The tile as saved: 8-bit PNGs read back give the level too, and _recompute reads them.
+    from calibration_sheet import _p95, _read, _recompute, quantise
+
+    with tempfile.TemporaryDirectory(prefix="tilemark_calibration_") as tmp:
+        for name, clean in (("flat", flat), ("busy", busy)):
+            for level in (0.5, 1.0):
+                marked = scale_to_level(clean, residual, level, cfg)
+                save_image(quantise(clean)[0], Path(tmp) / "pairs" / f"01_left.png")
+                save_image(marked[0], Path(tmp) / "pairs" / f"01_right.png")
+                back = _p95(_read(Path(tmp) / "pairs" / "01_left.png"), _read(Path(tmp) / "pairs" / "01_right.png"), cfg)
+                assert abs(back - level) <= 0.05 * level, f"{name} tile at level {level}, read back from PNG: p95 {back:.3f}"
+        key = {"directory": tmp, "config": str(HERE / "configs" / "default.yaml")}
+        pair = {"pair": 1, "marked": "right"}
+        for floor in (0.5, 1.0):
+            floored = {**cfg, "loss": {**cfg["loss"], "visibility": {**(cfg["loss"].get("visibility") or {}), "masking_floor": floor}}}
+            want = _p95(_read(Path(tmp) / "pairs" / "01_left.png"), _read(Path(tmp) / "pairs" / "01_right.png"), floored)
+            got = _recompute(key, pair, floor)
+            assert abs(got - want) < 1e-5 * max(1.0, want), f"_recompute at floor {floor}: {got} against {want}"
 
     # --seen on a synthetic key: per level one pair each of two flat labels, a busy label, a 74-cycle
     # luminance grating and a 23-cycle blue-yellow grating.
