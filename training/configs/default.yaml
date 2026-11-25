@@ -109,6 +109,13 @@ loss:
     busy_weight: 0.25          # cost on busy detail (text, edges, texture); the weight never goes below it
     level: 6.0e-5              # local contrast where the weight is half-way; acceptance.py's flat level
     window_px: 17              # local contrast is averaged over this square around each pixel (odd)
+  # Visibility (visibility.tile_visibility): S-CIELAB delta E of the mark on the printed
+  # tile (demo.tile_mm wide) seen from distance_mm, masked by the clean tile's
+  # detail (texture_mask's weights, square-rooted, flat colour 1). Off by default.
+  visibility:
+    enabled: false
+    distance_mm: 500           # viewing distance of the printed tile
+    masking_floor: null        # lowest masking factor; null = sqrt(busy_weight / flat_weight), about 0.41
 
 schedule:
   image_loss:

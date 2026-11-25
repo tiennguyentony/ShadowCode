@@ -280,6 +280,141 @@ def check_texture_mask(trainer: Trainer) -> None:
     )
 
 
+def check_visibility() -> None:
+    """visibility.py: S-CIELAB with masking ranks what the eye sees on a 50 mm tile at 50 cm.
+
+    Needs no trainer. Runs on the CPU, and again on CUDA when there is a GPU.
+    """
+    import labelgen
+    from data import label_tile
+    from visibility import (
+        batch_statistic,
+        delta_e_map,
+        filter_spectra,
+        from_opponent,
+        masking_factor,
+        opponent,
+        pixels_per_degree,
+        tile_visibility,
+        visibility_settings,
+    )
+
+    cfg = load_config(HERE / "configs" / "default.yaml")
+    s = visibility_settings(cfg)
+    assert s == {"enabled": False, "distance_mm": 500, "masking_floor": None}, f"default visibility settings {s}"
+    for bad in ({"distance_mm": 0}, {"masking_floor": 0.0}, {"masking_floor": 1.5}):
+        try:
+            visibility_settings({"loss": {"visibility": bad}})
+        except ValueError:
+            continue
+        raise AssertionError(f"loss.visibility {bad} was accepted")
+    ppd = pixels_per_degree(50, 500)
+    assert abs(ppd - 67.1) < 0.1, f"pixels per degree {ppd:.3f}, want 67.1"
+    spectra = filter_spectra(TILE_PX, TILE_PX, ppd, torch.device("cpu"), torch.float32)
+    assert spectra.shape == (3, TILE_PX, TILE_PX)
+    assert (spectra[:, 0, 0] - 1.0).abs().max().item() < 1e-4, f"filter DC gains {spectra[:, 0, 0].tolist()}, want 1"
+
+    grey = torch.full((1, 3, TILE_PX, TILE_PX), 0.5)
+    x = torch.arange(TILE_PX, dtype=torch.float64)
+
+    def cosine(cycles: int) -> torch.Tensor:
+        """Vertical stripes, (1,1,H,W): a cosine with a whole number of cycles across the tile, so it repeats seamlessly."""
+        return torch.cos(2 * torch.pi * cycles * x / TILE_PX).float().expand(TILE_PX, TILE_PX)[None, None]
+
+    def mean_delta_e(clean: torch.Tensor, marked: torch.Tensor) -> float:
+        return delta_e_map(clean, marked, ppd).mean().item()
+
+    base = opponent(grey)
+    assert (from_opponent(base) - grey).abs().max().item() < 1e-5, "from_opponent does not undo opponent"
+
+    def opponent_swing(channel: int, cycles: int) -> float:
+        """Mean delta E of a cosine of amplitude 0.01 in one opponent channel of mid-grey."""
+        shifted = base.clone()
+        shifted[:, channel : channel + 1] += 0.01 * cosine(cycles)
+        return mean_delta_e(grey, from_opponent(shifted))
+
+    # The eye sees a coarse luminance pattern far better than a fine one at the same amplitude. In
+    # S-CIELAB's luminance channel alone the drop from 18 to 74 cycles per tile is 3.5x. A grey grating
+    # (equal RGB) also moves the red-green channel a little, since grey is not on that channel's zero,
+    # and that channel is filtered differently: the faithful model then gives 2.3x, hence 2 there.
+    coarse = mean_delta_e(grey, grey + 0.02 * cosine(18))
+    fine = mean_delta_e(grey, grey + 0.02 * cosine(74))
+    assert coarse >= 2.0 * fine, f"18 cycles per tile scores {coarse:.4f}, 74 cycles {fine:.4f}: ratio {coarse / fine:.2f}, want >= 2"
+    luminance_coarse, luminance_fine = opponent_swing(0, 18), opponent_swing(0, 74)
+    assert luminance_coarse >= 3.0 * luminance_fine, (
+        f"luminance channel: 18 cycles {luminance_coarse:.4f}, 74 cycles {luminance_fine:.4f}, want a ratio >= 3"
+    )
+
+    # At the same spacing and the same opponent-space amplitude, blue-yellow is less visible than luminance.
+    swing = {"luminance": opponent_swing(0, 23), "blue-yellow": opponent_swing(2, 23)}
+    assert swing["blue-yellow"] < swing["luminance"], f"blue-yellow {swing['blue-yellow']:.4f} not below luminance {swing['luminance']:.4f}"
+
+    # Masking: 1 on flat colour, never below the floor, and the same residual costs less on a busy label.
+    flat_colour = torch.tensor([0.85, 0.32, 0.18])
+    flat = flat_colour.view(1, 3, 1, 1).expand(1, 3, TILE_PX, TILE_PX).clone()
+    assert (masking_factor(flat, cfg) - 1.0).abs().max().item() < 1e-6, "masking must be 1 on flat colour"
+    labels = torch.stack([label_tile(seed) for seed in labelgen.ACCEPTANCE_SEEDS[:8]])
+    masks = masking_factor(labels, cfg)
+    assert masks.min().item() >= 0.408 and masks.max().item() <= 1.0 + 1e-6, f"masking in [{masks.min().item():.4f}, {masks.max().item():.4f}]"
+    # Acceptance seed 4: dark text over most of a pale grey label. Its own average colour, flat, is the
+    # comparison; on that near-grey label the unmasked delta E hardly depends on which colours the residual
+    # lands on, so the difference below is the masking's. (On a red label with white text, the colour
+    # alone changes delta E twofold.)
+    busy = labels[4:5]
+    paper = busy.mean(dim=(2, 3), keepdim=True).expand_as(busy).clone()
+    residual = 0.02 * cosine(23).expand(1, 3, TILE_PX, TILE_PX) * torch.tensor([1.0, -0.5, 0.3]).view(1, 3, 1, 1)
+    raw_flat, raw_busy = mean_delta_e(paper, paper + residual), mean_delta_e(busy, busy + residual)
+    assert abs(raw_busy / raw_flat - 1.0) < 0.15, f"unmasked delta E {raw_busy:.4f} on the label, {raw_flat:.4f} flat: not a fair comparison"
+    on_flat = tile_visibility(paper, paper + residual, cfg)["mean"].item()
+    on_busy = tile_visibility(busy, busy + residual, cfg)["mean"].item()
+    assert abs(on_flat - raw_flat) < 1e-6 * raw_flat, "masking changed the score on flat colour"
+    assert on_flat > 1.3 * on_busy, f"the same residual scores {on_flat:.4f} on flat colour and {on_busy:.4f} on a busy label"
+
+    # Nothing marked: zero, with a finite gradient, also on pure white and pure black.
+    for name, clean in (("grey", grey), ("white", torch.ones_like(grey)), ("black", torch.zeros_like(grey)), ("label", busy)):
+        marked = clean.clone().requires_grad_(True)
+        out = tile_visibility(clean, marked, cfg)
+        assert out["map"].shape == (1, 1, TILE_PX, TILE_PX) and out["mean"].shape == (1,) and out["p95"].shape == (1,)
+        assert out["map"].abs().max().item() < 1e-4, f"{name}: marked == clean scores {out['map'].abs().max().item():.3g}"
+        (out["mean"].sum() + out["p95"].sum()).backward()
+        assert torch.isfinite(marked.grad).all(), f"{name}: gradient not finite with nothing marked"
+
+    def gradient_check(device: torch.device) -> tuple[float, float, float]:
+        """Mean, p95 and gradient norm for a residual on the busy label, on one device."""
+        residual_d = (0.03 * torch.randn(1, 3, TILE_PX, TILE_PX, generator=torch.Generator().manual_seed(0))).to(device).requires_grad_(True)
+        clean_d = busy.to(device)
+        out = tile_visibility(clean_d, clean_d + residual_d, cfg)
+        out["mean"].sum().backward()
+        grad = residual_d.grad
+        assert grad is not None and torch.isfinite(grad).all() and grad.abs().max().item() > 0, f"{device}: no finite, nonzero gradient"
+        return out["mean"].item(), out["p95"].item(), grad.norm().item()
+
+    cpu_mean, cpu_p95, cpu_grad = gradient_check(torch.device("cpu"))
+    if torch.cuda.is_available():
+        gpu_mean, gpu_p95, gpu_grad = gradient_check(torch.device("cuda"))
+        assert abs(gpu_mean - cpu_mean) < 1e-3 * cpu_mean and abs(gpu_p95 - cpu_p95) < 1e-3 * cpu_p95, "CUDA and CPU disagree"
+        assert abs(gpu_grad - cpu_grad) < 1e-3 * cpu_grad, "CUDA and CPU gradients disagree"
+
+    assert abs(batch_statistic(torch.arange(11.0)).item() - 9.0) < 1e-5, "batch_statistic is not the 90th percentile over tiles"
+
+    # Circular filtering: rolling the tile rolls the map and changes nothing else. A flat clean tile, so the
+    # masking (padded by reflection, not circularly) stays constant and only the filtering is tested.
+    noise = 0.03 * torch.randn(1, 3, TILE_PX, TILE_PX, generator=torch.Generator().manual_seed(1))
+    straight = tile_visibility(flat, flat + noise, cfg)
+    rolled = tile_visibility(flat, flat + noise.roll((100, 100), dims=(2, 3)), cfg)
+    moved = (rolled["map"] - straight["map"].roll((100, 100), dims=(2, 3))).abs().max().item()
+    assert moved < 1e-4 * straight["map"].max().item(), f"rolling the tile changed the map by up to {moved:.3g}"  # float32 rounding only
+    assert abs(rolled["mean"].item() - straight["mean"].item()) < 1e-5 * straight["mean"].item() + 1e-6
+    assert abs(rolled["p95"].item() - straight["p95"].item()) < 1e-4 * straight["p95"].item() + 1e-6
+    print(
+        f"visibility checks passed: {ppd:.2f} px per degree; a grey grating at 18 cycles per tile {coarse / fine:.2f}x "
+        f"as visible as at 74 ({luminance_coarse / luminance_fine:.2f}x in the luminance channel); blue-yellow {swing['blue-yellow'] / swing['luminance']:.2f}x luminance at 23; "
+        f"the same residual {on_flat / on_busy:.2f}x as visible on flat colour as on a busy label "
+        f"(masking down to {masks.min().item():.3f}); zero and finite gradients with nothing marked; "
+        f"the same when rolled 100 px"
+    )
+
+
 def check_follow_accuracy(trainer: Trainer) -> None:
     """schedule.image_loss.follow_accuracy: the image-loss weight rises while the mark reads and falls when it does not.
 
@@ -604,6 +739,7 @@ def run_smoke(
         )
         check_spread(trainer)
         check_texture_mask(trainer)
+        check_visibility()
         check_follow_accuracy(trainer)
         check_center_fraction()
         check_rotation_tag()
