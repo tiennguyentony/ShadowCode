@@ -43,6 +43,9 @@ def save_checkpoint(trainer, directory: str | Path, keep: int) -> Path:
         # The image-loss weight the next step trains with. With
         # schedule.image_loss.follow_accuracy it is state of its own; without, the step count gives it.
         "image_scale": trainer.image_loss_scale(),
+        # schedule.image_loss.follow_visibility: the visibility-loss weight and its smoothed measure (None before the trigger).
+        "vis_weight": trainer.vis_weight,
+        "vis_ema": trainer.vis_ema,
         "band": trainer.models.band.as_dict(),
         "reader_input": trainer.cfg["train"]["reader_input"],
         "config": trainer.cfg,
@@ -118,3 +121,8 @@ def _restore(trainer, state: dict, path: str | Path) -> None:
     trainer.image_ramp_start = state["image_ramp_start"]
     # A checkpoint from before the weight was saved continues from where the plain ramp stood.
     trainer.follow_scale = float(state["image_scale"]) if "image_scale" in state else trainer.ramp_scale()
+    # A checkpoint from before follow_visibility starts the controller over.
+    follow_visibility = trainer.visibility_follow_settings()
+    start = follow_visibility["init_weight"] if follow_visibility else 0.01
+    trainer.vis_weight = float(state["vis_weight"]) if state.get("vis_weight") is not None else start
+    trainer.vis_ema = float(state["vis_ema"]) if state.get("vis_ema") is not None else None

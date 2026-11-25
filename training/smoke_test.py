@@ -473,6 +473,95 @@ def check_follow_accuracy(trainer: Trainer) -> None:
     )
 
 
+def check_follow_visibility(trainer: Trainer) -> None:
+    """schedule.image_loss.follow_visibility: the visibility weight rises while the mark is too visible and falls below the target.
+
+    Drives update_visibility alone, with made-up values, on copies that share the models.
+    """
+    base = copy.deepcopy(trainer.cfg)
+    base["schedule"]["image_loss"]["follow_accuracy"] = None
+    base["schedule"]["image_loss"]["follow_visibility"] = {"target": 2.0, "ema": 0.0, "rate": 0.1, "init_weight": 0.01}
+
+    def make(cfg: dict) -> Trainer:
+        probe = copy.copy(trainer)
+        probe.cfg, probe.step = cfg, 0
+        probe.image_ramp_start = None
+        probe.vis_weight, probe.vis_ema = cfg["schedule"]["image_loss"]["follow_visibility"].get("init_weight", 0.01), None
+        return probe
+
+    def near(a: float, b: float) -> bool:
+        return abs(a - b) <= 1e-9 * max(1.0, abs(b))
+
+    settings = make(base).visibility_follow_settings()
+    assert settings == {
+        "target": 2.0, "quantile": 0.9, "ema": 0.0, "low": 0.9, "rate": 0.1,
+        "init_weight": 0.01, "min_weight": 0.01, "max_weight": 1000.0,
+    }, f"follow_visibility defaults are wrong: {settings}"
+
+    probe = make(base)
+    probe.update_visibility(3.0)
+    assert probe.vis_weight == 0.01 and probe.vis_ema is None, "the weight moved before the trigger"
+    probe.image_ramp_start = 0
+    for n in range(1, 6):
+        probe.update_visibility(3.0)
+        assert near(probe.vis_weight, 0.01 * 1.1**n), f"too visible: weight {probe.vis_weight} after {n} steps"
+    top = probe.vis_weight
+    for n in range(1, 4):
+        probe.update_visibility(1.7)
+        assert near(probe.vis_weight, top / 1.1**n), f"below 0.9 x target: weight {probe.vis_weight} after {n} steps"
+    held = probe.vis_weight
+    for value in (1.9, 1.8, 2.0):
+        probe.update_visibility(value)
+        assert probe.vis_weight == held, f"the weight moved inside the band at {value}"
+    for _ in range(200):
+        probe.update_visibility(1.0)
+    assert probe.vis_weight == 0.01, f"the weight fell below min_weight: {probe.vis_weight}"
+    for _ in range(300):
+        probe.update_visibility(9.0)
+    assert probe.vis_weight == 1000.0, f"the weight is not clamped at max_weight: {probe.vis_weight}"
+
+    # The first value after the trigger is the EMA (no pull toward 0); then it is smoothed.
+    smoothed = copy.deepcopy(base)
+    smoothed["schedule"]["image_loss"]["follow_visibility"]["ema"] = 0.98
+    probe = make(smoothed)
+    probe.image_ramp_start = 0
+    probe.update_visibility(3.0)
+    assert probe.vis_ema == 3.0, f"the first value did not set the EMA: {probe.vis_ema}"
+    probe.update_visibility(1.0)
+    assert near(probe.vis_ema, 0.98 * 3.0 + 0.02 * 1.0), f"the EMA is not smoothed: {probe.vis_ema}"
+
+    # Both values are in the checkpoint and come back from it; an older checkpoint gives the start values.
+    probe.vis_weight, probe.vis_ema = 0.123456789, 2.718281828
+    with tempfile.TemporaryDirectory(prefix="tilemark_vis_") as tmp:
+        path = save_checkpoint(probe, tmp, keep=0)
+        other = make(smoothed)
+        other.vis_weight, other.vis_ema = 5.0, 5.0
+        load_checkpoint(other, path)
+        assert other.vis_weight == 0.123456789 and other.vis_ema == 2.718281828, "vis_weight and vis_ema did not come back"
+        state = torch.load(path, map_location=trainer.device, weights_only=True)
+        del state["vis_weight"], state["vis_ema"]
+        old = Path(tmp) / "old.pt"
+        torch.save(state, old)
+        load_checkpoint(other, old)
+        assert other.vis_weight == 0.01 and other.vis_ema is None, "a checkpoint without them must give init_weight and None"
+
+    # Bad settings fail at start.
+    for follow_visibility, follow_accuracy in (({"target": None}, None), ({"target": 2.0}, {"floor": 0.95, "band": 0.01})):
+        bad = copy.deepcopy(trainer.cfg)
+        bad["schedule"]["image_loss"]["follow_visibility"] = follow_visibility
+        bad["schedule"]["image_loss"]["follow_accuracy"] = follow_accuracy
+        try:
+            Trainer(bad, trainer.device)
+        except ValueError:
+            continue
+        raise AssertionError(f"Trainer accepted follow_visibility {follow_visibility} with follow_accuracy {follow_accuracy}")
+    print(
+        "visibility schedule checks passed: the weight is untouched before the trigger, rises x(1+rate) while the "
+        "value is above the target, falls below low x target, holds between, stays within its bounds, starts the "
+        "EMA at the first value, and is saved and restored"
+    )
+
+
 def check_center_fraction() -> None:
     """data.center_fraction: crops come from the middle of the image only, and 1.0 changes nothing."""
     size, low, high = 500, 100, 400  # a red frame around a green middle: the central 60 percent of each side
@@ -741,6 +830,7 @@ def run_smoke(
         check_texture_mask(trainer)
         check_visibility()
         check_follow_accuracy(trainer)
+        check_follow_visibility(trainer)
         check_center_fraction()
         check_rotation_tag()
         check_holdout()

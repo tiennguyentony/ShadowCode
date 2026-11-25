@@ -149,7 +149,15 @@ class Trainer:
         self.image_ramp_start: int | None = None
         # The image-loss weight while schedule.image_loss.follow_accuracy is set; unused otherwise.
         self.follow_scale = 0.0
+        # The visibility-loss weight and the smoothed visibility while schedule.image_loss.follow_visibility is set.
+        self.vis_weight = 0.01
+        self.vis_ema: float | None = None
         self.follow_settings()  # a bad setting fails at start, not at the trigger
+        follow_visibility = self.visibility_follow_settings()
+        if follow_visibility is not None:
+            if self.follow_settings() is not None:
+                raise ValueError("schedule.image_loss.follow_accuracy and follow_visibility cannot both be set")
+            self.vis_weight = follow_visibility["init_weight"]
         texture_settings(cfg)  # likewise for loss.texture_mask
 
     # -- schedules ---------------------------------------------------------
@@ -163,6 +171,56 @@ class Trainer:
         if not 0.0 <= floor <= 1.0 or band < 0.0:
             raise ValueError(f"schedule.image_loss.follow_accuracy needs floor in 0 to 1 and band at least 0, got {follow}")
         return {"floor": floor, "band": band}
+
+    def visibility_follow_settings(self) -> dict | None:
+        """``schedule.image_loss.follow_visibility`` with its defaults filled in, or None when it is not set."""
+        follow = self.cfg["schedule"]["image_loss"].get("follow_visibility")
+        if not follow:
+            return None
+        if follow.get("target") is None:
+            raise ValueError(f"schedule.image_loss.follow_visibility needs a target, got {follow}")
+        settings = {
+            "target": float(follow["target"]),
+            "quantile": float(follow.get("quantile", 0.9)),
+            "ema": float(follow.get("ema", 0.98)),
+            "low": float(follow.get("low", 0.9)),
+            "rate": float(follow.get("rate", 4.6e-4)),
+            "init_weight": float(follow.get("init_weight", 0.01)),
+            "min_weight": float(follow.get("min_weight", 0.01)),
+            "max_weight": float(follow.get("max_weight", 1000.0)),
+        }
+        ok = (
+            settings["target"] > 0.0
+            and 0.0 < settings["quantile"] <= 1.0
+            and 0.0 <= settings["ema"] < 1.0
+            and 0.0 < settings["low"] <= 1.0
+            and settings["rate"] > 0.0
+            and 0.0 < settings["min_weight"] <= settings["init_weight"] <= settings["max_weight"]
+        )
+        if not ok:
+            raise ValueError(
+                "schedule.image_loss.follow_visibility needs target > 0, quantile and low in (0, 1], ema in [0, 1), "
+                f"rate > 0 and 0 < min_weight <= init_weight <= max_weight, got {follow}"
+            )
+        return settings
+
+    def update_visibility(self, batch_value: float) -> None:
+        """After a training step: smooth the batch's visibility and move the visibility-loss weight.
+
+        Does nothing before the image-loss trigger. The weight is multiplied by 1 + rate while the smoothed value is
+        above the target and divided by it while below ``low`` times the target, within min_weight to max_weight.
+        """
+        follow = self.visibility_follow_settings()
+        if follow is None or self.image_ramp_start is None:
+            return
+        if self.vis_ema is None:
+            self.vis_ema = float(batch_value)
+        else:
+            self.vis_ema = follow["ema"] * self.vis_ema + (1.0 - follow["ema"]) * float(batch_value)
+        if self.vis_ema > follow["target"]:
+            self.vis_weight = min(follow["max_weight"], self.vis_weight * (1.0 + follow["rate"]))
+        elif self.vis_ema < follow["low"] * follow["target"]:
+            self.vis_weight = max(follow["min_weight"], self.vis_weight / (1.0 + follow["rate"]))
 
     def ramp_scale(self) -> float:
         """The plain schedule: a linear ramp from the trigger step."""
