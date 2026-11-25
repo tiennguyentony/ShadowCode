@@ -1249,6 +1249,37 @@ def _square_to(corners: torch.Tensor) -> torch.Tensor:
     return homography_from_points(square_corners(float(TILE_PX), corners.shape[0], dtype=corners.dtype), corners)
 
 
+def check_eye_config() -> None:
+    """runpod_eye.yaml and probe_eye.yaml resolve the bands the design says and pass the camera check."""
+    from band import resolve_band
+    from camera import check_demo
+
+    cfg = load_config(HERE / "configs" / "runpod_eye.yaml", ["schedule.image_loss.follow_visibility.target=1"])
+    band = resolve_band(cfg)
+    assert band.grating_step == 12, f"runpod_eye: grating_step {band.grating_step}, want 12"
+    assert (round(band.low_cycles, 1), round(band.high_cycles, 1)) == (24.0, 76.8), (band.low_cycles, band.high_cycles)
+    assert band.message_grid == 192, f"runpod_eye: message_grid {band.message_grid}, want 192"
+    assert cfg["camera_px_per_tile"] == [231, 340], cfg["camera_px_per_tile"]
+    check_demo(cfg)
+    assert [m["distance_cm"] for m in cfg["demo"]["measured"]] == [20], cfg["demo"]["measured"]
+    assert cfg["schedule"]["image_loss"]["follow_accuracy"] is None
+    assert cfg["loss"]["visibility"]["enabled"] and cfg["loss"]["l2_weight"] == 0 and cfg["loss"]["lpips_weight"] == 0
+    assert cfg["reading_check"] == {"enabled": True, "at_step": 80000, "min_bit_acc": 0.80}, cfg["reading_check"]
+    assert cfg["checkpoint"]["dir"].startswith("/workspace/runs/eye_model/")
+    assert cfg["train"]["total_steps"] == 140000, cfg["train"]["total_steps"]
+    probe = load_config(HERE / "configs" / "probe_eye.yaml", ["schedule.image_loss.follow_visibility.target=1"])
+    pband = resolve_band(probe)
+    assert (pband.grating_step, pband.message_grid) == (8, 128), (pband.grating_step, pband.message_grid)
+    assert probe["camera_px_per_tile"] == [154, 340] and probe["train"]["total_steps"] == 143000
+    assert probe["early_stop"]["enabled"] is False and probe["image_loss_check"]["enabled"] is False
+    assert not (probe["reading_check"] or {}).get("enabled") and probe["budget"]["max_hours"] is None
+    assert probe["data"]["num_workers"] == 4 and probe["log"]["dir"] == "runs/probe_eye/logs"
+    check_demo(probe)
+    import phone_gratings
+    assert phone_gratings.DEFAULT_CONFIG.name == "runpod_eye.yaml", phone_gratings.DEFAULT_CONFIG
+    print("eye configs passed: runpod_eye step 12 (24 to 76.8, grid 192), probe_eye step 8 (grid 128), camera check ok")
+
+
 def check_reading_check(device_name: str) -> None:
     """reading_check: a real short train.py run stops with exit code 7 and a checkpoint, and will not resume."""
     import json
@@ -1333,6 +1364,7 @@ def run_smoke(
         check_scan(trainer)
         check_locator_view()
         check_reading_check(str(device))
+        check_eye_config()
 
         batches = infinite(loader)
         history: list[dict[str, float]] = []

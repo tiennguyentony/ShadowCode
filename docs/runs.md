@@ -7,6 +7,7 @@ has been run. Kept by whoever works in `/training`. Newest settings first.
 
 | Run | State |
 |---|---|
+| Eye-model run (RunPod) | **Prepared, not started** (2026-11-24). `configs/runpod_eye.yaml`: S-CIELAB visibility loss under a target set from the printed calibration sheet, camera range 231 to 340 px per tile (19 to 28 cm), band step 12, from step 0, 140,000 steps. Waits for the calibration, the phone check and the laptop probe. See "Eye-model run"; design `docs/superpowers/specs/2026-11-24-eye-model-loss-design.md`. |
 | Generated-label run (RunPod) | **Stopped itself** at step 38,000 of 140,000 on 2026-11-23 02:53 UTC, exit code 4: the fixed-place measure rose 1.10 (step 30,000), 1.60 (32,000), 3.20 (34,000), 3.54 (36,000), 4.20 (38,000), above the limit of 4 (`spread.stop_above`); 27.4 percent of the mark's energy in one 96 px square. Bit accuracy flat at about 0.948 from step 34,000; PSNR 23.7 to 24.8 dB and the mark still clearly visible; 54 percent of it on the busier half; image-loss weight 0.295 to 0.335. `configs/runpod_labels_generated.yaml`, commit `6cc7062`, one RTX PRO 4000 Blackwell at $0.69 per hour: **2.37 GPU hours, $1.63**. Kept: `20261123-6cc7062` (step 38,000, checksums equal to the pod's). Checkpoints 30,000 and 32,000 were deleted by the run itself when 36,000 and 38,000 were saved (`checkpoint.keep: 3`); 34,000 and 36,000 and the TensorBoard log were copied to the laptop on 2026-11-22 (`training/runs/pod/labels_generated/`; both checkpoints reproduce the pod's spread rows exactly) and are also on the pod volume. Pod stopped, not terminated. Diagnosis and the fix: "Generated-label pod run: the stop and the fix". The fix's 2,000-step check (34,000 to 36,000) ran on 2026-11-23 and failed on fixed place (2.09, line under 2); v2 (`configs/runpod_labels_generated_v2.yaml`) resumes from its step 36,000: "The fix's 2,000-step check, and v2". |
 | Locator proof run (stage 2, laptop) | **Done**, 20 minutes on 2026-11-22, step 0 to 4,962, `configs/locator.yaml`. It learns: held-out mean corner error 130.11 reader px at step 0, 37.42 at the end (worst 5 percent 238.17 to 145.69). See "Locator (stage 2)". The full run is not started yet. |
 | Generated-label sanity run (laptop) | **Done**, one hour on 2026-11-21/22, step 0 to 6,056, on `labelgen.py` tiles (`configs/labels_generated.yaml`). It learns: bit accuracy 0.863 over the last 1,000 steps and still rising, final eval 0.873. The image loss never switched on (needs 0.95), so PSNR is 12.5 dB. Acceptance fails, as expected after one hour. See "Generated labels". No pod run. |
@@ -247,6 +248,50 @@ line in its console, `image_loss_check: null` in its run state), so this is
 the first run it would have fired on, wrongly. `runpod_labels_generated_fresh.yaml`
 now checks at 24,000 (first run: 21.7 dB there). The run started at 02:42
 is to be stopped before 15,000 and resumed with it (RUNPOD.md).
+
+## Eye-model run
+
+Design: `docs/superpowers/specs/2026-11-24-eye-model-loss-design.md`. Steps to
+run it: `training/RUNPOD.md`, "The eye-model run". `configs/runpod_eye.yaml`
+(the pod run, run name `eye_model`) and `configs/probe_eye.yaml` (the laptop
+probe, steps 140,000 to 143,000 on the old band).
+
+What changes against the fresh run: camera range 154..340 to 231..340 px per
+tile, `band.max_step` 12 (auto picks step 12: 24 to 76.8 cycles per tile,
+3.01 to 4.42 camera px per cycle, `message_grid` 192, 39.55 M embedder
+weights), the 35 cm measurement dropped from `demo.measured`, L2 and LPIPS
+replaced by the visibility measure with the `follow_visibility` controller,
+and a reading check at step 80,000 (1-frame bit accuracy at least 0.80, exit
+code 7). `contract.json` is version 2 with a `reading` block (3 frames
+averaged, scan distance 19 to 28 cm).
+
+**Controller start weight.** `init_weight` is 0.01, not the design's 1: at 1
+the first steps after the image loss switches on would wipe out the reading
+before the controller reacts.
+
+**Laptop timing, 40 steps** (`train.py --config configs/runpod_eye.yaml --fresh
+--max-minutes 3 ... train.total_steps=40`, RTX 4070 Laptop, batch 8, 4
+workers): 1.57 steps per second over the process, 25.5 s for the 40 steps with
+the first batch (4.2 s) included, so about 0.64 s per step, and about 0.55 s
+per step after the first batch. A second run with the image loss forced on
+(`acc_threshold=0`, so the visibility measure is computed) gave 1.53 steps per
+second, 0.66 s per step. This is the **laptop's** figure; the pod's GPU is
+different and the pod's own first report is the number to plan with. The run
+started, printed the band (step 12, 24 to 77 cycles per tile, `message_grid`
+192) and the range (231 to 340 px per tile), trained 40 steps and saved.
+
+**Checkpoint size:** 499,539,373 bytes (0.4995 GB, 477 MiB), against 0.243 GB
+for the fresh run. `checkpoint.keep: 12`: 12 x 0.4995 = 6.0 GB, plus 0.3 GB
+for the kept bundle and 2.7 GB already on the volume, is 9.0 GB, at the line
+of 9 of the 10 GB (13 would not fit).
+
+**Bundle from the 40-step checkpoint** (`export_bundle.py`, temp folder, since
+deleted): `contract_version` 2, `camera.trained_px_per_tile` `[231, 340]`,
+`camera.starting_band` 24.0 to 76.8 cycles per tile with `grating_step` 12 and
+3.01 to 4.42 px per cycle, `camera.measured` the 20 cm row only, and
+`reading.frames_averaged` 3 with `scan_distance_cm` `[19, 28]`.
+
+Results of the calibration, the phone check, the probe and the run go here.
 
 ## Locator (stage 2)
 

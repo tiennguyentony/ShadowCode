@@ -58,7 +58,8 @@ from models import Models, build_models
 from simulate import direct_scale_range, simulate, wrap_surface
 
 HERE = Path(__file__).resolve().parent
-CONTRACT_VERSION = 1
+# 2: the `reading` block (the app averages the reader's logits over 3 frames of a scan).
+CONTRACT_VERSION = 2
 OPSET = 20
 # Largest allowed difference between ONNX Runtime and PyTorch, in logit units.
 TOLERANCE = 1e-4
@@ -416,6 +417,16 @@ def camera_contract(cfg: dict, models: Models) -> dict | None:
     return camera
 
 
+def reading_contract() -> dict:
+    """How the reader's output is meant to be used: acceptance reads 3 correlated frames averaged."""
+    return {
+        "frames_averaged": 3,
+        "frames_averaged_means": "average the reader's logits over the last 3 frames of one scan, then read the bits",
+        "scan_distance_cm": [19, 28],
+        "scan_distance_means": "phone to print; the trained camera range (camera.trained_px_per_tile) is this distance on the measured phone",
+    }
+
+
 def build_contract(
     bundle_id: str, repo: dict, source: dict, cfg: dict, models: Models, model_entries: dict,
     fixture_names: list[str], checks: dict,
@@ -439,6 +450,7 @@ def build_contract(
         "flatten": flatten_contract() if flattened else None,
         "center_crop": None if flattened else crop_contract(cfg),
         "camera": camera_contract(cfg, models),
+        "reading": reading_contract(),
         "bits": {
             "rule": "bit i = 1 if logits[i] > 0 else 0",
             "order": "index i is Message index i in /docs/message-format.md",

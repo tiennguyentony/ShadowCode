@@ -1,0 +1,67 @@
+# The eye-model run: the mark is pushed under a visibility target (S-CIELAB
+# masked delta E, visibility.py) instead of L2 and LPIPS, and the phone scans
+# from 19 to 28 cm instead of 19 to 42 cm. Design:
+# docs/superpowers/specs/2026-11-24-eye-model-loss-design.md. Run name eye_model,
+# from step 0, 140,000 steps.
+#
+# configs/runpod_labels_generated_fresh.yaml with these changes:
+#
+# - camera_px_per_tile 154..340 -> 231..340 (19 to 28 cm on the Galaxy S23
+#   Ultra), band.max_step 8 -> 12. auto then picks step 12: 24 to 76.8 cycles
+#   per tile, 3.0 camera px per cycle at 231 px, message_grid 192 (was 128).
+#   The checkpoints do not load into the old band.
+# - demo.measured keeps the 20 cm row only: the 35 cm row (186 px per tile) is
+#   outside the new range and training refuses to start with it.
+# - The image loss is the visibility measure: l2_weight and lpips_weight 0,
+#   loss.visibility on. The peak penalty stays (weight 24, from v2).
+# - schedule.image_loss.follow_visibility replaces follow_accuracy. Its target
+#   comes from the calibration sheet (calibration_sheet.py --seen) and goes on
+#   the command line: schedule.image_loss.follow_visibility.target=<p95 masked
+#   delta E>. Without it train.py refuses to start. init_weight is left at its
+#   default 0.01, not the design's 1: at 1 the first steps after the trigger
+#   would wipe out the reading before the controller reacts.
+# - reading_check: at step 80,000 stop (exit code 7) if the 1-frame training bit
+#   accuracy (mean of the last 1,000 steps) is below 0.80, 0.80 set here: the
+#   code default is 0.9.
+# - checkpoint.keep from the measured size (docs/runs.md, "Eye-model run").
+#
+# Everything else is the fresh run: learning check at 45 minutes, spread stop
+# at 2.5, image-loss check at step 24,000, 24 hours of training at most.
+#
+# Started on the pod (training/RUNPOD.md, "The eye-model run"):
+#
+#   bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 720 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
+base: runpod_labels_generated_fresh.yaml
+
+camera_px_per_tile: [231, 340]
+
+demo:
+  measured:
+    - {device: Galaxy S23 Ultra, distance_cm: 20, px_per_cm: 66.3}   # 331.5 px per tile
+
+band:
+  max_step: 12
+
+loss:
+  l2_weight: 0
+  lpips_weight: 0
+  visibility:
+    enabled: true
+
+schedule:
+  image_loss:
+    follow_accuracy: null
+    follow_visibility:
+      target: null             # from the calibration sheet; set on the command line
+
+reading_check:
+  enabled: true
+  at_step: 80000
+  min_bit_acc: 0.80
+
+log:
+  dir: /workspace/runs/eye_model/logs
+
+checkpoint:
+  dir: /workspace/runs/eye_model/checkpoints
+  keep: 12                     # 12 x 0.4995 GB = 6.0 GB + 0.3 GB kept bundle + 2.7 GB on the volume, under 9 of 10 GB

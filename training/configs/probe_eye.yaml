@@ -1,0 +1,53 @@
+# The laptop probe of the eye-model loss: the 140,000-step checkpoint of the
+# fresh run, copied, resumed for about 3,000 steps with the old range and band
+# (154 to 340 px per tile, step 8, message_grid 128, so the checkpoint loads)
+# and the new loss and controller on. Design, section 6:
+# docs/superpowers/specs/2026-11-24-eye-model-loss-design.md. Steps 140,000 to
+# 143,000 on the RTX 4070 (about 25 minutes).
+#
+# The loss and the controller are runpod_eye.yaml's: loss.visibility on,
+# l2_weight and lpips_weight 0, follow_visibility in place of follow_accuracy,
+# target on the command line (schedule.image_loss.follow_visibility.target=...).
+# The checks that stop a pod run are off (early_stop, image_loss_check,
+# reading_check, budget). Put a copy of the checkpoint in checkpoint.dir first;
+# never point this at the folder of the kept run.
+#
+# Run from training/:
+#   python train.py --config configs/probe_eye.yaml schedule.image_loss.follow_visibility.target=<target>
+base: runpod_labels_generated_fresh.yaml
+
+loss:
+  l2_weight: 0
+  lpips_weight: 0
+  visibility:
+    enabled: true
+
+schedule:
+  image_loss:
+    follow_accuracy: null
+    follow_visibility:
+      target: null
+
+train:
+  total_steps: 143000
+
+data:
+  num_workers: 4
+
+log:
+  dir: runs/probe_eye/logs
+
+checkpoint:
+  dir: runs/probe_eye/checkpoints
+
+early_stop:
+  enabled: false
+
+image_loss_check:
+  enabled: false
+
+reading_check: null
+
+budget:
+  max_hours: null
+  max_cost_usd: null

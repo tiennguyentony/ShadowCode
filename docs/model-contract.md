@@ -26,7 +26,7 @@ A bundle is made by `training/export_bundle.py` and lands in `training/export/<b
 | `bundle_id` | Date plus short git hash. Show it somewhere in a debug view, so a bug report says which models were running. |
 | `git_dirty` | `true` means `/training` had uncommitted changes when the bundle was made, so `git_commit` is close to, but not exactly, the code that made it. |
 
-`checkpoint_step` is the training step of the checkpoint the bundle came from, or `null` for random weights. `contract_version` goes up when the meaning of a field changes.
+`checkpoint_step` is the training step of the checkpoint the bundle came from, or `null` for random weights. `contract_version` goes up when the meaning of a field changes. Version 2 adds the `reading` block; bundles before it have `contract_version` 1 and no `reading`.
 
 ## The path of one frame
 
@@ -185,9 +185,22 @@ What the models were trained for. Nothing here changes how the reader is fed; it
 | `measured` | two entries | The measurements the range was built from: Galaxy S23 Ultra, 66.3 px/cm at about 20 cm (331.5 pixels per tile) and 37.2 px/cm at about 35 cm (186 pixels per tile). |
 | `starting_band` | 16 to 51.2 cycles per tile | Where the code starts in training, and how many camera pixels its finest stripes get per cycle at the two ends of the range (3.01 and 6.64). The trained code may sit elsewhere. For information. |
 
+The table shows the bundles of 2026-11-21 to 2026-11-24. The eye-model run (`docs/runs.md`, "Eye-model run") is trained for `[231, 340]` (about 19 to 28 cm on the measured phone, the 35 cm measurement dropped) and starts in the band 24 to 76.8 cycles per tile (`grating_step` 12, 3.01 and 4.42 camera pixels per cycle); read the values from `contract.json`, not from this table.
+
 To tell whether a tile is in range, measure the side of the located quadrilateral in frame pixels and compare it with `trained_px_per_tile`.
 
 The flattened patch is always 384 x 384, whatever size the tile has in the frame. At 154 pixels per tile the flatten enlarges it about 2.5 times; that is expected and is what the reader was trained on.
+
+## How to read a scan: `reading`
+
+Added in `contract_version` 2. It says how the reader's output is meant to be used; nothing here changes what the reader is fed.
+
+| Field | Value | Meaning |
+|---|---|---|
+| `frames_averaged` | `3` | Average the reader's logits over the last 3 frames of one scan (one hand-held pass over the print), then take the bits (`logits[i] > 0`) and decode. The acceptance pass line is measured this way, on 3 simulated frames that share pose, blur, colour and resolution. One frame alone reads worse; do not treat a single frame as a failed scan. |
+| `scan_distance_cm` | `[19, 28]` | Phone to print. Outside it the tile is outside `camera.trained_px_per_tile` and the reader is untested. |
+
+The averaging is the app's job (`reader.onnx` is the single-frame model). The design is in `docs/superpowers/specs/2026-11-24-eye-model-loss-design.md`, section 8.
 
 ## Running the reader
 

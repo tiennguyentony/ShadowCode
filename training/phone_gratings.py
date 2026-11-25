@@ -51,7 +51,7 @@ from constants import TILE_PX
 from visibility import from_opponent, opponent
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_CONFIG = HERE / "configs" / "runpod_labels_generated_fresh.yaml"  # the newest pod run's settings
+DEFAULT_CONFIG = HERE / "configs" / "runpod_eye.yaml"  # the eye-model run's settings
 
 CHANNELS = ("luminance", "red-green", "blue-yellow")  # opponent channels O1, O2, O3: the page's columns
 CYCLES = (24, 38, 51, 77)  # cycles per tile: the page's rows

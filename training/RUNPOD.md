@@ -373,6 +373,149 @@ flat tile (third column).
 The run stops itself, with a checkpoint, if fixed place goes above 2.5 at
 any spread check (exit code 4).
 
+## The eye-model run
+
+The fresh run left the mark plainly visible (a dot grid, PSNR 29 dB). This run
+pushes it under a visibility target measured the way the eye sees a print
+(S-CIELAB, masked), and scans from 19 to 28 cm instead of 19 to 42 cm so the
+mark can sit in finer spacings the eye is weak at. Why and how:
+`/docs/superpowers/specs/2026-11-24-eye-model-loss-design.md`. Run name
+`eye_model`, `configs/runpod_eye.yaml`, from step 0, 140,000 steps, $0.69 per
+hour. The band is new (step 12, 24 to 76.8 cycles per tile, `message_grid`
+192), so it cannot resume from the earlier runs' checkpoints. A to C are on
+the laptop and cost nothing; the pod is started only if they pass.
+
+Commands run from `training/` with `.venv/Scripts/python.exe` (written
+`python` below). The 140,000-step checkpoint is
+`kept/labels_generated_fresh/20261124-a05a3bd/checkpoint/step_00140000.pt`;
+never edit it in place.
+
+**A. The calibration sheet: your own eye sets the target.**
+
+```powershell
+python calibration_sheet.py --config configs/runpod_labels_generated_fresh.yaml --checkpoint kept/labels_generated_fresh/20261124-a05a3bd/checkpoint/step_00140000.pt --out runs/calibration
+```
+
+Print `runs/calibration/calibration.html` at 100 percent, on the printer the
+demo will use (each tile is 50 mm wide). Hold it at arm's length (about
+50 cm). Every pair is a tile and its clean original, left and right shuffled;
+write down the numbers of the pairs where you see any difference. Then:
+
+```powershell
+python calibration_sheet.py --out runs/calibration --seen 3,7,12
+```
+
+(use your numbers). It prints the target, the 95th-percentile masked delta E:
+the highest level with no flat-colour pair seen, lowered if a fine grating was
+seen. `runs/calibration/calibration_result.json` has it too. Exit code 1 and
+"the run waits" mean even the lowest level showed a difference: stop and go
+back to the design. If it also prints a new masking floor (a busy-label pair
+was seen at or below the target), rebuild the sheet with
+`loss.visibility.masking_floor=<floor>` appended to the first command, look at
+the busy rows again, and add the same override to every command below.
+
+**B. The phone's fine colour detail.** The eye model pushes the mark into fine
+colour, where phone cameras are weakest. Check the phone against the
+simulation before spending anything:
+
+```powershell
+python phone_gratings.py make --out runs/phone_gratings
+```
+
+Print `runs/phone_gratings/gratings.html` at 100 percent. On the phone, open
+the web app's measure page (`npm run dev` in `web`, then the `/measure/` page
+on the phone), hold the sheet upright with all four black squares in view at
+about 20 cm and again at about 28 cm, press Freeze and then Save frame, and
+measure px per cm on a ruler as before. Copy each saved PNG to the laptop:
+
+```powershell
+python phone_gratings.py measure --frame <frame.png> --px-per-tile <px per cm x 5>
+```
+
+The simulation compared with is `configs/runpod_eye.yaml`'s by default.
+"colour detail matches" is a pass. If the phone keeps under half of the
+simulation's grating somewhere, the simulation needs a matching chroma blur
+before the pod run: stop and go back to the design.
+
+**C. The laptop probe.** The new loss on a copy of the 140,000-step
+checkpoint, with the old range and band (it loads there), about 3,000 steps
+(about 25 minutes on the RTX 4070):
+
+```powershell
+New-Item -ItemType Directory -Force runs/probe_eye/checkpoints
+Copy-Item kept/labels_generated_fresh/20261124-a05a3bd/checkpoint/step_00140000.pt runs/probe_eye/checkpoints/
+python train.py --config configs/probe_eye.yaml schedule.image_loss.follow_visibility.target=<target>
+```
+
+Pass: the spread rows (`runs/probe_eye/logs/spread.csv`) show the mark's mean
+frequency or colour share rising and the visibility falling toward the
+target; decodable with 3 correlated frames stays above 0.5 (copy the newest
+probe checkpoint elsewhere, then `python acceptance.py --config
+configs/probe_eye.yaml --checkpoint <the copy>
+schedule.image_loss.follow_visibility.target=<target>`); and the sample
+sheets show the grid fading, not a new patch. If it fails, go back to the
+design before any pod money is spent.
+
+**D. The pod run.** Set up the pod as in sections 1 to 4, then in tmux:
+
+```bash
+tmux new -s eye
+cd /workspace/ShadowCode && git pull && git log -1 --oneline
+cd training
+bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 720 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
+```
+
+(plus `loss.visibility.masking_floor=<floor>` if the sheet gave one). Without
+the target train.py refuses to start. The first lines have to show
+`grating_step 12`, `message_grid 192`, `camera: 231 to 340 px per printed
+tile`, `starting fresh`, `reading check: ... below 0.8 at step 80000` and
+`the run stops if the fixed-place measure goes above 2.5`.
+
+**The controller weight starts at 0.01, not 1.** The design says 1;
+`init_weight` is left at its default 0.01. At 1 the first steps after the
+image loss switches on would wipe out the reading before the controller
+reacts. The weight then climbs by `rate` (4.6e-4) per step while the smoothed
+visibility is above the target, so it can move tenfold in about 5,000 steps.
+
+Time and cost: the design guessed about 10 hours and $7 at the fresh run's
+pace; the bigger message layer may slow it. The laptop's 40-step timing is in
+`/docs/runs.md` ("Eye-model run"); the pod's figure will differ, so read the
+steps per second off the pod's first report and redo the sum. `--max-minutes
+720` caps it at 12 hours ($8.28).
+
+On the laptop, as for the fresh run:
+
+```powershell
+python notify.py --no-laptop --run eye_model --pod root@<pod ip> --port <port> --key $HOME\.ssh\runpod_key
+```
+
+**Stops, on their own.** Learning check at 45 minutes (bit accuracy at least
+0.75; the finer band may learn slower), spread stop above 2.5 (exit code 4),
+image-loss check at 24,000 (exit code 5), **reading check at step 80,000**:
+stop (exit code 7) if the 1-frame training bit accuracy, the mean of the last
+1,000 steps, is below 0.80, since that run cannot pass even with 3 frames
+averaged; and 24 hours of training. Look at the sample sheets at 30,000,
+60,000 and 100,000, not only at the numbers.
+
+**Pass lines.** Copy the final checkpoint to the laptop, then:
+
+```powershell
+python acceptance.py --config configs/runpod_eye.yaml --checkpoint <copy of step_00140000.pt> schedule.image_loss.follow_visibility.target=<target>
+```
+
+The run passes when all of these hold:
+
+- decodable (at most 4 wrong of the first 63 bits) at least 0.80 with 3
+  correlated frames averaged;
+- at least 95 percent of held-out tiles at or under the target;
+- fixed place under 2.5;
+- printed blind test 14 of 20 right or fewer: print
+  `runs/acceptance/<step>/blind.html` at 100 percent, pick the marked side of
+  each pair at arm's length, and compare with `blind_answers.json`. 15 or
+  more right is unlikely by chance (about 2 percent): it can be seen.
+
+Then keep the result (section 10) as for any run.
+
 ## The spread run
 
 The pod trains `configs/runpod_spread.yaml`: the long run's settings
