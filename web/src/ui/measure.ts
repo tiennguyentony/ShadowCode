@@ -1,5 +1,7 @@
 // Camera calibration page: freeze a frame, tap two points 1 cm apart on a ruler,
-// read the distance in stream pixels.
+// read the distance in stream pixels. Save frame downloads the frozen frame as PNG.
+
+import { frameFileName } from './frameName'
 
 const MAX_MEASUREMENTS = 5
 
@@ -7,6 +9,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 const cameraSelect = $<HTMLSelectElement>('camera')
 const freezeBtn = $<HTMLButtonElement>('freeze')
+const saveBtn = $<HTMLButtonElement>('save')
 const clearBtn = $<HTMLButtonElement>('clear')
 const resEl = $('res')
 const labelEl = $('label')
@@ -97,6 +100,7 @@ function freeze() {
   isFrozen = true
   video.hidden = true
   canvas.hidden = false
+  saveBtn.disabled = false
   freezeBtn.textContent = 'Live'
   hintEl.textContent = 'Tap two points 1 cm apart on the ruler.'
 }
@@ -106,6 +110,7 @@ function unfreeze() {
   points = []
   video.hidden = false
   canvas.hidden = true
+  saveBtn.disabled = true
   freezeBtn.textContent = 'Freeze'
   hintEl.textContent = ''
 }
@@ -166,7 +171,26 @@ canvas.addEventListener('pointerdown', (ev) => {
   redraw()
 })
 
+// The untouched frozen copy (the stream's own pixels), not the canvas with the markers on it.
+function saveFrame() {
+  if (!isFrozen) return
+  const name = frameFileName(frozen.width, frozen.height, new Date())
+  frozen.toBlob((blob) => {
+    if (!blob) {
+      showError('Save frame failed: the frame could not be encoded as PNG.')
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = name
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }, 'image/png')
+}
+
 freezeBtn.addEventListener('click', () => (isFrozen ? unfreeze() : freeze()))
+saveBtn.addEventListener('click', saveFrame)
 clearBtn.addEventListener('click', () => {
   measurements.length = 0
   renderMeasurements()

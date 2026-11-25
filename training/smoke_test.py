@@ -556,6 +556,62 @@ def check_calibration_levels() -> None:
     print("calibration checks passed: scaled tiles within 5 percent of 0.5 to 8, an unreachable level refused, --seen rules")
 
 
+def check_phone_gratings() -> None:
+    """phone_gratings.py: measure, run on a frame made by simulating the page itself, gives a ratio of 1.
+
+    The frame is one draw of the simulation at 280 camera px per tile, saved as an 8-bit PNG inside a
+    larger dark frame, as a phone frame shows the sheet on a desk. ``measure`` compares it with the same
+    draw (``--draws 1``, the same seed), so every patch must come out at 1.0 +- 0.05: draws differ far
+    more than that (blur and JPEG quality are drawn per sample), which is why ``measure`` averages 16 of
+    them by default. Draw 3 keeps some of every grating; draw 0 loses the 77-cycle colour gratings
+    altogether, and a ratio of nothing to nothing tests nothing. The same frame with its colour detail
+    blurred away must be reported as keeping under half of it.
+    """
+    import contextlib
+    import io
+
+    import phone_gratings as pg
+
+    px, seed = 280, 3
+    cfg = load_config(pg.DEFAULT_CONFIG)
+    frame = pg.camera_frame(pg.page(), cfg, px, seed)
+    canvas = torch.full((1, 3, 1920, 1080), 0.12)  # a dark desk around the sheet
+    top, left = 211, 97
+    canvas[..., top : top + frame.shape[-2], left : left + frame.shape[-1]] = frame
+    with tempfile.TemporaryDirectory(prefix="tilemark_phone_") as tmp:
+        path = Path(tmp) / "frame.png"
+        save_image(canvas[0], path)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = pg.main(["measure", "--frame", str(path), "--px-per-tile", str(px), "--draws", "1", "--seed", str(seed)])
+        text = out.getvalue()
+        assert code == 0, f"measure exited with {code}:\n{text}"
+        sim = pg.reference(cfg, px, draws=1, seed=seed)
+        rows = pg.table(pg.measure_frame(pg.read_frame(path), px), sim)
+    assert len(rows) == 12, f"{len(rows)} patches measured, want 12"
+    for row in rows:
+        assert row["sim"] > 0.05, f"draw {seed} keeps only {row['sim']:.3f} of the {row['channel']} {row['cycles']} cycle grating"
+        assert abs(row["ratio"] - 1.0) <= 0.05, f"{row['channel']} {row['cycles']} cycles: ratio {row['ratio']:.3f}\n{text}"
+    assert "colour detail matches" in text, text
+
+    # The same frame with its red-green and blue-yellow detail smoothed away: the verdict names those patches.
+    opp = opponent(canvas)
+    kernel = torch.ones(1, 1, 1, 15) / 15.0  # along x, across the stripes
+    opp[:, 1:] = F.conv2d(F.pad(opp[:, 1:].reshape(2, 1, *opp.shape[-2:]), (7, 7, 0, 0), mode="replicate"), kernel).view_as(opp[:, 1:])
+    smoothed = from_opponent(opp).clamp(0.0, 1.0)
+    blurred = pg.table(pg.measure_frame(smoothed, px), sim)
+    under = {(r["channel"], r["cycles"]) for r in blurred if r["ratio"] < 0.5}
+    assert {("red-green", 77), ("blue-yellow", 77)} <= under, f"smoothed colour not caught: {blurred}"
+    assert not any(channel == "luminance" for channel, _ in under), f"luminance flagged after a colour blur: {blurred}"
+    line = pg.verdict(blurred)
+    assert line.startswith("the phone keeps under half of the simulation's detail at ") and "blue-yellow 77" in line, line
+    print(
+        f"phone grating checks passed: a simulated frame at {px} px per tile measures "
+        f"{min(r['ratio'] for r in rows):.3f} to {max(r['ratio'] for r in rows):.3f} of the simulation; "
+        f"colour smoothed away is reported ({len(under)} patches under half)"
+    )
+
+
 def check_follow_accuracy(trainer: Trainer) -> None:
     """schedule.image_loss.follow_accuracy: the image-loss weight rises while the mark reads and falls when it does not.
 
@@ -1201,6 +1257,7 @@ def run_smoke(
         check_follow_visibility(trainer)
         check_visibility_step(trainer)
         check_calibration_levels()
+        check_phone_gratings()
         check_center_fraction()
         check_rotation_tag()
         check_holdout()
