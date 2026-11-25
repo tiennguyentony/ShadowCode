@@ -20,9 +20,10 @@ from pathlib import Path
 STATE_FILE = "run_state.json"
 PROGRESS_FILE = "progress.csv"
 # image_scale: the image-loss weight (0 to 1) the report's last step trained with. Last, so that
-# readers of the earlier columns are not disturbed. visibility: the mean over the report window of the batch
-# statistic of the masked S-CIELAB delta E; vis_weight: the visibility-loss weight at the last step. Both empty
-# when loss.visibility is off.
+# readers of the earlier columns are not disturbed. visibility: the mean over the report window of the
+# step's reading of the masked S-CIELAB delta E, with follow_visibility the controller's (the 0.96 quantile of
+# its window of the last 256 tiles' p95), without it the 0.9 quantile over the batch; vis_weight: the
+# visibility-loss weight at the last step. Both empty when loss.visibility is off.
 PROGRESS_COLUMNS = [
     "utc_time", "step", "bit_acc", "psnr_db", "steps_averaged", "elapsed_hours", "cost_usd", "image_scale",
     "visibility", "vis_weight",

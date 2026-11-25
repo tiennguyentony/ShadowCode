@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import deque
 from pathlib import Path
 
 import torch
@@ -46,6 +47,8 @@ def save_checkpoint(trainer, directory: str | Path, keep: int) -> Path:
         # schedule.image_loss.follow_visibility: the visibility-loss weight and its smoothed measure (None before the trigger).
         "vis_weight": trainer.vis_weight,
         "vis_ema": trainer.vis_ema,
+        # Its window of the last per-tile p95 values (train.Trainer.observe_visibility).
+        "vis_window": list(trainer.vis_window),
         "band": trainer.models.band.as_dict(),
         "reader_input": trainer.cfg["train"]["reader_input"],
         "config": trainer.cfg,
@@ -126,3 +129,8 @@ def _restore(trainer, state: dict, path: str | Path) -> None:
     start = follow_visibility["init_weight"] if follow_visibility else 0.01
     trainer.vis_weight = float(state["vis_weight"]) if state.get("vis_weight") is not None else start
     trainer.vis_ema = float(state["vis_ema"]) if state.get("vis_ema") is not None else None
+    # A checkpoint from before the window was saved starts it empty; a smaller window keeps the newest values.
+    trainer.vis_window = deque(
+        (float(v) for v in state.get("vis_window") or []),
+        maxlen=follow_visibility["window"] if follow_visibility else 256,
+    )

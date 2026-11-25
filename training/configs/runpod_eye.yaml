@@ -23,14 +23,14 @@
 # - reading_check: at step 80,000 stop (exit code 7) if the 1-frame training bit
 #   accuracy (mean of the last 1,000 steps) is below 0.80, 0.80 set here: the
 #   code default is 0.9.
-# - checkpoint.keep from the measured size (docs/runs.md, "Eye-model run").
+# - checkpoint.keep 8 from the measured size (docs/runs.md, "Eye-model run").
 #
 # Everything else is the fresh run: learning check at 45 minutes, spread stop
 # at 2.5, image-loss check at step 24,000, 24 hours of training at most.
 #
 # Started on the pod (training/RUNPOD.md, "The eye-model run"):
 #
-#   bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 720 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
+#   bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 900 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
 base: runpod_labels_generated_fresh.yaml
 
 camera_px_per_tile: [231, 340]
@@ -53,6 +53,8 @@ schedule:
     follow_accuracy: null
     follow_visibility:
       target: null             # from the calibration sheet; set on the command line
+      quantile: 0.96           # of the window below: about 96% of tiles at or under the target
+      window: 256              # the last 256 per-tile p95 values, across steps (32 batches of 8)
 
 reading_check:
   enabled: true
@@ -64,4 +66,6 @@ log:
 
 checkpoint:
   dir: /workspace/runs/eye_model/checkpoints
-  keep: 12                     # 12 x 0.4995 GB = 6.0 GB + 0.3 GB kept bundle + 2.7 GB on the volume, under 9 of 10 GB
+  # 8 x 0.4995 GB = 4.0 GB, plus the kept bundle (0.3 GB) and whatever else is on the volume:
+  # measure that with df -h /workspace before starting (training/RUNPOD.md, "The eye-model run").
+  keep: 8

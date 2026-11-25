@@ -22,6 +22,7 @@ import copy
 import math
 import tempfile
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -556,6 +557,60 @@ def check_calibration_levels() -> None:
     print("calibration checks passed: scaled tiles within 5 percent of 0.5 to 8, an unreachable level refused, --seen rules")
 
 
+def check_calibration_overrides(trainer: Trainer) -> None:
+    """calibration_sheet.py takes config overrides when making the sheet, keeps them in the key, and --seen uses them.
+
+    A small real build (one level, the 23-cycle luminance grating and one flat and one busy label from 4 images)
+    from a checkpoint of the smoke model, through main() and its argument parser.
+    """
+    import contextlib
+    import io
+    import json
+    import sys
+
+    import acceptance
+    import calibration_sheet as cs
+    import yaml
+
+    overrides = ["data.source=generated_labels", "loss.visibility.distance_mm=350", "loss.visibility.masking_floor=0.7"]
+    saved = (cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, acceptance.IMAGES, sys.argv)
+    with tempfile.TemporaryDirectory(prefix="tilemark_calibration_overrides_") as tmp:
+        try:
+            cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, acceptance.IMAGES = (2.0,), (("luminance", 23),), 1, 1, 4
+            path = save_checkpoint(trainer, Path(tmp) / "ckpt", keep=0)
+            config = Path(tmp) / "smoke_config.yaml"  # the smoke trainer's own config, whichever file it came from
+            config.write_text(yaml.safe_dump(trainer.cfg), encoding="utf-8")
+            out = Path(tmp) / "sheet"
+            sys.argv = [
+                "calibration_sheet.py", "--config", str(config), "--checkpoint", str(path),
+                "--out", str(out), "--device", "cpu", *overrides,
+            ]
+            assert cs.main() == 0, "the sheet was not built"
+            sys.argv = ["calibration_sheet.py", "--out", str(out), "--seen", "1", "loss.visibility.masking_floor=1"]
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):  # argparse's usage message
+                    cs.main()
+            except SystemExit as stop:
+                assert stop.code == 2, f"--seen with overrides: exit {stop.code}"
+            else:
+                raise AssertionError("--seen accepted overrides")
+        finally:
+            cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, acceptance.IMAGES, sys.argv = saved
+        key = json.loads((out / "calibration_key.json").read_text(encoding="utf-8"))
+        assert key["overrides"] == overrides, f"the key does not record the overrides: {key.get('overrides')}"
+        key["directory"] = str(out)
+        pair = next(p for p in key["pairs"] if p["kind"] == "grating")
+        # Under the sheet's overrides (350 mm, floor 0.7) the recomputed p95 is the stored one; without them it is not.
+        got = cs._recompute(key, pair, 0.7)
+        assert abs(got - pair["p95"]) < 1e-4 * max(1.0, pair["p95"]), f"_recompute {got} against the key's {pair['p95']}"
+        plain = cs._recompute({**key, "overrides": []}, pair, 0.7)
+        assert abs(plain - pair["p95"]) > 1e-3, "the distance override made no difference: the check proves nothing"
+    print(
+        f"calibration overrides passed: the sheet builds with {len(overrides)} overrides, the key keeps them, "
+        f"--seen recomputes under them (p95 {got:.3f}; {plain:.3f} without), and --seen refuses overrides of its own"
+    )
+
+
 def check_phone_gratings() -> None:
     """phone_gratings.py: the measure is absolute, the comparison holds across draws, noise is not detail.
 
@@ -751,6 +806,7 @@ def check_follow_visibility(trainer: Trainer) -> None:
         probe.cfg, probe.step = cfg, 0
         probe.image_ramp_start = None
         probe.vis_weight, probe.vis_ema = cfg["schedule"]["image_loss"]["follow_visibility"].get("init_weight", 0.01), None
+        probe.vis_window = deque(maxlen=int(cfg["schedule"]["image_loss"]["follow_visibility"].get("window", 256)))
         return probe
 
     def near(a: float, b: float) -> bool:
@@ -758,7 +814,7 @@ def check_follow_visibility(trainer: Trainer) -> None:
 
     settings = make(base).visibility_follow_settings()
     assert settings == {
-        "target": 2.0, "quantile": 0.9, "ema": 0.0, "low": 0.9, "rate": 0.1,
+        "target": 2.0, "quantile": 0.96, "window": 256, "ema": 0.0, "low": 0.9, "rate": 0.1,
         "init_weight": 0.01, "min_weight": 0.01, "max_weight": 1000.0,
     }, f"follow_visibility defaults are wrong: {settings}"
 
@@ -794,24 +850,51 @@ def check_follow_visibility(trainer: Trainer) -> None:
     probe.update_visibility(1.0)
     assert near(probe.vis_ema, 0.98 * 3.0 + 0.02 * 1.0), f"the EMA is not smoothed: {probe.vis_ema}"
 
-    # Both values are in the checkpoint and come back from it; an older checkpoint gives the start values.
+    # The window: the last `window` per-tile values across steps, its quantile the reading; NaN values left out.
+    small = copy.deepcopy(base)
+    small["schedule"]["image_loss"]["follow_visibility"].update(window=5, quantile=1.0)
+    probe = make(small)
+    assert math.isnan(probe.observe_visibility([float("nan")])), "an empty window must read NaN"
+    assert probe.observe_visibility([1.0, 2.0]) == 2.0 and len(probe.vis_window) == 2, "a part-filled window is not used"
+    assert probe.observe_visibility([7.0, 3.0, float("inf"), 4.0, 5.0, 6.0]) == 7.0, "the window lost a newer value"
+    assert list(probe.vis_window) == [7.0, 3.0, 4.0, 5.0, 6.0], f"the window keeps the wrong values: {list(probe.vis_window)}"
+    assert probe.observe_visibility([0.5]) == 6.0, "the oldest value did not leave the window"
+    probe = make(base)
+    reading = probe.observe_visibility([float(v) for v in range(1, 101)])
+    assert abs(reading - 96.04) < 1e-6, f"the window's 0.96 quantile is wrong: {reading}"
+
+    # Both values and the window are in the checkpoint and come back from it; an older checkpoint gives the start values.
+    probe = make(smoothed)
     probe.vis_weight, probe.vis_ema = 0.123456789, 2.718281828
+    probe.observe_visibility([1.5, 2.5, 3.5])
     with tempfile.TemporaryDirectory(prefix="tilemark_vis_") as tmp:
         path = save_checkpoint(probe, tmp, keep=0)
         other = make(smoothed)
         other.vis_weight, other.vis_ema = 5.0, 5.0
+        other.observe_visibility([9.0])
         load_checkpoint(other, path)
         assert other.vis_weight == 0.123456789 and other.vis_ema == 2.718281828, "vis_weight and vis_ema did not come back"
+        assert list(other.vis_window) == [1.5, 2.5, 3.5] and other.vis_window.maxlen == 256, "the window did not come back"
         state = torch.load(path, map_location=trainer.device, weights_only=True)
-        del state["vis_weight"], state["vis_ema"]
+        del state["vis_weight"], state["vis_ema"], state["vis_window"]
         old = Path(tmp) / "old.pt"
         torch.save(state, old)
         load_checkpoint(other, old)
         assert other.vis_weight == 0.01 and other.vis_ema is None, "a checkpoint without them must give init_weight and None"
+        assert len(other.vis_window) == 0, "a checkpoint without the window must start it empty"
 
-    # Bad settings fail at start.
-    for follow_visibility, follow_accuracy in (({"target": None}, None), ({"target": 2.0}, {"floor": 0.95, "band": 0.01})):
+    share, batch_share = settled_visibility_share(make, base)
+    assert share >= 0.95, f"the controller settles with only {share:.3f} of tiles at or under the target (needs 0.95)"
+    assert batch_share < 0.95, f"the synthetic stream no longer tells the batch 0.9 quantile apart: {batch_share:.3f}"
+
+    # Bad settings fail at start: no target, both controllers, a zero window.
+    for follow_visibility, follow_accuracy in (
+        ({"target": None}, None),
+        ({"target": 2.0}, {"floor": 0.95, "band": 0.01}),
+        ({"target": 2.0, "window": 0}, None),
+    ):
         bad = copy.deepcopy(trainer.cfg)
+        bad["loss"]["visibility"] = {**(bad["loss"].get("visibility") or {}), "enabled": True}
         bad["schedule"]["image_loss"]["follow_visibility"] = follow_visibility
         bad["schedule"]["image_loss"]["follow_accuracy"] = follow_accuracy
         try:
@@ -819,11 +902,53 @@ def check_follow_visibility(trainer: Trainer) -> None:
         except ValueError:
             continue
         raise AssertionError(f"Trainer accepted follow_visibility {follow_visibility} with follow_accuracy {follow_accuracy}")
+    # The controller with the visibility loss off is refused, with a message that names the setting.
+    off = copy.deepcopy(trainer.cfg)
+    off["schedule"]["image_loss"].update(follow_accuracy=None, follow_visibility={"target": 2.0})
+    off["loss"]["visibility"] = {**(off["loss"].get("visibility") or {}), "enabled": False}
+    try:
+        Trainer(off, trainer.device)
+    except ValueError as error:
+        assert "loss.visibility.enabled" in str(error), f"unclear message: {error}"
+    else:
+        raise AssertionError("Trainer accepted follow_visibility with loss.visibility off")
     print(
         "visibility schedule checks passed: the weight is untouched before the trigger, rises x(1+rate) while the "
         "value is above the target, falls below low x target, holds between, stays within its bounds, starts the "
-        "EMA at the first value, and is saved and restored"
+        "EMA at the first value; the window keeps the last values and reads its quantile; all three are saved and "
+        f"restored; on a synthetic stream {share:.3f} of tiles settle at or under the target (the old batch 0.9 "
+        f"quantile: {batch_share:.3f}); follow_visibility with loss.visibility off is refused"
     )
+
+
+def settled_visibility_share(make, base: dict, steps: int = 30000, settle: int = 10000) -> tuple[float, float]:
+    """The share of tiles at or under the target once the controller has settled, on a synthetic stream.
+
+    Each step's 8 per-tile p95 values are lognormal (spread sigma 0.45) with a scale that falls as 1/weight: at
+    weight 1 the stream's 96th percentile is the target. The controller (default quantile, window, rate, ema and
+    band; init_weight 0.1 so it settles in about 5,000 steps) reads the window; the share counts the tiles after
+    `settle` steps. The second number drives the same stream by the old reading, the 0.9 quantile over each batch
+    of 8, for contrast.
+    """
+    sigma, target = 0.45, 2.0
+    scale = target / math.exp(sigma * 1.7506860712521692)  # 1.7507: the standard normal's 96th percentile
+    shares = []
+    for windowed in (True, False):
+        cfg = copy.deepcopy(base)
+        cfg["schedule"]["image_loss"]["follow_visibility"] = {"target": target, "init_weight": 0.1}
+        probe = make(cfg)
+        probe.image_ramp_start = 0
+        rng = np.random.default_rng(11)
+        under = counted = 0
+        for step in range(steps):
+            values = scale / probe.vis_weight * np.exp(sigma * rng.standard_normal(8))
+            reading = probe.observe_visibility(values) if windowed else float(np.quantile(values, 0.9))
+            probe.update_visibility(reading)
+            if step >= settle:
+                under += int((values <= target).sum())
+                counted += values.size
+        shares.append(under / counted)
+    return shares[0], shares[1]
 
 
 def check_visibility_step(trainer: Trainer) -> None:
@@ -864,6 +989,10 @@ def check_visibility_step(trainer: Trainer) -> None:
     _, _, g2 = run(base, 5.0)
     assert any(not torch.allclose(a, b) for a, b in zip(g1, g2)), "the embedder gradient does not depend on vis_weight"
     assert probe.vis_ema is not None and math.isfinite(probe.vis_ema), "update_visibility was not called"
+    # With the controller the logged reading is the window's quantile, here over this one step's tiles.
+    assert len(probe.vis_window) == tiles.shape[0], f"the window did not get the step's tiles: {len(probe.vis_window)}"
+    want = torch.quantile(torch.tensor(list(probe.vis_window), dtype=torch.float64), 0.96).item()
+    assert abs(m1["visibility"] - want) < 1e-9, f"the logged visibility {m1['visibility']} is not the window's {want}"
 
     # Image loss off: the metrics are still there (computed without gradient), the weight stays.
     m0, probe0, _ = run(base, None, image_on=False)
@@ -872,6 +1001,7 @@ def check_visibility_step(trainer: Trainer) -> None:
     # Disabled: old configs train as before, the loss is the old formula.
     old = copy.deepcopy(base)
     old["loss"]["visibility"]["enabled"] = False
+    old["schedule"]["image_loss"]["follow_visibility"] = None  # with the loss off the controller is refused
     old["loss"].update(l2_weight=1.0)
     mo, _, _ = run(old, None)
     assert "visibility" not in mo and "vis_weight" not in mo, "visibility metrics with loss.visibility off"
@@ -904,6 +1034,16 @@ def check_visibility_step(trainer: Trainer) -> None:
             ("report_text", notify.report_text("run", spread_row, view, 1000)[1]),
         ):
             assert "visibility 1.75" in text and "weight 0.02" in text, f"notify.{what} does not show the visibility and its weight"
+        # The spread table: the visibility columns only when a row has them; blank and older rows read as before.
+        old_table = notify.table([spread_row])
+        assert not any("visibility p90" in line for line in old_table) and old_table[0].endswith("bit accuracy"), old_table
+        blank = {**spread_row, "visibility_p90": "", "visibility_mean": "", "mark_cycles": "", "colour_share": ""}
+        assert notify.table([blank]) == old_table, "blank visibility cells changed the table"
+        eye_row = {**spread_row, "step": "200", "visibility_p90": "3.250", "mark_cycles": "41.37", "colour_share": "0.6123"}
+        eye_table = notify.table([blank, eye_row])
+        assert eye_table[0].endswith("visibility p90 | mark cycles | colour share"), eye_table[0]
+        assert eye_table[2].endswith("| 3.25 | 41.4 | 61%") and eye_table[1].endswith("| n/a | n/a | n/a"), eye_table
+        assert "| 3.25 | 41.4 | 61%" in notify.report_text("run", eye_row, {"progress": rows, "spread": [eye_row]}, 1000)[1]
         old_dir = Path(tmp) / "old"
         old_dir.mkdir()
         with open(old_dir / "progress.csv", "w", encoding="utf-8", newline="") as f:
@@ -1267,6 +1407,11 @@ def check_eye_config() -> None:
     assert cfg["reading_check"] == {"enabled": True, "at_step": 80000, "min_bit_acc": 0.80}, cfg["reading_check"]
     assert cfg["checkpoint"]["dir"].startswith("/workspace/runs/eye_model/")
     assert cfg["train"]["total_steps"] == 140000, cfg["train"]["total_steps"]
+    assert cfg["checkpoint"]["keep"] == 8, f"runpod_eye: checkpoint.keep {cfg['checkpoint']['keep']}, want 8"
+    for name, c in (("runpod_eye", cfg), ("probe_eye", None)):
+        c = c or load_config(HERE / "configs" / "probe_eye.yaml", ["schedule.image_loss.follow_visibility.target=1"])
+        follow = c["schedule"]["image_loss"]["follow_visibility"]
+        assert (follow["quantile"], follow["window"]) == (0.96, 256), f"{name}: follow_visibility {follow}"
     probe = load_config(HERE / "configs" / "probe_eye.yaml", ["schedule.image_loss.follow_visibility.target=1"])
     pband = resolve_band(probe)
     assert (pband.grating_step, pband.message_grid) == (8, 128), (pband.grating_step, pband.message_grid)
@@ -1274,6 +1419,7 @@ def check_eye_config() -> None:
     assert probe["early_stop"]["enabled"] is False and probe["image_loss_check"]["enabled"] is False
     assert not (probe["reading_check"] or {}).get("enabled") and probe["budget"]["max_hours"] is None
     assert probe["data"]["num_workers"] == 4 and probe["log"]["dir"] == "runs/probe_eye/logs"
+    assert probe["log"]["sheet_every"] == 500, f"probe_eye: log.sheet_every {probe['log']['sheet_every']}, want 500"
     check_demo(probe)
     import phone_gratings
     assert phone_gratings.DEFAULT_CONFIG.name == "runpod_eye.yaml", phone_gratings.DEFAULT_CONFIG
@@ -1355,6 +1501,7 @@ def run_smoke(
         check_follow_visibility(trainer)
         check_visibility_step(trainer)
         check_calibration_levels()
+        check_calibration_overrides(trainer)
         check_phone_gratings()
         check_center_fraction()
         check_rotation_tag()

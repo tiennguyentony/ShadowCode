@@ -7,6 +7,9 @@ delta E of a tile (visibility.py). The number has to come from the eye that will
         --checkpoint kept/labels_generated_fresh/<run>/checkpoint/step_00140000.pt --out runs/calibration
     python calibration_sheet.py --out runs/calibration --seen 3,7,12
 
+Config overrides (dotted.key=value) go after the first form, e.g. loss.visibility.masking_floor=0.6 to rebuild
+the sheet under a new masking floor; they are kept in calibration_key.json and used by the second form.
+
 The first form writes <out>/calibration.html (print it at 100 percent: each tile is 50 mm wide),
 calibration_key.json and pairs/*.png. Every pair is a tile beside its clean original, left and right
 shuffled, and every marked tile is scaled to a set masked visibility (LEVELS). The pairs are flat-colour
@@ -196,7 +199,8 @@ def _recompute(key: dict, pair: dict, floor: float) -> float:
     directory = Path(key["directory"])
     left, right = (_read(directory / "pairs" / f"{pair['pair']:02d}_{side}.png") for side in ("left", "right"))
     marked, clean = (left, right) if pair["marked"] == "left" else (right, left)
-    cfg = load_config(directory / key["config"])  # relative to the sheet's folder, or absolute
+    # Relative to the sheet's folder, or absolute; with the overrides the sheet was built under (none in older keys).
+    cfg = load_config(directory / key["config"], list(key.get("overrides") or []))
     loss = cfg.get("loss") or {}
     cfg["loss"] = {**loss, "visibility": {**(loss.get("visibility") or {}), "masking_floor": floor}}
     return _p95(clean, marked, cfg)
@@ -223,7 +227,8 @@ def build(args: argparse.Namespace) -> int:
     from train import Trainer
     from viz import save_image
 
-    cfg = load_config(args.config)
+    overrides = list(args.overrides or [])
+    cfg = load_config(args.config, overrides)
     if data_source(cfg) != "generated_labels":
         print("the calibration sheet takes its labels from labelgen.py: set data.source: generated_labels")
         return 2
@@ -309,7 +314,8 @@ in calibration_key.json; do not open it first.</p>
 """
     (out / "calibration.html").write_text(page, encoding="utf-8")
     key = {
-        "config": _relative(Path(args.config), out), "checkpoint": str(path), "step": trainer.step, "alpha": ALPHA,
+        "config": _relative(Path(args.config), out), "overrides": overrides,
+        "checkpoint": str(path), "step": trainer.step, "alpha": ALPHA,
         "levels": list(LEVELS), "seed": SEED, "pairs": key_pairs,
         "skipped": skipped,
     }
@@ -336,7 +342,10 @@ def seen_mode(args: argparse.Namespace) -> int:
         print(f"target: p95 masked delta E {d['target']:g}")
         print(f"masking floor: {d['floor']:g}" if d["floor"] is not None else "masking floor: unchanged")
         if d["floor"] is not None:
-            print(f"re-run the sheet with loss.visibility.masking_floor={d['floor']:g} and check the busy rows")
+            print(
+                f"re-run the sheet with loss.visibility.masking_floor={d['floor']:g} appended to its command "
+                "and check the busy rows"
+            )
     (out / "calibration_result.json").write_text(json.dumps({"seen": seen, **d}, indent=2) + "\n", encoding="utf-8")
     return 1 if d["wait"] else 0
 
@@ -348,7 +357,14 @@ def main() -> int:
     parser.add_argument("--out", default="runs/calibration")
     parser.add_argument("--device", default=None, help="cuda or cpu (default: cuda when there is one)")
     parser.add_argument("--seen", default=None, help="numbers of the pairs where a difference was seen, e.g. 3,7,12")
+    parser.add_argument(
+        "overrides", nargs="*",
+        help="dotted.key=value config overrides for making the sheet, e.g. loss.visibility.masking_floor=0.6; "
+        "kept in calibration_key.json so --seen measures under them too",
+    )
     args = parser.parse_args()
+    if args.seen is not None and args.overrides:
+        parser.error("overrides go with making the sheet; --seen reads them from calibration_key.json")
     if args.seen is not None:
         return seen_mode(args)
     if not args.config or not args.checkpoint:

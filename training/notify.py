@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import smtplib
@@ -405,7 +406,10 @@ def visibility_text(row: dict) -> str:
     """The progress row's visibility and its weight, each when present; "" for an older file or a run without the loss."""
     parts = []
     if row.get("visibility"):
-        parts.append(f"visibility {number(row['visibility'], 2)} (masked S-CIELAB delta E, mean of the report window)")
+        parts.append(
+            f"visibility {number(row['visibility'], 2)} (masked S-CIELAB delta E, the controller's reading: a high "
+            "percentile of recent tiles' p95, train.py's startup line says which; mean of the report window)"
+        )
     if row.get("vis_weight"):
         parts.append(f"visibility-loss weight {number(row['vis_weight'], 4)}")
     return ", ".join(parts)
@@ -433,13 +437,37 @@ def pace(progress: list[dict], total_steps: int) -> list[str]:
     return lines
 
 
+def _finite(text: str | None) -> bool:
+    try:
+        return math.isfinite(float(text))
+    except (TypeError, ValueError):
+        return False
+
+
 def table(spread: list[dict], count: int = 6) -> list[str]:
-    lines = ["step | fixed place | strongest spot | 96 px square | busier half | PSNR dB | bit accuracy"]
-    for row in spread[-count:]:
-        lines.append(
+    """The last ``count`` spread rows. The visibility columns (visibility_p90, mark_cycles, colour_share) are
+    added only when a shown row has them: a run without loss.visibility, or an older spread.csv, reads as before."""
+    rows = spread[-count:]
+    eye = any(_finite(row.get("visibility_p90")) for row in rows)
+    head = "step | fixed place | strongest spot | 96 px square | busier half | PSNR dB | bit accuracy"
+    lines = [head + (" | visibility p90 | mark cycles | colour share" if eye else "")]
+    for row in rows:
+        line = (
             f"{int(row['step']):,} | {row['fixed_place']} | {row['strongest_spot']} | "
             f"{float(row['square_share']) * 100:.1f}% | {float(row['busy_share']) * 100:.0f}% | "
             f"{row['psnr_db'] or row['psnr_fixed_db'] + ' (fixed images)'} | {row['bit_acc'] or 'n/a'}"
+        )
+        if eye:
+            colour = row.get("colour_share")
+            line += (
+                f" | {number(row.get('visibility_p90'), 2)} | {number(row.get('mark_cycles'), 1)} | "
+                + (f"{float(colour) * 100:.0f}%" if _finite(colour) else "n/a")
+            )
+        lines.append(line)
+    if eye:
+        lines.append(
+            "visibility p90: 90th percentile over the fixed images of each image's p95 masked delta E (not the "
+            "controller's reading in the progress rows); mark cycles: the mark's mean frequency, cycles per tile"
         )
     return lines
 

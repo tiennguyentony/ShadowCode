@@ -27,6 +27,8 @@ schedule:
     follow_accuracy: null
     follow_visibility:
       target: null
+      quantile: 0.96           # of the window below: about 96% of tiles at or under the target
+      window: 256              # the last 256 per-tile p95 values, across steps (32 batches of 8)
 
 train:
   total_steps: 143000
@@ -36,6 +38,10 @@ data:
 
 log:
   dir: runs/probe_eye/logs
+  # A spread row and a sample sheet every 500 steps: six rows over the probe, not one. The row at
+  # step 140,000 is the baseline: train.py writes it on resume, before the first step, when the
+  # (new) log has no row for that step, measured under this config, so with the visibility columns.
+  sheet_every: 500
 
 checkpoint:
   dir: runs/probe_eye/checkpoints

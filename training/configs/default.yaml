@@ -130,12 +130,16 @@ schedule:
     # checkpoints and logged (schedule/image_loss_scale, progress.csv).
     follow_accuracy: null
     # null, or {target: 2.0, ...}: the weight of the visibility loss (loss.visibility) follows the
-    # visibility of the mark instead. After the trigger the batch's visibility (its `quantile`
-    # value) is smoothed (`ema`); the weight is multiplied by 1 + rate per step while that is above
-    # target and divided by 1 + rate while it is below low * target, unchanged in between, within
-    # min_weight to max_weight. Needs target; cannot be set together with follow_accuracy. The
-    # weight and the smoothed value are saved in checkpoints. Defaults when set: quantile 0.9,
-    # ema 0.98, low 0.9, rate 4.6e-4, init_weight 0.01, min_weight 0.01, max_weight 1000.
+    # visibility of the mark instead. Each step's per-tile p95 masked delta E values go into a
+    # window of the last `window` tiles, across steps (fewer until it fills); the window's
+    # `quantile` is the reading (progress.csv `visibility`). After the trigger that reading is
+    # smoothed (`ema`); the weight is multiplied by 1 + rate per step while that is above target
+    # and divided by 1 + rate while it is below low * target, unchanged in between, within
+    # min_weight to max_weight. Holding the window's 0.96 quantile at the target leaves about 96%
+    # of tiles at or under it (acceptance.py needs 95%). Needs target and loss.visibility.enabled;
+    # cannot be set together with follow_accuracy. The weight, the smoothed value and the window
+    # are saved in checkpoints. Defaults when set: quantile 0.96, window 256, ema 0.98, low 0.9,
+    # rate 4.6e-4, init_weight 0.01, min_weight 0.01, max_weight 1000.
     follow_visibility: null
   sim_strength:
     start_step: 0              # strength is 0 before this step

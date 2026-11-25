@@ -14,7 +14,8 @@ patch is a 50 mm tile. Columns are luminance, red-green and blue-yellow, rows 24
 per tile; the strip under them is flat grey, and four black squares mark the corners.
 
 On the phone open the web app's measure page, hold the sheet upright in the frame with all four black
-squares in view (about 20 cm and about 28 cm), press Freeze and Save frame, and measure px per cm on a
+squares in view (once at 21 to 22 cm, once at about 28 cm: nearer than 21 cm the corner squares fall off the
+1080 px stream), press Freeze and Save frame, and measure px per cm on a
 ruler as before. ``measure`` takes that frame and px per cm x 5 (camera px per 50 mm tile). It finds the
 squares, maps the frame onto the page, sets black and grey from the squares and the grey strip, and fits
 each patch's grating in its opponent channel (visibility.py) on the frame's own pixels. It then puts the
@@ -388,7 +389,8 @@ def make(args: argparse.Namespace) -> int:
 <body>
 <h1>Phone gratings</h1>
 <p>Print at 100 percent on one page: each patch is 50 mm wide. Columns: {html.escape(columns)}. Rows: {rows} cycles
-per tile. Grey strip below. Keep all four black squares in the frame; freeze and save it on the measure page.</p>
+per tile. Grey strip below. Keep all four black squares in the frame: hold the phone once at 21 to 22 cm and once at
+about 28 cm (nearer than 21 cm the corners fall off the 1080 px stream); freeze and save each on the measure page.</p>
 <img class="sheet" src="gratings.png" alt="grating patches">
 </body>
 </html>

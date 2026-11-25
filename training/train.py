@@ -154,12 +154,20 @@ class Trainer:
         # The visibility-loss weight and the smoothed visibility while schedule.image_loss.follow_visibility is set.
         self.vis_weight = 0.01
         self.vis_ema: float | None = None
+        # The controller's window: the last `window` per-tile p95 values, across steps.
+        self.vis_window: deque[float] = deque(maxlen=256)
         self.follow_settings()  # a bad setting fails at start, not at the trigger
         follow_visibility = self.visibility_follow_settings()
         if follow_visibility is not None:
             if self.follow_settings() is not None:
                 raise ValueError("schedule.image_loss.follow_accuracy and follow_visibility cannot both be set")
+            if not visibility_settings(cfg)["enabled"]:
+                raise ValueError(
+                    "schedule.image_loss.follow_visibility is set but loss.visibility.enabled is false: the controller "
+                    "would have nothing to follow. Set loss.visibility.enabled: true, or follow_visibility: null."
+                )
             self.vis_weight = follow_visibility["init_weight"]
+            self.vis_window = deque(maxlen=follow_visibility["window"])
         texture_settings(cfg)  # likewise for loss.texture_mask
 
     # -- schedules ---------------------------------------------------------
@@ -183,7 +191,8 @@ class Trainer:
             raise ValueError(f"schedule.image_loss.follow_visibility needs a target, got {follow}")
         settings = {
             "target": float(follow["target"]),
-            "quantile": float(follow.get("quantile", 0.9)),
+            "quantile": float(follow.get("quantile", 0.96)),
+            "window": int(follow.get("window", 256)),
             "ema": float(follow.get("ema", 0.98)),
             "low": float(follow.get("low", 0.9)),
             "rate": float(follow.get("rate", 4.6e-4)),
@@ -194,6 +203,7 @@ class Trainer:
         ok = (
             settings["target"] > 0.0
             and 0.0 < settings["quantile"] <= 1.0
+            and settings["window"] >= 1
             and 0.0 <= settings["ema"] < 1.0
             and 0.0 < settings["low"] <= 1.0
             and settings["rate"] > 0.0
@@ -201,13 +211,31 @@ class Trainer:
         )
         if not ok:
             raise ValueError(
-                "schedule.image_loss.follow_visibility needs target > 0, quantile and low in (0, 1], ema in [0, 1), "
+                "schedule.image_loss.follow_visibility needs target > 0, quantile and low in (0, 1], window >= 1, ema in [0, 1), "
                 f"rate > 0 and 0 < min_weight <= init_weight <= max_weight, got {follow}"
             )
         return settings
 
-    def update_visibility(self, batch_value: float) -> None:
-        """After a training step: smooth the batch's visibility and move the visibility-loss weight.
+    def observe_visibility(self, tile_values) -> float:
+        """Add a step's per-tile p95 masked delta E values to the controller's window; return the window's quantile.
+
+        The window holds the last ``window`` per-tile values across steps (fewer until it has filled), so its
+        ``quantile`` (0.96) is a population percentile of the tiles the model sees: the share of tiles at or under
+        the target that acceptance.py checks. A batch quantile over 8 tiles would sit near the 81st-86th percentile.
+        Non-finite values are left out; NaN while the window is empty. Called before and after the trigger.
+        """
+        follow = self.visibility_follow_settings()
+        quantile = 0.96 if follow is None else follow["quantile"]
+        for value in tile_values:
+            value = float(value)
+            if math.isfinite(value):
+                self.vis_window.append(value)
+        if not self.vis_window:
+            return math.nan
+        return torch.quantile(torch.tensor(list(self.vis_window), dtype=torch.float64), quantile).item()
+
+    def update_visibility(self, value: float) -> None:
+        """After a training step: smooth the window's visibility (observe_visibility) and move the visibility-loss weight.
 
         Does nothing before the image-loss trigger. The weight is multiplied by 1 + rate while the smoothed value is
         above the target and divided by it while below ``low`` times the target, within min_weight to max_weight.
@@ -216,16 +244,17 @@ class Trainer:
         if follow is None or self.image_ramp_start is None:
             return
         if self.vis_ema is None:
-            self.vis_ema = float(batch_value)
+            self.vis_ema = float(value)
         else:
-            self.vis_ema = follow["ema"] * self.vis_ema + (1.0 - follow["ema"]) * float(batch_value)
+            self.vis_ema = follow["ema"] * self.vis_ema + (1.0 - follow["ema"]) * float(value)
         if self.vis_ema > follow["target"]:
             self.vis_weight = min(follow["max_weight"], self.vis_weight * (1.0 + follow["rate"]))
         elif self.vis_ema < follow["low"] * follow["target"]:
             self.vis_weight = max(follow["min_weight"], self.vis_weight / (1.0 + follow["rate"]))
 
     def visibility_quantile(self) -> float:
-        """The batch quantile of the tiles' visibility: the controller's, 0.9 without one."""
+        """The batch quantile of the tiles' visibility in evaluate, and in the logs when there is no controller:
+        the controller's quantile, 0.9 without one. With the controller the logs show observe_visibility's reading."""
         follow = self.visibility_follow_settings()
         return 0.9 if follow is None else float(follow["quantile"])
 
@@ -380,7 +409,11 @@ class Trainer:
             metrics: dict = bit_metrics(out["logits"], bits)
             self.update_schedule(metrics["bit_acc"])
             if visible is not None:
-                seen = batch_statistic(visible["p95"].detach(), self.visibility_quantile()).item()
+                if self.visibility_follow_settings() is not None:
+                    # The controller's reading: the quantile over its window of per-tile values, not over this batch.
+                    seen = self.observe_visibility(visible["p95"].detach().tolist())
+                else:
+                    seen = batch_statistic(visible["p95"].detach(), self.visibility_quantile()).item()
                 metrics.update(
                     visibility=seen, visibility_mean=visible["mean"].detach().mean().item(), vis_weight=vis_weight
                 )
@@ -744,7 +777,8 @@ def main() -> int:
         vf = trainer.visibility_follow_settings()
         if vf is not None:
             print(
-                f"visibility controller: target {vf['target']:g} (the {vf['quantile'] * 100:g}th percentile over the batch's tiles of each tile's p95 masked delta E), "
+                f"visibility controller: target {vf['target']:g} (the {vf['quantile'] * 100:g}th percentile of each tile's p95 masked delta E "
+                f"over a window of the last {vf['window']} tiles, across steps), "
                 f"ema {vf['ema']:g}, up above target, down below {vf['low']:g} x target, rate {vf['rate']:g} per step, "
                 f"weight starts at {vf['init_weight']:g} within {vf['min_weight']:g} to {vf['max_weight']:g}"
             )
