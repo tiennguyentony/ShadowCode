@@ -38,6 +38,9 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> dict[st
         node = cfg
         parts = key.split(".")
         for part in parts[:-1]:
+            # A key set to null (a check that is off by default) becomes a section when an override goes into it.
+            if part in node and node[part] is None:
+                node[part] = {}
             node = node.setdefault(part, {})
         node[parts[-1]] = yaml.safe_load(raw)
     return cfg

@@ -779,6 +779,11 @@ reached 0.95 bit accuracy with regions of its patch blanked, so the mark is
 still at full strength. The 45-minute check does not catch that: 0.75 is
 enough to pass it.
 
+**Reading too weak** (`reading_check`, exit code 7). One look at `at_step`
+(80,000 for an invisibility run), at the mean bit accuracy of the last
+`log.report_every` steps: below `min_bit_acc`, the run stops with a checkpoint.
+It refuses to resume until you add `reading_check.enabled=false` or `--fresh`.
+
 **The hours limit** (`budget.max_hours: 24`, exit code 6). The other stops
 judge the training; this one only counts. Checked at every step, on the
 hours of the report line: the time `train.py` has spent on this run, summed

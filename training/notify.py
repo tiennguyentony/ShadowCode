@@ -70,6 +70,7 @@ ENDINGS = [
     (re.compile(r"^Stopped: at step \d+ the fixed-place measure"), "automatic stop: the mark piled up at a fixed place (exit code 4)"),
     (re.compile(r"NOT LEARNING|^Stopped: bit accuracy is below"), "automatic stop: the learning check failed (exit code 3)"),
     (re.compile(r"image loss never switched on"), "automatic stop: the image loss never switched on (exit code 5)"),
+    (re.compile(r"^Stopped: reading too weak"), "automatic stop: reading too weak at the reading check (exit code 7)"),
     (re.compile(r"^Stopped:"), "automatic stop"),
     (re.compile(r"^finished \d+ steps"), "finished"),
     (re.compile(r"^time limit reached"), "stopped by --max-minutes, checkpoint saved"),
@@ -82,7 +83,7 @@ EXIT_CODES = {
     4: "automatic stop: the mark piled up at a fixed place (exit code 4)",
     5: "automatic stop: the image loss never switched on (exit code 5)",
     6: "automatic stop: the limit on hours or cost was reached (exit code 6)",
-    7: "automatic stop: the locator's held-out corner error stopped improving (exit code 7)",
+    7: "automatic stop: reading too weak at the reading check, or (locator run) the held-out corner error stopped improving (exit code 7)",
     130: "interrupted (Ctrl-C or SIGTERM), checkpoint saved",
 }
 

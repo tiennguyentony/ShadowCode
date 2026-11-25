@@ -18,7 +18,8 @@ stopped by ``--max-minutes``, 3 stopped by the learning check
 (``early_stop``), 4 stopped because the mark piled up at a fixed place in the
 tile (``spread.stop_above``),
 5 stopped because the image loss never switched on (``image_loss_check``),
-6 stopped at its limit on hours or cost (``budget``), 130 interrupted.
+6 stopped at its limit on hours or cost (``budget``), 7 stopped because
+reading was too weak at the reading check (``reading_check``), 130 interrupted.
 
 With every sample sheet the run measures where the mark sits on 256 fixed
 dataset images (the spread check) and appends a row to ``<log.dir>/spread.csv``.
@@ -576,6 +577,7 @@ EXIT_NOT_LEARNING = 3
 EXIT_PILED_UP = 4
 EXIT_IMAGE_LOSS_OFF = 5
 EXIT_OVER_BUDGET = 6
+EXIT_READING_LOW = 7
 EXIT_INTERRUPTED = 130
 
 
@@ -649,6 +651,10 @@ def main() -> int:
     image_check_enabled = bool(image_check.get("enabled", False))
     image_check_step = int(image_check.get("at_step", 15000))
     image_check_min_psnr = float(image_check.get("min_psnr_db", 14.0))
+    reading_check = cfg.get("reading_check") or {}
+    reading_check_enabled = bool(reading_check.get("enabled", False))
+    reading_check_step = int(reading_check.get("at_step", 80000))
+    reading_check_min_acc = float(reading_check.get("min_bit_acc", 0.9))
     budget = cfg.get("budget") or {}
     max_hours, max_cost = budget.get("max_hours"), budget.get("max_cost_usd")
     if max_cost is not None and args.price_per_hour is None:
@@ -676,6 +682,16 @@ def main() -> int:
             "to start over add --fresh."
         )
         return EXIT_IMAGE_LOSS_OFF
+
+    if reading_check_enabled and clock.reading_check and clock.reading_check["result"] == "failed":
+        c = clock.reading_check
+        print(
+            f"This run was stopped at step {c['step']}: reading too weak "
+            f"(mean bit accuracy {c['bit_acc']:.3f}, below {c['min_bit_acc']:g}).\n"
+            "It will not resume while the check is on. To continue anyway add reading_check.enabled=false; "
+            "to start over add --fresh."
+        )
+        return EXIT_READING_LOW
 
     def over_budget() -> str | None:
         """What the run has used, if that is at or past a limit in ``budget``; else None."""
@@ -748,11 +764,18 @@ def main() -> int:
             f"image-loss check: the run stops if mean PSNR is still below {image_check_min_psnr:g} dB "
             f"at step {image_check_step}"
         )
+    reading_check_pending = reading_check_enabled and clock.reading_check is None
+    if reading_check_pending:
+        print(
+            f"reading check: the run stops if mean bit accuracy is still below {reading_check_min_acc:g} "
+            f"at step {reading_check_step}"
+        )
     if max_hours is not None or max_cost is not None:
         limits = [f"{float(max_hours):g} h of training"] if max_hours is not None else []
         limits += [f"${float(max_cost):g} at ${args.price_per_hour:g} per hour"] if max_cost is not None else []
         print(f"budget: the run stops, with a checkpoint, at {' or '.join(limits)}, summed over restarts")
     image_loss_off = False
+    reading_low = False
     check_pending = check_enabled and clock.learning_check is None
     if check_pending:
         print(
@@ -917,6 +940,26 @@ def main() -> int:
                 )
                 if image_loss_off:
                     break
+            # One look, the same way: the first step at or past at_step with a full window behind it.
+            if reading_check_pending and step >= reading_check_step and len(recent) >= min(100, recent.maxlen):
+                mean_acc = sum(a for a, _ in recent) / len(recent)
+                reading_low = mean_acc < reading_check_min_acc
+                clock.reading_check = {
+                    "result": "failed" if reading_low else "passed",
+                    "step": step,
+                    "bit_acc": mean_acc,
+                    "min_bit_acc": reading_check_min_acc,
+                }
+                reading_check_pending = False
+                clock.save()
+                print(
+                    f"reading check at step {step}: mean bit accuracy over the last {len(recent)} steps is "
+                    f"{mean_acc:.3f} (required {reading_check_min_acc:g}) -> "
+                    + ("reading too weak, stopping the run" if reading_low else "passed, the run continues"),
+                    flush=True,
+                )
+                if reading_low:
+                    break
             spent = over_budget()
             if spent:
                 break
@@ -984,6 +1027,15 @@ def main() -> int:
             "The machine is still running and still billed; see RUNPOD.md for how to stop it."
         )
         return EXIT_IMAGE_LOSS_OFF
+    if reading_low:
+        checkpoint_now()
+        print(
+            f"Stopped: reading too weak. At step {trainer.step} the mean bit accuracy is "
+            f"{clock.reading_check['bit_acc']:.3f}, below {reading_check_min_acc:g} (reading_check): "
+            f"the mark was made invisible at the cost of reading. {clock.cost_text()}.\n"
+            "The machine is still running and still billed; see RUNPOD.md for how to stop it."
+        )
+        return EXIT_READING_LOW
     if piled_up is not None:
         checkpoint_now()
         print(

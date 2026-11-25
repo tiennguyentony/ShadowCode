@@ -929,6 +929,35 @@ def _square_to(corners: torch.Tensor) -> torch.Tensor:
     return homography_from_points(square_corners(float(TILE_PX), corners.shape[0], dtype=corners.dtype), corners)
 
 
+def check_reading_check(device_name: str) -> None:
+    """reading_check: a real short train.py run stops with exit code 7 and a checkpoint, and will not resume."""
+    import json
+    import subprocess
+    import sys
+
+    with tempfile.TemporaryDirectory(prefix="tilemark_reading_") as tmp:
+        root = Path(tmp)
+        data_dir = root / "data"
+        data_dir.mkdir()
+        make_tiny_dataset(data_dir)
+        command = [
+            sys.executable, str(HERE / "train.py"), "--config", str(HERE / "configs" / "smoke.yaml"),
+            f"data.train_dir={data_dir.as_posix()}", f"checkpoint.dir={(root / 'ckpt').as_posix()}",
+            f"log.dir={(root / 'logs').as_posix()}", f"train.device={device_name}",
+            "train.total_steps=20", "log.report_every=10", "log.spread_images=0",
+            "reading_check.enabled=true", "reading_check.at_step=10", "reading_check.min_bit_acc=0.99",
+        ]
+        first = subprocess.run(command, capture_output=True, text=True, cwd=HERE)
+        assert first.returncode == 7, f"reading check: exit code {first.returncode}, expected 7\n{first.stdout[-1500:]}\n{first.stderr[-1500:]}"
+        assert "reading too weak" in first.stdout, first.stdout[-1500:]
+        assert list((root / "ckpt").glob("*")), "reading check: no checkpoint was saved"
+        state = json.loads((root / "logs" / "run_state.json").read_text(encoding="utf-8"))
+        assert state["reading_check"]["result"] == "failed", state["reading_check"]
+        second = subprocess.run(command, capture_output=True, text=True, cwd=HERE)
+        assert second.returncode == 7 and "will not resume" in second.stdout, second.stdout[-1500:]
+    print("reading check passed: exit code 7, checkpoint saved, run_state.json says failed, no resume")
+
+
 def describe_simulation(cfg: dict) -> str:
     sim = cfg["simulation"]
     if not sim["enabled"]:
@@ -980,6 +1009,7 @@ def run_smoke(
         check_generated_labels()
         check_multi_shot()
         check_locator_view()
+        check_reading_check(str(device))
 
         batches = infinite(loader)
         history: list[dict[str, float]] = []

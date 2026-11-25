@@ -56,6 +56,7 @@ class RunClock:
         self.unpriced_seconds = float(state.get("unpriced_seconds", 0.0))
         self.learning_check: dict | None = state.get("learning_check")
         self.image_loss_check: dict | None = state.get("image_loss_check")
+        self.reading_check: dict | None = state.get("reading_check")
         self._last = time.monotonic()
 
     def tick(self) -> None:
@@ -76,6 +77,7 @@ class RunClock:
             "unpriced_seconds": self.unpriced_seconds,
             "learning_check": self.learning_check,
             "image_loss_check": self.image_loss_check,
+            "reading_check": self.reading_check,
         }
         temporary = self.path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")

@@ -292,7 +292,8 @@ accuracy is below 0.75, the run saves a checkpoint and exits with code 3. It
 also turns on the three other stops in the table below: the mark piling up
 (`spread.stop_above`, exit code 4), the image loss never switching on
 (`image_loss_check`, exit code 5) and 24 hours of training
-(`budget.max_hours`, exit code 6).
+(`budget.max_hours`, exit code 6) and reading too weak at the reading
+check (`reading_check`, exit code 7).
 
 **Direct reader.** `configs/runpod_direct.yaml` trains with
 `train.reader_input: direct`. Dropped for the gate: every test with rotation
@@ -362,6 +363,7 @@ The parts that need a decision:
 | `early_stop` | The learning check. Off by default, on in the two `runpod_` configs, `penalty.yaml` and `labels.yaml`. |
 | `spread.stop_above` | Stop, with a checkpoint and exit code 4, when the spread check's fixed-place measure goes above this: a patch at the same place in every tile. `null` (off) by default; 4.0 in `penalty.yaml`, `labels.yaml` and `runpod_spread.yaml`. |
 | `image_loss_check` | Stop, with a checkpoint and exit code 5, if the mean PSNR is still below `min_psnr_db` (14) at `at_step` (15,000): the image loss never switched on. Off by default, on in `runpod_spread.yaml`. |
+| `reading_check` | Stop, with a checkpoint and exit code 7, if the mean training bit accuracy of the last `log.report_every` steps is below `min_bit_acc` at `at_step` (one look, like `image_loss_check`): reading too weak, so no more time is spent on a run that cannot pass. Does not resume while on and failed; add `reading_check.enabled=false` to continue. `null` (off) by default. |
 | `budget` | A limit on the whole run, summed over restarts: stop, with a checkpoint and exit code 6, at `max_hours` of training or at `max_cost_usd` on the cost of the report line (needs `--price-per-hour`). A run stopped this way does not resume until the limit is raised or set to `null`. Both `null` (off) by default; `max_hours: 24` in `runpod_spread.yaml`. It limits what `train.py` counts, not the bill. |
 | `schedule.image_loss` | Image-loss weight is 0 until bit accuracy passes `acc_threshold`, then ramps over `ramp_steps`. |
 | `schedule.image_loss.follow_accuracy` | `null`: that ramp, which never comes back down. `{floor, band}`: after the trigger the weight moves by 1/`ramp_steps` per step, up while smoothed bit accuracy is at or above `floor`, down while it is below `floor - band`. On in `labels.yaml` (0.95, 0.01). |
