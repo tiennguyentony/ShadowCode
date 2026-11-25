@@ -19,9 +19,19 @@ ruler as before. ``measure`` takes that frame and px per cm x 5 (camera px per 5
 squares, maps the frame onto the page, sets black and grey from the squares and the grey strip, and fits
 each patch's grating in its opponent channel (visibility.py) on the frame's own pixels. It then puts the
 page through the simulation at that resolution (flattened mode, full strength, tilt and the colour step
-off: the colour step changes the whole image, which the black and grey levels undo, and is no loss of
-detail), averaged over ``--draws`` random draws, and prints both and their ratio. The verdict says
-"colour detail matches" unless the phone keeps under half of the simulation's grating somewhere.
+off), averaged over ``--draws`` random draws, and prints both and their ratio. The colour step changes the
+whole image and loses no detail; the black and grey levels undo its contrast, brightness and channel
+shift, but not its per-channel gamma (simulate.apply_colour), so a small per-channel amplitude bias
+remains between a phone frame and the reference.
+
+Noise alone gives a fitted grating some amplitude, always positive. The same fit at each patch's
+frequency on the flat grey strip is that frequency's noise floor, in the phone frame and in the
+simulation. A patch the simulation keeps at no more than twice its floor has nothing to compare against;
+one the phone keeps at no more than twice its floor is under half only if twice that floor is still under
+half the simulation's. Neither gets a ratio: they are listed as below the noise floor, not judged.
+
+The verdict says "colour detail matches" unless the phone keeps under half of the simulation's grating
+somewhere.
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ import html
 import math
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
@@ -58,6 +69,7 @@ GREY_PX = 192  # height of the flat grey strip under the gratings
 EDGE_PX = 48  # left out at every edge of a patch when measuring, for blur from the next patch
 
 UNDER = 0.5  # the phone keeping less than this share of the simulation's grating fails the check
+FLOOR = 2.0  # an amplitude at most this many times its noise floor is not a measurement
 DRAWS = 16  # one draw is no reference: blur and JPEG quality vary widely from draw to draw
 SEED = 0
 
@@ -215,13 +227,28 @@ def _inside(u: torch.Tensor, v: torch.Tensor, box, margin: float) -> torch.Tenso
     return (u >= x0 + margin) & (u < x1 - margin) & (v >= y0 + margin) & (v < y1 - margin)
 
 
-def measure_frame(frame: torch.Tensor, px_per_tile: float) -> dict[tuple[str, int], float]:
-    """Each patch's grating amplitude in the frame, as a share of its amplitude on the page.
+class Measured(NamedTuple):
+    amplitude: dict[tuple[str, int], float]  # each patch's grating, as a share of its amplitude on the page
+    floor: dict[tuple[str, int], float]  # the same fit on the flat grey strip: the noise floor, same units
+
+
+def _fit(u: torch.Tensor, v: torch.Tensor, values: torch.Tensor, box, cycles: int) -> float:
+    """Length of (cosine, sine) at ``cycles`` per tile, fitted with a mean and a slope in x and y."""
+    phase = 2.0 * math.pi * cycles * (u - box[0]) / TILE_PX
+    cx, cy = _centre(box)
+    design = torch.stack([torch.ones_like(u), (u - cx) / TILE_PX, (v - cy) / TILE_PX, torch.cos(phase), torch.sin(phase)], dim=1)
+    fit = torch.linalg.lstsq(design, values[:, None]).solution[:, 0]
+    return math.hypot(float(fit[3]), float(fit[4]))
+
+
+def measure_frame(frame: torch.Tensor, px_per_tile: float) -> Measured:
+    """Each patch's grating amplitude in the frame, and its noise floor, as shares of its amplitude on the page.
 
     The frame's pixels are mapped onto the page through the four squares. Black (the squares) and grey
     (the strip) set the levels of each RGB channel; then each patch's opponent channel is fitted, on the
     frame's own pixels with no resampling, with a mean, a slope in x and y, and the cosine and sine at the
-    patch's frequency. The amplitude is the length of (cosine, sine).
+    patch's frequency. The amplitude is the length of (cosine, sine). The floor is the same fit, in the
+    same channel at the same frequency, on the flat grey strip.
     """
     from geometry import apply_homography, homography_from_points
 
@@ -248,7 +275,8 @@ def measure_frame(frame: torch.Tensor, px_per_tile: float) -> dict[tuple[str, in
     levelled = (rgb - black) / (grey - black).clamp(min=1e-3) * page_grey
     opp = opponent(levelled[None])[0]
 
-    out = {}
+    floor_u, floor_v, floor_box = u[in_grey], v[in_grey], grey_box()
+    amplitude, floor = {}, {}
     for channel in CHANNELS:
         c = CHANNELS.index(channel)
         for cycles in CYCLES:
@@ -256,42 +284,73 @@ def measure_frame(frame: torch.Tensor, px_per_tile: float) -> dict[tuple[str, in
             keep = _inside(u, v, box, EDGE_PX)
             if int(keep.sum()) < 64:
                 raise ValueError(f"the {channel} {cycles} cycle patch is not in the frame")
-            pu, pv, values = u[keep], v[keep], opp[c][keep]
-            phase = 2.0 * math.pi * cycles * (pu - box[0]) / TILE_PX
-            cx, cy = _centre(box)
-            design = torch.stack(
-                [torch.ones_like(pu), (pu - cx) / TILE_PX, (pv - cy) / TILE_PX, torch.cos(phase), torch.sin(phase)], dim=1
-            )
-            fit = torch.linalg.lstsq(design, values[:, None]).solution[:, 0]
-            out[(channel, cycles)] = math.hypot(float(fit[3]), float(fit[4])) / AMPLITUDE[channel]
-    return out
+            amplitude[(channel, cycles)] = _fit(u[keep], v[keep], opp[c][keep], box, cycles) / AMPLITUDE[channel]
+            floor[(channel, cycles)] = _fit(floor_u, floor_v, opp[c][in_grey], floor_box, cycles) / AMPLITUDE[channel]
+    return Measured(amplitude, floor)
 
 
-def reference(cfg: dict, px_per_tile: float, draws: int = DRAWS, seed: int = SEED) -> dict[tuple[str, int], float]:
-    """The simulation's amplitudes at ``px_per_tile``: ``measure_frame`` on ``draws`` draws (seeds seed, seed + 1, ...), averaged."""
+def reference(cfg: dict, px_per_tile: float, draws: int = DRAWS, seed: int = SEED) -> Measured:
+    """The simulation's amplitudes and floors at ``px_per_tile``: ``measure_frame`` on ``draws`` draws (seeds seed, seed + 1, ...), averaged."""
     image = page()
-    total: dict[tuple[str, int], float] = {}
+    amplitude: dict[tuple[str, int], float] = {}
+    floor: dict[tuple[str, int], float] = {}
     for k in range(draws):
-        for key, value in measure_frame(camera_frame(image, cfg, px_per_tile, seed + k), px_per_tile).items():
-            total[key] = total.get(key, 0.0) + value / draws
-    return total
+        one = measure_frame(camera_frame(image, cfg, px_per_tile, seed + k), px_per_tile)
+        for key in one.amplitude:
+            amplitude[key] = amplitude.get(key, 0.0) + one.amplitude[key] / draws
+            floor[key] = floor.get(key, 0.0) + one.floor[key] / draws
+    return Measured(amplitude, floor)
 
 
-def table(phone: dict[tuple[str, int], float], sim: dict[tuple[str, int], float]) -> list[dict]:
-    """One row per patch: channel, cycles, phone, simulation and their ratio (nan where the simulation keeps nothing)."""
+def table(phone: Measured, sim: Measured) -> list[dict]:
+    """One row per patch: channel, cycles, phone, simulation, their floors, ratio and status.
+
+    status "measured": ``ratio`` is phone over simulation. "phone at floor": the phone's grating is lost in
+    its noise, but even twice its floor is under half the simulation's, so it is under half; ``ratio`` is
+    nan and ``bound`` the most it can be. "below floor": the simulation's or the phone's grating is lost
+    in noise and nothing can be said; ``ratio`` is nan.
+    """
     rows = []
     for channel in CHANNELS:
         for cycles in CYCLES:
-            p, s = phone[(channel, cycles)], sim[(channel, cycles)]
-            rows.append({"channel": channel, "cycles": cycles, "phone": p, "sim": s, "ratio": p / s if s > 1e-3 else math.nan})
+            key = (channel, cycles)
+            p, s = phone.amplitude[key], sim.amplitude[key]
+            pf, sf = phone.floor[key], sim.floor[key]
+            row = {"channel": channel, "cycles": cycles, "phone": p, "sim": s, "phone_floor": pf, "sim_floor": sf,
+                   "ratio": math.nan, "bound": math.nan, "status": "below floor"}
+            if s > FLOOR * sf:
+                if p > FLOOR * pf:
+                    row.update(ratio=p / s, status="measured")
+                elif FLOOR * pf < UNDER * s:
+                    row.update(bound=FLOOR * pf / s, status="phone at floor")
+            rows.append(row)
     return rows
 
 
+def _names(rows: list[dict]) -> str:
+    return ", ".join(f"{r['channel']} {r['cycles']} cycles" for r in rows)
+
+
+def under_half(rows: list[dict]) -> list[dict]:
+    """The patches where the phone keeps under half of the simulation's grating."""
+    return [r for r in rows if r["status"] == "phone at floor" or (r["status"] == "measured" and r["ratio"] < UNDER)]
+
+
+def below_floor(rows: list[dict]) -> list[dict]:
+    """The patches not judged: the phone's or the simulation's grating is within FLOOR times its noise floor."""
+    return [r for r in rows if r["status"] == "below floor"]
+
+
 def verdict(rows: list[dict]) -> str:
-    under = [f"{r['channel']} {r['cycles']} cycles" for r in rows if r["ratio"] < UNDER]
+    under = under_half(rows)
     if not under:
         return "colour detail matches"
-    return "the phone keeps under half of the simulation's detail at " + ", ".join(under)
+    return "the phone keeps under half of the simulation's detail at " + _names(under)
+
+
+def floor_note(rows: list[dict]) -> str | None:
+    below = below_floor(rows)
+    return f"below the noise floor, not judged: {_names(below)}" if below else None
 
 
 def compare(frame: torch.Tensor, px_per_tile: float, cfg: dict, draws: int = DRAWS, seed: int = SEED) -> list[dict]:
@@ -352,12 +411,21 @@ def measure(args: argparse.Namespace) -> int:
         print(error)
         return 2
     print(f"{args.frame} at {args.px_per_tile:g} camera px per tile; simulation: {args.config}, {args.draws} draws")
-    print("share of the page's grating kept")
-    print(f"{'patch':<26}{'phone':>8}{'simulation':>12}{'ratio':>8}")
+    print("share of the page's grating kept; floor: the same fit on the flat grey strip")
+    print(f"{'patch':<26}{'phone':>8}{'floor':>8}{'simulation':>12}{'floor':>8}  ratio")
     for r in rows:
-        ratio = "-" if math.isnan(r["ratio"]) else f"{r['ratio']:.2f}"
-        print(f"{r['channel'] + ' ' + str(r['cycles']) + ' cycles':<26}{r['phone']:>8.3f}{r['sim']:>12.3f}{ratio:>8}")
+        if r["status"] == "measured":
+            ratio = f"{r['ratio']:.2f}"
+        elif r["status"] == "phone at floor":
+            ratio = f"under {r['bound']:.2f} (phone at its noise floor)"
+        else:
+            ratio = "below noise floor"
+        name = f"{r['channel']} {r['cycles']} cycles"
+        print(f"{name:<26}{r['phone']:>8.3f}{r['phone_floor']:>8.3f}{r['sim']:>12.3f}{r['sim_floor']:>8.3f}  {ratio}")
     print(verdict(rows))
+    note = floor_note(rows)
+    if note:
+        print(note)
     return 0
 
 

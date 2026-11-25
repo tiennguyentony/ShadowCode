@@ -557,58 +557,125 @@ def check_calibration_levels() -> None:
 
 
 def check_phone_gratings() -> None:
-    """phone_gratings.py: measure, run on a frame made by simulating the page itself, gives a ratio of 1.
+    """phone_gratings.py: the measure is absolute, the comparison holds across draws, noise is not detail.
 
-    The frame is one draw of the simulation at 280 camera px per tile, saved as an 8-bit PNG inside a
-    larger dark frame, as a phone frame shows the sheet on a desk. ``measure`` compares it with the same
-    draw (``--draws 1``, the same seed), so every patch must come out at 1.0 +- 0.05: draws differ far
-    more than that (blur and JPEG quality are drawn per sample), which is why ``measure`` averages 16 of
-    them by default. Draw 3 keeps some of every grating; draw 0 loses the 77-cycle colour gratings
-    altogether, and a ratio of nothing to nothing tests nothing. The same frame with its colour detail
-    blurred away must be reported as keeping under half of it.
+    1. Anchor: the clean page itself measures 1.0 of the page's amplitude on every patch, floor 0.
+    2. Pipeline check: one draw of the simulation at 280 camera px per tile, saved as an 8-bit PNG inside a
+       larger dark frame (a sheet on a desk), against the same draw (``--draws 1``, the same seed). The
+       simulation cancels out; this checks finding the squares, the levels, the fit and the CLI. Draw 3
+       keeps some of every grating; draw 0 loses the 77-cycle colour gratings altogether.
+    3. Independent draws: with the draw-to-draw ranges collapsed (no blur, JPEG quality 100, little noise:
+       the resolution loss and chroma subsampling stay), a frame made at seed 11 against the CLI's average
+       of 4 draws from seed 0, through ``--config``. Every patch at 1.0 +- 0.05. With the default ranges no
+       single draw is near the average (blur and JPEG quality vary widely), so this needs the collapse.
+    4. The pipeline frame with its colour detail blurred away is under half at the 77-cycle colour patches.
+    5. Noise floor, on a page whose blue-yellow 77 patch is flat grey: under column noise (constant down
+       each column, which the fit cannot average away) the patch is below the noise floor: no ratio, not
+       in the verdict, listed apart. Under strong white noise the floor stays far under half the
+       simulation's grating, so the lost grating is still reported as under half.
     """
     import contextlib
     import io
 
     import phone_gratings as pg
 
-    px, seed = 280, 3
-    cfg = load_config(pg.DEFAULT_CONFIG)
-    frame = pg.camera_frame(pg.page(), cfg, px, seed)
-    canvas = torch.full((1, 3, 1920, 1080), 0.12)  # a dark desk around the sheet
-    top, left = 211, 97
-    canvas[..., top : top + frame.shape[-2], left : left + frame.shape[-1]] = frame
-    with tempfile.TemporaryDirectory(prefix="tilemark_phone_") as tmp:
-        path = Path(tmp) / "frame.png"
-        save_image(canvas[0], path)
+    def run_measure(path: Path, px: float, *extra: str) -> str:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = pg.main(["measure", "--frame", str(path), "--px-per-tile", str(px), "--draws", "1", "--seed", str(seed)])
-        text = out.getvalue()
-        assert code == 0, f"measure exited with {code}:\n{text}"
+            code = pg.main(["measure", "--frame", str(path), "--px-per-tile", str(px), *extra])
+        assert code == 0, f"measure exited with {code}:\n{out.getvalue()}"
+        return out.getvalue()
+
+    def on_desk(frame: torch.Tensor) -> torch.Tensor:
+        canvas = torch.full((1, 3, 1920, 1080), 0.12)  # a dark desk around the sheet
+        top, left = 211, 97
+        canvas[..., top : top + frame.shape[-2], left : left + frame.shape[-1]] = frame
+        return canvas
+
+    # 1. Anchor.
+    clean = pg.measure_frame(pg.page(), TILE_PX)
+    for key, value in clean.amplitude.items():
+        assert abs(value - 1.0) <= 0.02, f"the clean page measures {value:.4f} of its own {key} grating"
+    assert max(clean.floor.values()) < 1e-3, f"the clean page has a noise floor of {max(clean.floor.values()):.2e}"
+
+    px, seed = 280, 3
+    cfg = load_config(pg.DEFAULT_CONFIG)
+    with tempfile.TemporaryDirectory(prefix="tilemark_phone_") as tmp:
+        # 2. Pipeline check: the same draw.
+        canvas = on_desk(pg.camera_frame(pg.page(), cfg, px, seed))
+        path = Path(tmp) / "frame.png"
+        save_image(canvas[0], path)
+        text = run_measure(path, px, "--draws", "1", "--seed", str(seed))
         sim = pg.reference(cfg, px, draws=1, seed=seed)
         rows = pg.table(pg.measure_frame(pg.read_frame(path), px), sim)
-    assert len(rows) == 12, f"{len(rows)} patches measured, want 12"
-    for row in rows:
-        assert row["sim"] > 0.05, f"draw {seed} keeps only {row['sim']:.3f} of the {row['channel']} {row['cycles']} cycle grating"
-        assert abs(row["ratio"] - 1.0) <= 0.05, f"{row['channel']} {row['cycles']} cycles: ratio {row['ratio']:.3f}\n{text}"
-    assert "colour detail matches" in text, text
+        assert len(rows) == 12, f"{len(rows)} patches measured, want 12"
+        for row in rows:
+            assert row["sim"] > 0.05, f"draw {seed} keeps only {row['sim']:.3f} of the {row['channel']} {row['cycles']} cycle grating"
+            assert row["status"] == "measured" and abs(row["ratio"] - 1.0) <= 0.05, f"pipeline check: {row}\n{text}"
+        assert "colour detail matches" in text and "not judged" not in text, text
 
-    # The same frame with its red-green and blue-yellow detail smoothed away: the verdict names those patches.
+        # 3. Independent draws, through the CLI's averaging.
+        steady_path = Path(tmp) / "steady.yaml"
+        steady_path.write_text(
+            f"base: {Path(pg.DEFAULT_CONFIG).resolve().as_posix()}\n"
+            "simulation:\n"
+            "  blur: {defocus_radius_px: 0.0, motion_length_px: 0.0}\n"
+            "  jpeg: {min_quality: 100}\n"
+            "  noise: {sigma: 0.004}\n",
+            encoding="utf-8",
+        )
+        steady = load_config(steady_path)
+        draws, frame_seed, ref_seed = 4, 11, 0
+        path = Path(tmp) / "steady.png"
+        save_image(on_desk(pg.camera_frame(pg.page(), steady, px, frame_seed))[0], path)
+        text = run_measure(path, px, "--config", str(steady_path), "--draws", str(draws), "--seed", str(ref_seed))
+        steady_sim = pg.reference(steady, px, draws=draws, seed=ref_seed)
+        independent = pg.table(pg.measure_frame(pg.read_frame(path), px), steady_sim)
+        for row in independent:
+            assert row["status"] == "measured" and abs(row["ratio"] - 1.0) <= 0.05, f"independent draws: {row}\n{text}"
+        assert "colour detail matches" in text, text
+
+        # 5. Column noise on a flat patch: below the floor, listed apart, through the CLI.
+        flat_page = pg.page()
+        x0, y0, x1, y1 = pg.patch_box("blue-yellow", 77)
+        flat_page[..., y0:y1, x0:x1] = float(pg._quantise(torch.tensor(pg.GREY)))
+        flat = pg.camera_frame(flat_page, steady, px, frame_seed)
+        generator = torch.Generator().manual_seed(1)
+        columns = (flat + 0.08 * torch.randn(1, 3, 1, flat.shape[-1], generator=generator)).clamp(0.0, 1.0)
+        path = Path(tmp) / "columns.png"
+        save_image(on_desk(columns)[0], path)
+        text = run_measure(path, px, "--config", str(steady_path), "--draws", str(draws), "--seed", str(ref_seed))
+        noisy = pg.table(pg.measure_frame(pg.read_frame(path), px), steady_sim)
+    row = next(r for r in noisy if (r["channel"], r["cycles"]) == ("blue-yellow", 77))
+    assert row["status"] == "below floor" and math.isnan(row["ratio"]), f"column noise on a flat patch: {row}"
+    assert row not in pg.under_half(noisy), "a patch below the floor was judged"
+    assert "below the noise floor, not judged: blue-yellow 77 cycles" in text, text
+    assert "colour detail matches" in text, f"a patch below the floor decided the verdict:\n{text}"
+
+    # 4. Colour smoothed away (the pipeline frame): under half at the 77-cycle colour patches, no luminance.
     opp = opponent(canvas)
     kernel = torch.ones(1, 1, 1, 15) / 15.0  # along x, across the stripes
     opp[:, 1:] = F.conv2d(F.pad(opp[:, 1:].reshape(2, 1, *opp.shape[-2:]), (7, 7, 0, 0), mode="replicate"), kernel).view_as(opp[:, 1:])
-    smoothed = from_opponent(opp).clamp(0.0, 1.0)
-    blurred = pg.table(pg.measure_frame(smoothed, px), sim)
-    under = {(r["channel"], r["cycles"]) for r in blurred if r["ratio"] < 0.5}
+    blurred = pg.table(pg.measure_frame(from_opponent(opp).clamp(0.0, 1.0), px), sim)
+    under = {(r["channel"], r["cycles"]) for r in pg.under_half(blurred)}
     assert {("red-green", 77), ("blue-yellow", 77)} <= under, f"smoothed colour not caught: {blurred}"
     assert not any(channel == "luminance" for channel, _ in under), f"luminance flagged after a colour blur: {blurred}"
     line = pg.verdict(blurred)
     assert line.startswith("the phone keeps under half of the simulation's detail at ") and "blue-yellow 77" in line, line
+
+    # 5, white noise: the floor stays low, so the lost grating is still under half (measured, or at the floor).
+    white = (flat + 0.3 * torch.randn(flat.shape, generator=generator)).clamp(0.0, 1.0)
+    rows_white = pg.table(pg.measure_frame(white, px), steady_sim)
+    row = next(r for r in rows_white if (r["channel"], r["cycles"]) == ("blue-yellow", 77))
+    assert row in pg.under_half(rows_white), f"white noise on a flat patch: {row}"
+    assert "blue-yellow 77" in pg.verdict(rows_white), pg.verdict(rows_white)
     print(
-        f"phone grating checks passed: a simulated frame at {px} px per tile measures "
-        f"{min(r['ratio'] for r in rows):.3f} to {max(r['ratio'] for r in rows):.3f} of the simulation; "
-        f"colour smoothed away is reported ({len(under)} patches under half)"
+        f"phone grating checks passed: the clean page measures 1.00 +- 0.02; the same draw at {px} px per tile "
+        f"{min(r['ratio'] for r in rows):.3f} to {max(r['ratio'] for r in rows):.3f}; independent draws "
+        f"(seed {frame_seed} against {draws} from seed {ref_seed}, ranges collapsed) "
+        f"{min(r['ratio'] for r in independent):.3f} to {max(r['ratio'] for r in independent):.3f}; "
+        f"colour smoothed away is under half ({len(under)} patches); a flat patch is below the noise floor "
+        f"under column noise and still under half under white noise"
     )
 
 
