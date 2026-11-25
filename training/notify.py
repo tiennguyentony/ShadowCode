@@ -230,7 +230,7 @@ class LocatorRun(LaptopRun):
             body += ["Latest held-out rows:", *self.table(view["spread"], 4), ""]
         if view.get("progress"):
             last = view["progress"][-1]
-            body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}", *self.pace(view["progress"], total_steps), ""]
+            body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}" + visibility_text(last), *self.pace(view["progress"], total_steps), ""]
         if view.get("console"):
             body += [f"Last {min(console_lines, len(view['console']))} console lines of {self.name}:", *view["console"][-console_lines:]]
         return "\n".join(body)
@@ -400,6 +400,14 @@ def number(text: str | None, digits: int) -> str:
         return "n/a"
 
 
+def visibility_text(row: dict) -> str:
+    """Text for the progress row's visibility and its weight, or "" for an older file or a run without the loss."""
+    if not row.get("visibility"):
+        return ""
+    text = f", visibility {number(row['visibility'], 2)}"
+    return text + (f", visibility weight {float(row['vis_weight']):.3g}" if row.get("vis_weight") else "")
+
+
 def pace(progress: list[dict], total_steps: int) -> list[str]:
     """Hours, cost and what is left, from progress.csv. Estimates, and marked as such."""
     if not progress:
@@ -463,7 +471,8 @@ def situation(name: str, view: dict, total_steps: int, console_lines: int = 30) 
         body += ["Latest spread rows:", *table(view["spread"], 4), ""]
     if view.get("progress"):
         last = view["progress"][-1]
-        body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}, bit accuracy {last['bit_acc']}, PSNR {last['psnr_db']} dB",
+        body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}, bit accuracy {last['bit_acc']}, PSNR {last['psnr_db']} dB"
+                 + visibility_text(last),
                  *pace(view["progress"], total_steps), ""]
     if view.get("console"):
         body += [f"Last {min(console_lines, len(view['console']))} console lines of {name}:", *view["console"][-console_lines:]]

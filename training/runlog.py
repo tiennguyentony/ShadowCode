@@ -20,8 +20,13 @@ from pathlib import Path
 STATE_FILE = "run_state.json"
 PROGRESS_FILE = "progress.csv"
 # image_scale: the image-loss weight (0 to 1) the report's last step trained with. Last, so that
-# readers of the earlier columns are not disturbed.
-PROGRESS_COLUMNS = ["utc_time", "step", "bit_acc", "psnr_db", "steps_averaged", "elapsed_hours", "cost_usd", "image_scale"]
+# readers of the earlier columns are not disturbed. visibility: the mean over the report window of the batch
+# statistic of the masked S-CIELAB delta E; vis_weight: the visibility-loss weight at the last step. Both empty
+# when loss.visibility is off.
+PROGRESS_COLUMNS = [
+    "utc_time", "step", "bit_acc", "psnr_db", "steps_averaged", "elapsed_hours", "cost_usd", "image_scale",
+    "visibility", "vis_weight",
+]
 
 
 class RunClock:
@@ -103,7 +108,15 @@ class ProgressLog:
                 csv.writer(f).writerow(PROGRESS_COLUMNS)
 
     def write(
-        self, step: int, bit_acc: float, psnr_db: float, steps_averaged: int, clock: RunClock, image_scale: float | None = None
+        self,
+        step: int,
+        bit_acc: float,
+        psnr_db: float,
+        steps_averaged: int,
+        clock: RunClock,
+        image_scale: float | None = None,
+        visibility: float | None = None,
+        vis_weight: float | None = None,
     ) -> str:
         """Write the row and return the same information as one line of text."""
         priced = clock.price_per_hour is not None
@@ -116,6 +129,8 @@ class ProgressLog:
             f"{clock.elapsed_seconds / 3600.0:.4f}",
             f"{clock.cost_usd:.4f}" if priced else "",
             "" if image_scale is None else f"{image_scale:.4f}",
+            "" if visibility is None else f"{visibility:.4f}",
+            "" if vis_weight is None else f"{vis_weight:.6g}",
         ]
         with open(self.path, "a", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(row)
@@ -123,6 +138,7 @@ class ProgressLog:
             f"[report] step {step:7d}  bit_acc {bit_acc:.3f}  psnr {psnr_db:.1f} dB  "
             f"(mean of last {steps_averaged} steps)  "
             + ("" if image_scale is None else f"image-loss weight {image_scale:.3f}  ")
+            + ("" if visibility is None else f"seen {visibility:.2f}  vis weight {vis_weight:.3g}  ")
             + f"{clock.elapsed_seconds / 3600.0:.2f} h  {clock.cost_text()}"
         )
 

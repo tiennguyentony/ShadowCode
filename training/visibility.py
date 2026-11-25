@@ -156,8 +156,15 @@ def delta_e_map(clean: torch.Tensor, marked: torch.Tensor, ppd: float) -> torch.
 
     sqrt(dL^2 + da^2 + db^2 + eps) - sqrt(eps): exactly 0 where nothing changed, with a finite gradient there.
     """
-    lab = _scielab(torch.cat([clean, marked], dim=0), ppd)
-    clean_lab, marked_lab = lab.chunk(2, dim=0)
+    assert clean.shape == marked.shape, f"clean {tuple(clean.shape)} and marked {tuple(marked.shape)} tiles must have the same shape"
+    if clean.requires_grad:
+        lab = _scielab(torch.cat([clean, marked], dim=0), ppd)
+        clean_lab, marked_lab = lab.chunk(2, dim=0)
+    else:
+        # The clean half needs no gradient: keep it out of the autograd graph, which halves the backward memory.
+        with torch.no_grad():
+            clean_lab = _scielab(clean, ppd)
+        marked_lab = _scielab(marked, ppd)
     squared = (marked_lab - clean_lab).pow(2).sum(dim=1, keepdim=True)
     return (squared + DELTA_E_EPS).sqrt() - math.sqrt(DELTA_E_EPS)
 

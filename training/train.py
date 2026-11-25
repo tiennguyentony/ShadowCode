@@ -59,6 +59,7 @@ from losses import texture_settings, texture_weights
 from models import build_models, count_parameters
 from runlog import ProgressLog, RunClock, SpreadLog
 from simulate import simulate, wrap_surface
+from visibility import batch_statistic, tile_visibility, visibility_settings
 from spread import (
     busy_windows,
     concentration,
@@ -222,6 +223,11 @@ class Trainer:
         elif self.vis_ema < follow["low"] * follow["target"]:
             self.vis_weight = max(follow["min_weight"], self.vis_weight / (1.0 + follow["rate"]))
 
+    def visibility_quantile(self) -> float:
+        """The batch quantile of the tiles' visibility: the controller's, 0.9 without one."""
+        follow = self.visibility_follow_settings()
+        return 0.9 if follow is None else float(follow["quantile"])
+
     def ramp_scale(self) -> float:
         """The plain schedule: a linear ramp from the trigger step."""
         if self.image_ramp_start is None:
@@ -329,6 +335,10 @@ class Trainer:
         peak_loss = None
         l2_texture_loss = None
         peak = peak_settings(self.cfg)
+        vis_on = visibility_settings(self.cfg)["enabled"]
+        # loss.visibility: the weight is the controller's when follow_visibility is set, else 1.
+        vis_weight = self.vis_weight if self.visibility_follow_settings() is not None else 1.0
+        visible = None
         if image_scale > 0:
             # loss.texture_mask: the L2 loss and the peak penalty see the residual weighted
             # by what each pixel's surroundings can hide (losses.texture_weights).
@@ -348,6 +358,13 @@ class Trainer:
             if self.perceptual is not None:
                 lpips_loss = self.perceptual(out["marked"], tiles)
                 loss = loss + image_scale * weights["lpips_weight"] * lpips_loss
+            if vis_on:
+                visible = tile_visibility(tiles, out["marked"], self.cfg)
+                loss = loss + image_scale * vis_weight * visible["mean"].mean()
+        if vis_on and visible is None:
+            # The image loss is not on yet: measure for the logs only.
+            with torch.no_grad():
+                visible = tile_visibility(tiles, out["marked"].detach(), self.cfg)
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -361,6 +378,13 @@ class Trainer:
         with torch.no_grad():
             metrics: dict = bit_metrics(out["logits"], bits)
             self.update_schedule(metrics["bit_acc"])
+            if visible is not None:
+                seen = batch_statistic(visible["p95"].detach(), self.visibility_quantile()).item()
+                metrics.update(
+                    visibility=seen, visibility_mean=visible["mean"].detach().mean().item(), vis_weight=vis_weight
+                )
+                if math.isfinite(seen):
+                    self.update_visibility(seen)
             metrics.update(
                 loss=loss.item(),
                 bit_loss=bit_loss.item(),
@@ -400,6 +424,9 @@ class Trainer:
         metrics: dict = bit_metrics(out["logits"], bits)
         metrics["psnr"] = psnr(out["marked"], tiles)
         metrics["concentration"] = concentration(out["residual"], self.cfg)
+        if visibility_settings(self.cfg)["enabled"]:
+            seen = tile_visibility(tiles, out["marked"], self.cfg)["p95"]
+            metrics["visibility"] = batch_statistic(seen, self.visibility_quantile()).item()
         if keep_outputs:
             metrics["outputs"] = {"original": tiles, "marked": out["marked"], "view": out["view"]}
         return metrics
@@ -418,6 +445,8 @@ SCALARS = {
     "loss/lpips": "lpips_loss",
     "loss/peak": "peak_loss",
     "image/concentration": "concentration",
+    "image/visibility": "visibility",
+    "schedule/vis_weight": "vis_weight",
     "read/hidden_fraction": "hidden_fraction",
     "schedule/image_loss_scale": "image_scale",
     "schedule/sim_strength": "sim_strength",
@@ -764,6 +793,7 @@ def main() -> int:
     loader_wait_s = 0.0
     # (bit accuracy, PSNR) of the most recent steps, for the report line and the learning check
     recent: deque[tuple[float, float]] = deque(maxlen=max(1, report_every))
+    recent_visibility: deque[float] = deque(maxlen=max(1, report_every))
     stop = StopRequest()
     not_learning = False
     out_of_time = False
@@ -794,6 +824,8 @@ def main() -> int:
             step = trainer.step
             clock.tick()
             recent.append((m["bit_acc"], m["psnr"]))
+            if "visibility" in m and math.isfinite(m["visibility"]):
+                recent_visibility.append(m["visibility"])
             if step % log_cfg["scalar_every"] == 0:
                 log_scalars(writer, m, step)
             if want_images:
@@ -806,13 +838,21 @@ def main() -> int:
                 print(
                     f"step {step:6d}  bit_acc {m['bit_acc']:.3f}  decoded {m['message_correctable']:.2f}  "
                     f"psnr {m['psnr']:.1f} dB  loss {m['loss']:.4f}  image_scale {m['image_scale']:.2f}  "
-                    f"sim {m['sim_strength']:.2f}  spot {m['concentration']:.1f}x  {rate:.2f} it/s",
+                    f"sim {m['sim_strength']:.2f}  spot {m['concentration']:.1f}x  "
+                    + (f"seen {m['visibility']:.2f}  w {m['vis_weight']:.3g}  " if "visibility" in m else "")
+                    + f"{rate:.2f} it/s",
                     flush=True,
                 )
             if report_every and step % report_every == 0:
                 mean_acc = sum(a for a, _ in recent) / len(recent)
                 mean_psnr = sum(p for _, p in recent) / len(recent)
-                print(progress.write(step, mean_acc, mean_psnr, len(recent), clock, m["image_scale"]), flush=True)
+                mean_seen = sum(recent_visibility) / len(recent_visibility) if recent_visibility else None
+                print(
+                    progress.write(
+                        step, mean_acc, mean_psnr, len(recent), clock, m["image_scale"], mean_seen, m.get("vis_weight")
+                    ),
+                    flush=True,
+                )
                 if clock.price_per_hour is not None:
                     writer.add_scalar("run/cost_usd", clock.cost_usd, step)
                 clock.save()

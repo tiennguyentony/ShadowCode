@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import math
 import tempfile
 import time
 from pathlib import Path
@@ -562,6 +563,93 @@ def check_follow_visibility(trainer: Trainer) -> None:
     )
 
 
+def check_visibility_step(trainer: Trainer) -> None:
+    """The visibility loss in a training step, its metrics, the progress columns and notify.py's reading of them."""
+    import csv
+
+    import notify
+    from runlog import PROGRESS_COLUMNS, ProgressLog, RunClock
+
+    base = copy.deepcopy(trainer.cfg)
+    sched = base["schedule"]["image_loss"]
+    sched.update(follow_accuracy=None, ramp_steps=10)
+    sched["follow_visibility"] = {"target": 2.0, "ema": 0.0, "rate": 0.1, "init_weight": 0.01}
+    base["loss"].update(l2_weight=0.0, lpips_weight=0.0)
+    base["loss"]["visibility"] = {"enabled": True, "distance_mm": 500, "masking_floor": None}
+    base["loss"]["texture_mask"] = {**(base["loss"].get("texture_mask") or {}), "enabled": False}
+    base["spread"] = {**(base.get("spread") or {}), "peak_penalty": {"enabled": False}}
+    tiles = torch.from_numpy(
+        np.stack([procedural_image(np.random.default_rng(k), TILE_PX) for k in range(4)])
+    ).permute(0, 3, 1, 2).float().div(255.0)
+
+    def run(cfg: dict, weight: float | None = None, image_on: bool = True) -> tuple[dict, Trainer, list[torch.Tensor]]:
+        torch.manual_seed(1234)
+        probe = Trainer(cfg, trainer.device)
+        if image_on:
+            probe.image_ramp_start, probe.step = 0, 10**6
+        if weight is not None:
+            probe.vis_weight = weight
+        metrics = probe.train_step(tiles)
+        grads = [p.grad.detach().clone() for p in probe.embedder.parameters() if p.grad is not None]
+        return metrics, probe, grads
+
+    m1, probe, g1 = run(base, 0.01)
+    for key in ("visibility", "visibility_mean", "vis_weight"):
+        assert key in m1 and math.isfinite(m1[key]), f"metric {key} missing or not finite: {m1.get(key)}"
+    assert m1["visibility_mean"] > 0, "the visibility of a mark is not above 0"
+    assert sum(g.abs().sum().item() for g in g1) > 0, "the embedder has no gradient"
+    _, _, g2 = run(base, 5.0)
+    assert any(not torch.allclose(a, b) for a, b in zip(g1, g2)), "the embedder gradient does not depend on vis_weight"
+    assert probe.vis_ema is not None and math.isfinite(probe.vis_ema), "update_visibility was not called"
+
+    # Image loss off: the metrics are still there (computed without gradient), the weight stays.
+    m0, probe0, _ = run(base, None, image_on=False)
+    assert math.isfinite(m0["visibility"]) and probe0.vis_ema is None, "ramp 0: metric missing or the controller moved"
+
+    # Disabled: old configs train as before, the loss is the old formula.
+    old = copy.deepcopy(base)
+    old["loss"]["visibility"]["enabled"] = False
+    old["loss"].update(l2_weight=1.0)
+    mo, _, _ = run(old, None)
+    assert "visibility" not in mo and "vis_weight" not in mo, "visibility metrics with loss.visibility off"
+    expected = old["loss"]["bit_weight"] * mo["bit_loss"] + 1.0 * old["loss"]["l2_weight"] * mo["l2_loss"]
+    assert abs(mo["loss"] - expected) <= 1e-4 * max(1.0, abs(expected)), f"old loss changed: {mo['loss']} vs {expected}"
+
+    # Without follow_visibility the weight is 1.0.
+    plain = copy.deepcopy(base)
+    plain["schedule"]["image_loss"]["follow_visibility"] = None
+    mp, _, _ = run(plain, None)
+    expected = plain["loss"]["bit_weight"] * mp["bit_loss"] + mp["visibility_mean"]
+    assert abs(mp["loss"] - expected) <= 1e-4 * max(1.0, abs(expected)), f"weight 1.0 loss: {mp['loss']} vs {expected}"
+
+    ev = probe.evaluate(tiles)
+    assert math.isfinite(ev["visibility"]), "evaluate has no visibility"
+
+    # progress.csv: new columns at the end, read by notify.py; an old header is set aside as before.
+    assert PROGRESS_COLUMNS[-2:] == ["visibility", "vis_weight"], f"columns: {PROGRESS_COLUMNS}"
+    with tempfile.TemporaryDirectory(prefix="tilemark_vis_log_") as tmp:
+        clock = RunClock(tmp, None)
+        log = ProgressLog(tmp)
+        log.write(100, 0.9, 30.0, 100, clock, 0.5, 1.75, 0.02)
+        rows = notify.read_rows(Path(tmp) / "progress.csv")
+        assert rows and rows[-1]["visibility"] == "1.7500" and rows[-1]["vis_weight"].startswith("0.02"), rows
+        text = notify.situation("run", {"progress": rows}, 1000)
+        assert "1.75" in text, "notify does not show the visibility"
+        old_dir = Path(tmp) / "old"
+        old_dir.mkdir()
+        with open(old_dir / "progress.csv", "w", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerow(PROGRESS_COLUMNS[:-2])
+            csv.writer(f).writerow(["t", "1", "0.5", "20", "1", "0.1", "", "0"])
+        old_rows = notify.read_rows(old_dir / "progress.csv")
+        notify.situation("run", {"progress": old_rows}, 1000)  # an older file: no error
+        ProgressLog(old_dir)
+        assert len(list(old_dir.glob("progress_before_*.csv"))) == 1, "an old header was not set aside"
+    print(
+        "visibility step checks passed: metrics finite, the embedder gets a gradient that follows vis_weight, "
+        "the old loss is unchanged with it off, weight 1.0 without the controller, and the log columns read"
+    )
+
+
 def check_center_fraction() -> None:
     """data.center_fraction: crops come from the middle of the image only, and 1.0 changes nothing."""
     size, low, high = 500, 100, 400  # a red frame around a green middle: the central 60 percent of each side
@@ -831,6 +919,7 @@ def run_smoke(
         check_visibility()
         check_follow_accuracy(trainer)
         check_follow_visibility(trainer)
+        check_visibility_step(trainer)
         check_center_fraction()
         check_rotation_tag()
         check_holdout()
