@@ -468,7 +468,7 @@ bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-mi
 (plus `loss.visibility.masking_floor=<floor>` if the sheet gave one). Without
 the target train.py refuses to start. The first lines have to show
 `grating_step 12`, `message_grid 192`, `camera: 231 to 340 px per printed
-tile`, `starting fresh`, `reading check: ... below 0.8 at step 80000` and
+tile`, `visibility loss on: ...` and `visibility controller: target <your target> ...` (check the target here), `starting fresh`, `reading check: ... below 0.8 at step 80000` and
 `the run stops if the fixed-place measure goes above 2.5`.
 
 **The controller weight starts at 0.01, not 1.** The design says 1;

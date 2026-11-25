@@ -731,6 +731,23 @@ def main() -> int:
     if cfg["train"]["reader_input"] == "direct":
         print(DIRECT_NOTICE)
     print(spread_summary(cfg))
+    vis = visibility_settings(cfg)
+    if vis["enabled"]:
+        from visibility import pixels_per_degree
+        tile_mm = float((cfg.get("demo") or {}).get("tile_mm", 50))
+        floor = vis["masking_floor"]
+        print(
+            f"visibility loss on: S-CIELAB masked delta E, {pixels_per_degree(tile_mm, float(vis['distance_mm'])):.1f} px per degree "
+            f"({tile_mm:g} mm tile at {float(vis['distance_mm']) / 10:g} cm), masking floor "
+            + ("default (sqrt of busy/flat texture weights)" if floor is None else f"{float(floor):g}")
+        )
+        vf = trainer.visibility_follow_settings()
+        if vf is not None:
+            print(
+                f"visibility controller: target {vf['target']:g} (the {vf['quantile'] * 100:g}th percentile over the batch's tiles of each tile's p95 masked delta E), "
+                f"ema {vf['ema']:g}, up above target, down below {vf['low']:g} x target, rate {vf['rate']:g} per step, "
+                f"weight starts at {vf['init_weight']:g} within {vf['min_weight']:g} to {vf['max_weight']:g}"
+            )
     follow = trainer.follow_settings()
     if follow is not None:
         print(
