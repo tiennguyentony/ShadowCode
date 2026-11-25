@@ -26,6 +26,9 @@ neutral between portrait and landscape; ``simulation.frame_px: [width,
 height]`` gives any other shape, and nothing here or in geometry.py depends
 on which side is longer.
 
+``simulate_scan`` gives several frames of one hand-held scan: they share
+steps 1 to 3 and the camera resolution, and draw their own noise and JPEG.
+
 Direct mode (the reader gets the camera frame unflattened) is its own path,
 ``_simulate_direct``. There the frame is in camera pixels: the tile is drawn
 at the size the camera shows it, 154 to 340 pixels with the phone settings,
@@ -347,20 +350,31 @@ def jpeg_approx(x: torch.Tensor, quality: torch.Tensor, chroma_subsampling: bool
 # -- colour, noise, resolution ----------------------------------------------
 
 
-def colour_shift(x: torch.Tensor, c: dict, strength: float) -> torch.Tensor:
-    """Gamma, contrast about the image mean, brightness and a per-channel shift."""
-    b = x.shape[0]
+def colour_draws(
+    batch: int, c: dict, strength: float, device, dtype
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The random part of ``colour_shift``: (gamma, contrast, brightness, channel shift), each (B,·,1,1)."""
 
     def signed(*shape: int) -> torch.Tensor:
-        return torch.rand(b, *shape, device=x.device, dtype=x.dtype) * 2 - 1
+        return torch.rand(batch, *shape, device=device, dtype=dtype) * 2 - 1
 
     gamma = torch.exp(signed(1, 1, 1) * c["gamma"] * strength)
-    x = x.clamp(1e-4, 1.0) ** gamma
     contrast = 1.0 + signed(1, 1, 1) * c["contrast"] * strength
+    brightness = signed(1, 1, 1) * c["brightness"] * strength
+    return gamma, contrast, brightness, signed(3, 1, 1) * c["channel_shift"] * strength
+
+
+def apply_colour(x: torch.Tensor, draws: tuple[torch.Tensor, ...]) -> torch.Tensor:
+    """Gamma, contrast about the image mean, brightness and a per-channel shift, from ``colour_draws``."""
+    gamma, contrast, brightness, channel = draws
+    x = x.clamp(1e-4, 1.0) ** gamma
     mean = x.mean(dim=(1, 2, 3), keepdim=True)
-    x = (x - mean) * contrast + mean
-    x = x + signed(1, 1, 1) * c["brightness"] * strength
-    return x + signed(3, 1, 1) * c["channel_shift"] * strength
+    return (x - mean) * contrast + mean + brightness + channel
+
+
+def colour_shift(x: torch.Tensor, c: dict, strength: float) -> torch.Tensor:
+    """Gamma, contrast about the image mean, brightness and a per-channel shift, freshly drawn."""
+    return apply_colour(x, colour_draws(x.shape[0], c, strength, x.device, x.dtype))
 
 
 _warned_no_camera_px = False
@@ -481,26 +495,21 @@ def _simulate_direct(surface: torch.Tensor, cfg: dict, strength: float) -> SimRe
     return SimResult(_sensor(frame, sigma, quality, sim["jpeg"]["chroma_subsampling"]), homography)
 
 
-def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = False) -> SimResult:
-    """Surface -> (camera frame, surface-to-frame homography).
+def _uniform(batch: int, scale: float, strength: float, like: torch.Tensor) -> torch.Tensor:
+    """(B,) uniform in [0, scale * strength], on the device and in the dtype of ``like``."""
+    return torch.rand(batch, device=like.device, dtype=like.dtype) * scale * strength
 
-    ``strength`` is the single knob, 0 to 1. ``direct`` is the mode in which
-    the reader gets the frame unflattened; see ``_simulate_direct``. There the
-    surface is taken as periodic, so one tile is enough, and the frame is
-    TILE_PX square.
 
-    With the simulation disabled the frame is the surface and the homography
-    is the identity. The same holds, without any resampling, in flattened
-    mode when no perspective applies.
+def _scene(surface: torch.Tensor, cfg: dict, strength: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Flattened mode, the part of the simulation one scan shares: perspective, blur and colour.
+
+    Returns (frame, homography, fit), ``fit`` as from ``sample_homography``
+    (ones without perspective). At strength 0 only the perspective step can
+    apply, and it does not.
     """
     sim = cfg["simulation"]
-    b, _, surface_px, _ = surface.shape
-    identity = torch.eye(3, device=surface.device, dtype=surface.dtype).repeat(b, 1, 1)
-    if not sim["enabled"]:
-        return SimResult(surface, identity)
-    if direct:
-        return _simulate_direct(surface, cfg, strength)
     effects = sim["effects"]
+    b, _, surface_px, _ = surface.shape
     on = strength > 0
 
     if effects["perspective"] and on:
@@ -509,31 +518,45 @@ def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = F
         frame = warp(surface, torch.linalg.inv(h64).to(surface), (frame_h, frame_w))
         homography = h64.to(surface)
     else:
+        identity = torch.eye(3, device=surface.device, dtype=surface.dtype).repeat(b, 1, 1)
         frame, homography, fit = surface, identity, torch.ones(b, dtype=torch.float64)
     if not on:
-        return SimResult(frame, homography)
-
-    def uniform(scale: float) -> torch.Tensor:
-        return torch.rand(b, device=surface.device, dtype=surface.dtype) * scale * strength
+        return frame, homography, fit
 
     if effects["blur"]:
         kernels = blur_kernels(
-            uniform(sim["blur"]["defocus_radius_px"]),
-            uniform(sim["blur"]["motion_length_px"]),
+            _uniform(b, sim["blur"]["defocus_radius_px"], strength, surface),
+            _uniform(b, sim["blur"]["motion_length_px"], strength, surface),
             torch.rand(b, device=surface.device, dtype=surface.dtype) * math.pi,
             _blur_kernel_size(sim["blur"]),
         )
         frame = apply_blur(frame, kernels)
-
     if effects["colour"]:
-        frame = colour_shift(frame, sim["colour"], strength)
+        frame = apply_colour(frame, colour_draws(b, sim["colour"], strength, frame.device, frame.dtype))
+    return frame, homography, fit
 
-    sigma = uniform(sim["noise"]["sigma"]) if effects["noise"] else None
-    quality = 100.0 - uniform(100.0 - sim["jpeg"]["min_quality"]) if effects["jpeg"] else None
-    chroma = sim["jpeg"]["chroma_subsampling"]
-    ratios = _camera_ratios(b, cfg, strength, fit) if effects["resolution"] else None
+
+def _sensor_draws(
+    batch: int, cfg: dict, strength: float, like: torch.Tensor
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """One exposure's draws: (noise sigma, JPEG quality), each (B,) or None when its step is off."""
+    sim = cfg["simulation"]
+    effects = sim["effects"]
+    sigma = _uniform(batch, sim["noise"]["sigma"], strength, like) if effects["noise"] else None
+    quality = 100.0 - _uniform(batch, 100.0 - sim["jpeg"]["min_quality"], strength, like) if effects["jpeg"] else None
+    return sigma, quality
+
+
+def _camera(
+    frame: torch.Tensor,
+    sigma: torch.Tensor | None,
+    quality: torch.Tensor | None,
+    ratios: list[float] | None,
+    chroma: bool,
+) -> torch.Tensor:
+    """Loss of resolution down, the sensor (noise, JPEG), and back up: steps 4 to 7. Draws the noise itself."""
     if ratios is None:
-        return SimResult(_sensor(frame, sigma, quality, chroma), homography)
+        return _sensor(frame, sigma, quality, chroma)
 
     # Each sample has its own camera resolution, so each goes down, through
     # the sensor and back up on its own.
@@ -554,7 +577,62 @@ def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = F
         if lossy:
             one = F.interpolate(one, size=(full_h, full_w), mode="bilinear", align_corners=False).clamp(0.0, 1.0)
         out.append(one)
-    return SimResult(torch.cat(out, dim=0), homography)
+    return torch.cat(out, dim=0)
+
+
+def simulate(surface: torch.Tensor, cfg: dict, strength: float, direct: bool = False) -> SimResult:
+    """Surface -> (camera frame, surface-to-frame homography).
+
+    ``strength`` is the single knob, 0 to 1. ``direct`` is the mode in which
+    the reader gets the frame unflattened; see ``_simulate_direct``. There the
+    surface is taken as periodic, so one tile is enough, and the frame is
+    TILE_PX square.
+
+    With the simulation disabled the frame is the surface and the homography
+    is the identity. The same holds, without any resampling, in flattened
+    mode when no perspective applies.
+
+    Random draws, in this order: pose, blur, colour, noise sigma, JPEG
+    quality, camera resolution, then the noise itself. ``simulate_scan``
+    keeps that order, so a one-frame scan is this function.
+    """
+    sim = cfg["simulation"]
+    b = surface.shape[0]
+    if not sim["enabled"]:
+        return SimResult(surface, torch.eye(3, device=surface.device, dtype=surface.dtype).repeat(b, 1, 1))
+    if direct:
+        return _simulate_direct(surface, cfg, strength)
+    frame, homography, fit = _scene(surface, cfg, strength)
+    if not strength > 0:
+        return SimResult(frame, homography)
+    sigma, quality = _sensor_draws(b, cfg, strength, surface)
+    ratios = _camera_ratios(b, cfg, strength, fit) if sim["effects"]["resolution"] else None
+    return SimResult(_camera(frame, sigma, quality, ratios, sim["jpeg"]["chroma_subsampling"]), homography)
+
+
+def simulate_scan(surface: torch.Tensor, cfg: dict, strength: float, frames: int) -> list[SimResult]:
+    """Several frames of one hand-held scan of the surface: flattened mode only.
+
+    The frames of a scan share what a scan shares: the pose (the homography,
+    the same tensor in every frame), the blur, the colour shift and the
+    camera resolution, all drawn once per sample. Each frame draws its own
+    sensor noise (sigma and the noise) and JPEG quality. ``frames=1`` gives
+    exactly what ``simulate`` gives under the same seed.
+    """
+    if frames < 1:
+        raise ValueError(f"a scan needs at least one frame, got {frames}")
+    sim = cfg["simulation"]
+    b = surface.shape[0]
+    if not sim["enabled"]:
+        identity = torch.eye(3, device=surface.device, dtype=surface.dtype).repeat(b, 1, 1)
+        return [SimResult(surface, identity)] * frames
+    frame, homography, fit = _scene(surface, cfg, strength)
+    if not strength > 0:
+        return [SimResult(frame, homography)] * frames
+    exposures = [_sensor_draws(b, cfg, strength, surface) for _ in range(frames)]
+    ratios = _camera_ratios(b, cfg, strength, fit) if sim["effects"]["resolution"] else None
+    chroma = sim["jpeg"]["chroma_subsampling"]
+    return [SimResult(_camera(frame, sigma, quality, ratios, chroma), homography) for sigma, quality in exposures]
 
 
 # -- the locator's view -----------------------------------------------------

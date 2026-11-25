@@ -12,15 +12,29 @@ cut to one tile from the middle of the photo; with ``data.source:
 generated_labels``, on the tiles of labelgen.ACCEPTANCE_SEEDS (held-out seeds
 0 to 255) instead. Either way, with random bits that are the
 same every time. Both models in eval mode, the camera simulation at full
-strength, the reader given a flattened patch. One simulated shot per tile
-unless --views says more. For each strength of the mark (the ``alpha``
-argument of ``Embedder.forward``; the models were trained at one of them):
+strength, the reader given a flattened patch. For each strength of the mark
+(the ``alpha`` argument of ``Embedder.forward``; the models were trained at
+one of them):
 
     read     share of tiles with at most 4 wrong bits among the first 63,
-             which is what the BCH code can correct. PASS at 0.80 or more.
-             Also the mean bit accuracy and the share with all 64 bits right.
+             which is what the BCH code can correct, two ways.
+             1 frame: one simulated shot per tile (--views says more, each
+             read on its own), with the mean bit accuracy and the share with
+             all 64 bits right. No pass line.
+             3 correlated frames: one simulated scan of 3 frames per tile
+             (simulate.simulate_scan: pose, blur, colour and camera
+             resolution shared; noise, JPEG and the flattened patch drawn
+             per frame), read by averaging the logits, as the app does.
+             PASS at 0.80 or more.
     spread   the fixed-place measure of the spread check (spread.py).
              PASS below 2.5.
+    visible  p95 of the masked S-CIELAB delta E of each tile (visibility.py):
+             the share of tiles at or below
+             schedule.image_loss.follow_visibility.target, and the same share
+             among the flat tiles (half or more of the tile flat,
+             content_scores). PASS at 0.95 or more of all tiles. Without a
+             target, or with loss.visibility off: the median and 90th
+             percentile of the p95 instead, and no pass line.
     seen     PSNR of the marked tile against the original, in dB: the mean
              over the tiles and the mean of the worst tenth. No pass line.
 
@@ -29,7 +43,8 @@ photographed 9 times by the simulation, each time with fresh random draws,
 and read from the first K shots (K = 1, 3, 5, 9) by averaging the reader's
 logits before taking the bits. Share within reach of the error correction
 and mean bit accuracy per K and alpha. This is simulated: real frames of one
-hand-held scan are less independent than these shots.
+hand-held scan are less independent than these shots, which is why the pass
+line reads correlated frames instead. For information only.
 
 Writes into runs/acceptance/<step>/:
 
@@ -68,15 +83,19 @@ from config import load_config
 from constants import MESSAGE_BITS, TILE_PX
 from data import CenterFraction, data_source, generated_tiles, holdout_images, list_images, load_rgb
 from geometry import flatten_random_patch
-from simulate import simulate, wrap_surface
+from simulate import simulate, simulate_scan, wrap_surface
 from spread import busy_windows, local_energy, spread_report
 from train import BCH_CODEWORD_BITS, BCH_CORRECTABLE, Trainer
+from visibility import tile_visibility, visibility_settings
 from viz import save_image
 
 HERE = Path(__file__).resolve().parent
 ALPHAS = (0.30, 0.25, 0.20, 0.15)
 IMAGES = 256
-MIN_DECODED = 0.80      # share of tiles within reach of the error correction
+MIN_DECODED = 0.80      # share of tiles within reach of the error correction, read from SCAN_FRAMES frames
+SCAN_FRAMES = 3         # correlated frames of one scan whose logits the app averages
+MIN_UNDER_TARGET = 0.95  # share of tiles whose p95 masked delta E is at or below follow_visibility.target
+FLAT_TILE = 0.5         # a tile counts as flat when at least this share of it is flat (content_scores)
 MAX_FIXED_PLACE = 2.5
 BLIND_PAIRS = 10        # of each kind
 # A 48 px window counts as flat when the grey image differs from a 9 px blur
@@ -134,17 +153,58 @@ def read_shots(
         this_shot = []
         for start in range(0, len(tiles), chunk):
             tile = tiles[start : start + chunk].to(device)
-            message = bits[start : start + chunk].to(device)
-            marked = (tile + trainer.embedder(tile, message, alpha=alpha)).clamp(0.0, 1.0)
+            marked = _embed(trainer, tile, bits[start : start + chunk].to(device), alpha)
             shot = simulate(wrap_surface(marked, repeat), cfg, strength)
             patch, _ = flatten_random_patch(shot.frame, shot.homography, tile_px=TILE_PX, corner_jitter_px=jitter)
             this_shot.append(trainer.reader(patch).float().cpu())
             if shot_index == 0:
-                mse = (marked - tile).pow(2).mean(dim=(1, 2, 3)).clamp_min(1e-10)
-                psnr.append((-10.0 * torch.log10(mse)).cpu())
+                psnr.append(_psnr(tile, marked))
                 marked_all.append(marked.cpu())
         logits.append(torch.cat(this_shot))
     return torch.stack(logits), torch.cat(psnr), torch.cat(marked_all)
+
+
+def _embed(trainer: Trainer, tile: torch.Tensor, message: torch.Tensor, alpha: float) -> torch.Tensor:
+    """The marked tile, clamped to [0, 1]."""
+    return (tile + trainer.embedder(tile, message, alpha=alpha)).clamp(0.0, 1.0)
+
+
+def _psnr(tile: torch.Tensor, marked: torch.Tensor) -> torch.Tensor:
+    """PSNR of each marked tile against its original, in dB, on the CPU."""
+    mse = (marked - tile).pow(2).mean(dim=(1, 2, 3)).clamp_min(1e-10)
+    return (-10.0 * torch.log10(mse)).cpu()
+
+
+@torch.no_grad()
+def read_scans(
+    trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alpha: float, frames: int, seed: int, chunk: int = 8
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Embed at ``alpha`` once, take one simulated scan of ``frames`` correlated frames at full strength, flatten, read.
+
+    The frames of a tile's scan share the pose, blur, colour and camera
+    resolution (simulate.simulate_scan); each frame has its own noise, JPEG
+    quality and flattened patch (offset and corner jitter), as the app's
+    frames of one scan would. Returns what read_shots returns, with frames in
+    place of shots: logits (frames, N, 64), PSNR (N,) and the marked tiles on
+    the CPU. Seeded, so every alpha is scanned the same way.
+    """
+    cfg, device = trainer.cfg, trainer.device
+    strength = float(cfg["schedule"]["sim_strength"]["max_strength"])
+    repeat, jitter = int(cfg["surface"]["repeat"]), float(cfg["flatten"]["corner_jitter_px"])
+    trainer.embedder.eval()
+    trainer.reader.eval()
+    logits: list[list[torch.Tensor]] = [[] for _ in range(frames)]
+    marked_all, psnr = [], []
+    torch.manual_seed(seed)
+    for start in range(0, len(tiles), chunk):
+        tile = tiles[start : start + chunk].to(device)
+        marked = _embed(trainer, tile, bits[start : start + chunk].to(device), alpha)
+        for index, shot in enumerate(simulate_scan(wrap_surface(marked, repeat), cfg, strength, frames)):
+            patch, _ = flatten_random_patch(shot.frame, shot.homography, tile_px=TILE_PX, corner_jitter_px=jitter)
+            logits[index].append(trainer.reader(patch).float().cpu())
+        psnr.append(_psnr(tile, marked))
+        marked_all.append(marked.cpu())
+    return torch.stack([torch.cat(frame) for frame in logits]), torch.cat(psnr), torch.cat(marked_all)
 
 
 def read_tiles(
@@ -179,11 +239,70 @@ def vote(logits: torch.Tensor, bits: torch.Tensor, counts: tuple[int, ...] | lis
     return rows
 
 
+def visibility_target(trainer: Trainer) -> float | None:
+    """``schedule.image_loss.follow_visibility.target``, or None when it is unset or ``loss.visibility`` is off."""
+    follow = trainer.visibility_follow_settings()
+    if follow is None or not visibility_settings(trainer.cfg)["enabled"]:
+        return None
+    return follow["target"]
+
+
+@torch.no_grad()
+def visibility_p95(tiles: torch.Tensor, marked: torch.Tensor, cfg: dict, device: torch.device, chunk: int = 16) -> torch.Tensor:
+    """Per tile, the 95th percentile of the masked S-CIELAB delta E of the mark (visibility.tile_visibility), (N,)."""
+    parts = []
+    for start in range(0, len(tiles), chunk):
+        seen = tile_visibility(tiles[start : start + chunk].to(device), marked[start : start + chunk].to(device), cfg)
+        parts.append(seen["p95"].float().cpu())
+    return torch.cat(parts)
+
+
+def visibility_summary(p95: torch.Tensor, flat: torch.Tensor, target: float | None) -> dict:
+    """The visibility numbers. ``flat`` is (N,) of bool.
+
+    Always the median and 90th percentile of the p95, over all tiles and over
+    the flat ones. With a target also the share of tiles at or below it, all
+    and flat, and the pass (on all tiles); without one those are None.
+    """
+
+    def quantiles(values: torch.Tensor) -> tuple[float | None, float | None]:
+        if len(values) == 0:
+            return None, None
+        return values.median().item(), torch.quantile(values, 0.9).item()
+
+    median, p90 = quantiles(p95)
+    flat_median, flat_p90 = quantiles(p95[flat])
+    out = {
+        "visibility_target": target,
+        "visibility_p95_median": median,
+        "visibility_p95_p90": p90,
+        "flat_tiles": int(flat.sum()),
+        "visibility_flat_p95_median": flat_median,
+        "visibility_flat_p95_p90": flat_p90,
+        "under_target": None,
+        "under_target_flat": None,
+        "visibility_pass": None,
+    }
+    if target is not None:
+        # Counted in Python floats: a float32 mean puts 19 of 20 just under 0.95.
+        under = p95 <= target
+        out["under_target"] = int(under.sum()) / len(under)
+        out["under_target_flat"] = int(under[flat].sum()) / int(flat.sum()) if bool(flat.any()) else None
+        out["visibility_pass"] = out["under_target"] >= MIN_UNDER_TARGET
+    return out
+
+
 def measure(trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alpha: float, views: int, seed: int) -> dict:
     """The acceptance numbers for one strength of the mark."""
-    wrong, psnr, _ = read_tiles(trainer, tiles, bits, alpha, views, seed)
+    wrong, psnr, marked = read_tiles(trainer, tiles, bits, alpha, views, seed)
+    scan_logits, _, _ = read_scans(trainer, tiles, bits, alpha, SCAN_FRAMES, seed)
+    (scan,) = vote(scan_logits, bits, (SCAN_FRAMES,))
     spread = spread_report(AtAlpha(trainer.embedder, alpha), tiles, bits, trainer.cfg, busy_windows(tiles, trainer.cfg))
     trainer.embedder.eval()  # spread_report leaves it in training mode
+    _, flat_share = content_scores(tiles, trainer.cfg)
+    seen = visibility_summary(
+        visibility_p95(tiles, marked, trainer.cfg, trainer.device), flat_share >= FLAT_TILE, visibility_target(trainer)
+    )
     worst = psnr.sort().values[: max(1, math.ceil(0.1 * len(psnr)))]
     decoded = (wrong[:, :BCH_CODEWORD_BITS].sum(dim=1) <= BCH_CORRECTABLE).float().mean().item()
     return {
@@ -191,39 +310,83 @@ def measure(trainer: Trainer, tiles: torch.Tensor, bits: torch.Tensor, alpha: fl
         "images": len(tiles),
         "reads": len(wrong),
         "decoded": decoded,
-        "decoded_pass": decoded >= MIN_DECODED,
         "bit_accuracy": 1.0 - wrong.float().mean().item(),
         "all_64_right": (wrong.sum(dim=1) == 0).float().mean().item(),
+        "scan_frames": SCAN_FRAMES,
+        "decoded_scan": scan["decoded"],
+        "decoded_pass": scan["decoded"] >= MIN_DECODED,
+        "scan_bit_accuracy": scan["bit_accuracy"],
+        "scan_all_64_right": scan["all_64_right"],
         "fixed_place": spread["fixed_place"],
         "fixed_place_pass": spread["fixed_place"] < MAX_FIXED_PLACE,
         "strongest_spot": spread["strongest_spot"],
+        **seen,
         "psnr_mean_db": psnr.mean().item(),
         "psnr_worst_tenth_db": worst.mean().item(),
     }
+
+
+def visibility_cell(r: dict) -> str:
+    """The visibility column: the share under the target with its verdict, or the p95 distribution without one."""
+
+    def number(value: float | None, digits: int) -> str:
+        return "n/a" if value is None else f"{value:.{digits}f}"
+
+    if r["visibility_target"] is not None:
+        verdict = "PASS" if r["visibility_pass"] else "FAIL"
+        return f"{r['under_target']:.3f} {verdict}; flat tiles ({r['flat_tiles']}) {number(r['under_target_flat'], 3)}"
+    return (
+        f"p95 median {number(r['visibility_p95_median'], 2)}, 90th percentile {number(r['visibility_p95_p90'], 2)}; "
+        f"flat tiles ({r['flat_tiles']}) {number(r['visibility_flat_p95_median'], 2)}, "
+        f"{number(r['visibility_flat_p95_p90'], 2)}"
+    )
 
 
 def table(rows: list[dict]) -> str:
     def verdict(passed: bool) -> str:
         return "PASS" if passed else "FAIL"
 
+    target = rows[0]["visibility_target"] if rows else None
+    seen = f"Share with p95 at most {target:g}" if target is not None else "Visibility (p95), no target"
+    frames = rows[0]["scan_frames"] if rows else SCAN_FRAMES
     lines = [
-        "| Alpha | At most 4 wrong of the first 63 | Bit accuracy | All 64 right | Fixed place | PSNR mean, dB | PSNR worst tenth, dB |",
-        "|---|---|---|---|---|---|---|",
+        f"| Alpha | Decodable, 1 frame | Decodable, {frames} correlated frames | Bit accuracy, 1 frame | "
+        f"All 64 right, 1 frame | Fixed place | {seen} | PSNR mean, dB | PSNR worst tenth, dB |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         lines.append(
-            f"| {r['alpha']:.2f} | {r['decoded']:.3f} {verdict(r['decoded_pass'])} | {r['bit_accuracy']:.3f} | "
-            f"{r['all_64_right']:.3f} | {r['fixed_place']:.2f} {verdict(r['fixed_place_pass'])} | "
+            f"| {r['alpha']:.2f} | {r['decoded']:.3f} | {r['decoded_scan']:.3f} {verdict(r['decoded_pass'])} | "
+            f"{r['bit_accuracy']:.3f} | {r['all_64_right']:.3f} | "
+            f"{r['fixed_place']:.2f} {verdict(r['fixed_place_pass'])} | {visibility_cell(r)} | "
             f"{r['psnr_mean_db']:.1f} | {r['psnr_worst_tenth_db']:.1f} |"
         )
     return "\n".join(lines)
+
+
+def pass_lines(target: float | None) -> str:
+    """The PASS line text of results.md, naming the three pass lines."""
+    seen = (
+        f"visibility: p95 masked delta E at most {target:g} (schedule.image_loss.follow_visibility.target) "
+        f"on at least {MIN_UNDER_TARGET:.2f} of the tiles, flat tiles shown apart"
+        if target is not None
+        else "visibility: p95 masked delta E at most schedule.image_loss.follow_visibility.target on at least "
+        f"{MIN_UNDER_TARGET:.2f} of the tiles, not judged here: this config has no such target with "
+        "loss.visibility on, so the p95 median and 90th percentile are shown instead"
+    )
+    return (
+        f"PASS lines: (1) reading: at most 4 wrong bits of the first 63 on at least {MIN_DECODED:.2f} of the tiles, "
+        f"read from {SCAN_FRAMES} correlated frames of one simulated scan with the logits averaged; "
+        f"(2) fixed place below {MAX_FIXED_PLACE:g}; (3) {seen}. The 1-frame columns and PSNR have none."
+    )
 
 
 MULTI_SHOT_NOTE = (
     "Simulated: each shot is an independent draw of the camera simulation (tilt, blur, colour, resolution, "
     "noise and JPEG all drawn afresh, and a fresh flattened patch). Real frames from one hand-held scan share "
     "the light, the angle, the distance and the camera, so they are less independent than this, and averaging "
-    "them gains less than these rows show."
+    "them gains less than these rows show. For information only: the pass line reads correlated frames "
+    "(the main table's correlated-frames column)."
 )
 
 
@@ -464,8 +627,7 @@ def main() -> int:
         f"Checkpoint `{path.as_posix()}`. Eval mode, simulation at full strength, flattened reader input, "
         f"{args.views} simulated shot{'s' if args.views != 1 else ''} per tile, fixed bits. "
         f"The models were trained at alpha {trained_alpha:g}.\n\n"
-        f"PASS lines: at most 4 wrong bits of the first 63 on at least {MIN_DECODED:.2f} of the tiles; "
-        f"fixed place below {MAX_FIXED_PLACE:g}. PSNR has none.\n\n" + "\n".join(report) + "\n"
+        f"{pass_lines(visibility_target(trainer))}\n\n" + "\n".join(report) + "\n"
     )
     (directory / "results.md").write_text(text, encoding="utf-8")
     (directory / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")

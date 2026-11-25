@@ -845,7 +845,111 @@ def check_multi_shot() -> None:
         pass
     else:
         raise AssertionError("asking for 5 shots of 3 was accepted")
-    print("multi-shot checks passed: averaged logits outvote a weak wrong shot; K uses exactly the first K shots")
+
+    # The visibility pass line: share of tiles with p95 at most the target, flat tiles apart; none without a target.
+    from acceptance import MIN_UNDER_TARGET, visibility_summary
+
+    p95 = torch.tensor([0.5] * 19 + [3.0])
+    flat = torch.tensor([False] * 16 + [True] * 4)
+    seen = visibility_summary(p95, flat, 2.0)
+    assert seen["under_target"] == 0.95 and seen["visibility_pass"] is (0.95 >= MIN_UNDER_TARGET), seen
+    assert seen["under_target_flat"] == 0.75 and seen["flat_tiles"] == 4, seen
+    assert not visibility_summary(p95, flat, 0.4)["visibility_pass"], "no tile under 0.4, yet a pass"
+    seen = visibility_summary(p95, flat, None)
+    assert seen["visibility_pass"] is None and seen["under_target"] is None, f"a pass line without a target: {seen}"
+    assert seen["visibility_p95_median"] == 0.5 and seen["visibility_flat_p95_median"] == 0.5, seen
+    print(
+        "multi-shot checks passed: averaged logits outvote a weak wrong shot; K uses exactly the first K shots; "
+        "visibility pass line counts tiles under the target, flat tiles apart, none without a target"
+    )
+
+
+def check_scan(trainer: Trainer) -> None:
+    """simulate_scan: the frames of one scan share pose, blur, colour and camera resolution; noise and JPEG are per frame.
+
+    On the CPU with every effect on, at full strength. Also: one frame of a
+    scan is simulate itself (same draws in the same order), and over 256
+    samples it draws blur, colour and resolution from the same distributions.
+    """
+    import simulate as sim_module
+    from simulate import simulate_scan
+
+    cfg = copy.deepcopy(trainer.cfg)
+    cfg["simulation"]["enabled"] = True
+    cfg["simulation"]["effects"] = {name: True for name in cfg["simulation"]["effects"]}
+    assert cfg.get("camera_px_per_tile") is not None, "check_scan needs camera_px_per_tile for the resolution step"
+    generator = torch.Generator().manual_seed(0)
+    coarse = torch.rand(2, 3, 12, 12, generator=generator)
+    surface = F.interpolate(coarse, size=(3 * TILE_PX, 3 * TILE_PX), mode="bicubic", align_corners=False).clamp(0.0, 1.0)
+
+    torch.manual_seed(0)
+    scan = simulate_scan(surface, cfg, 1.0, frames=3)
+    assert len(scan) == 3, f"3 frames asked for, {len(scan)} given"
+    for i, shot in enumerate(scan[1:], start=2):
+        assert torch.equal(shot.homography, scan[0].homography), f"frame {i} has its own pose"
+        gap = (shot.frame - scan[0].frame).abs().amax(dim=(1, 2, 3)).min().item()
+        assert gap > 1e-3, f"frame {i} is frame 1 again (largest difference {gap:.2e}) with noise and JPEG on"
+
+    quiet = copy.deepcopy(cfg)
+    quiet["simulation"]["effects"]["noise"] = quiet["simulation"]["effects"]["jpeg"] = False
+    torch.manual_seed(0)
+    scan = simulate_scan(surface, quiet, 1.0, frames=3)
+    for i, shot in enumerate(scan[1:], start=2):
+        assert torch.equal(shot.frame, scan[0].frame), "with noise and JPEG off, the frames of a scan differ"
+
+    torch.manual_seed(1)
+    single = simulate(surface, cfg, 1.0)
+    torch.manual_seed(1)
+    (first,) = simulate_scan(surface, cfg, 1.0, frames=1)
+    assert torch.equal(first.homography, single.homography), "a one-frame scan does not draw the pose simulate draws"
+    assert torch.equal(first.frame, single.frame), "a one-frame scan is not simulate under the same seed"
+
+    # Distributions over 256 samples, with different seeds: perspective off and
+    # a small surface keep it cheap. Each draw is recorded as it is made.
+    draws = copy.deepcopy(cfg)
+    draws["simulation"]["effects"]["perspective"] = False
+    small = torch.rand(256, 3, 32, 32, generator=generator)
+    originals = {name: getattr(sim_module, name) for name in ("blur_kernels", "colour_draws", "_camera_ratios")}
+
+    def recorded(run) -> dict[str, torch.Tensor]:
+        seen: dict[str, list[torch.Tensor]] = {"defocus": [], "motion": [], "colour": [], "ratio": []}
+
+        def blur_kernels(defocus, motion, angle, size):
+            seen["defocus"].append(defocus.detach().double().cpu())
+            seen["motion"].append(motion.detach().double().cpu())
+            return originals["blur_kernels"](defocus, motion, angle, size)
+
+        def colour_draws(*args, **kwargs):
+            out = originals["colour_draws"](*args, **kwargs)
+            seen["colour"].append(torch.cat([part.detach().double().cpu().flatten(1) for part in out], dim=1))
+            return out
+
+        def camera_ratios(*args, **kwargs):
+            out = originals["_camera_ratios"](*args, **kwargs)
+            seen["ratio"].append(torch.tensor(out, dtype=torch.float64))
+            return out
+
+        sim_module.blur_kernels, sim_module.colour_draws, sim_module._camera_ratios = blur_kernels, colour_draws, camera_ratios
+        try:
+            run()
+        finally:
+            for name, function in originals.items():
+                setattr(sim_module, name, function)
+        return {name: torch.cat(values) for name, values in seen.items()}
+
+    torch.manual_seed(2)
+    a = recorded(lambda: simulate(small, draws, 1.0))
+    torch.manual_seed(3)
+    b = recorded(lambda: simulate_scan(small, draws, 1.0, frames=1))
+    for name in a:
+        assert a[name].shape == b[name].shape == (256, *a[name].shape[1:]), f"{name}: {a[name].shape} and {b[name].shape} draws"
+        error = (a[name].var(dim=0) / 256 + b[name].var(dim=0) / 256).sqrt()
+        off = ((a[name].mean(dim=0) - b[name].mean(dim=0)).abs() / error.clamp_min(1e-12)).max().item()
+        assert off < 4.5, f"{name}: a one-frame scan draws {off:.1f} standard errors away from simulate"
+    print(
+        "scan checks passed: frames share the pose exactly, differ only by noise and JPEG, one frame is simulate, "
+        "blur, colour and resolution drawn alike"
+    )
 
 
 def check_locator_view() -> None:
@@ -1008,6 +1112,7 @@ def run_smoke(
         check_holdout()
         check_generated_labels()
         check_multi_shot()
+        check_scan(trainer)
         check_locator_view()
         check_reading_check(str(device))
 
