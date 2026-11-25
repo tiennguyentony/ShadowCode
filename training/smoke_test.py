@@ -633,8 +633,14 @@ def check_visibility_step(trainer: Trainer) -> None:
         log.write(100, 0.9, 30.0, 100, clock, 0.5, 1.75, 0.02)
         rows = notify.read_rows(Path(tmp) / "progress.csv")
         assert rows and rows[-1]["visibility"] == "1.7500" and rows[-1]["vis_weight"].startswith("0.02"), rows
-        text = notify.situation("run", {"progress": rows}, 1000)
-        assert "1.75" in text, "notify does not show the visibility"
+        view = {"progress": rows, "spread": []}
+        spread_row = {"step": "100", "local_time": "t", "fixed_place": "1", "strongest_spot": "1", "square_share": "0.1",
+                      "busy_share": "0.5", "psnr_db": "30", "psnr_fixed_db": "30", "bit_acc": "0.9"}
+        for what, text in (
+            ("situation", notify.situation("run", view, 1000)),
+            ("report_text", notify.report_text("run", spread_row, view, 1000)[1]),
+        ):
+            assert "visibility 1.75" in text and "weight 0.02" in text, f"notify.{what} does not show the visibility and its weight"
         old_dir = Path(tmp) / "old"
         old_dir.mkdir()
         with open(old_dir / "progress.csv", "w", encoding="utf-8", newline="") as f:
@@ -642,6 +648,7 @@ def check_visibility_step(trainer: Trainer) -> None:
             csv.writer(f).writerow(["t", "1", "0.5", "20", "1", "0.1", "", "0"])
         old_rows = notify.read_rows(old_dir / "progress.csv")
         notify.situation("run", {"progress": old_rows}, 1000)  # an older file: no error
+        notify.report_text("run", spread_row, {"progress": old_rows, "spread": []}, 1000)
         ProgressLog(old_dir)
         assert len(list(old_dir.glob("progress_before_*.csv"))) == 1, "an old header was not set aside"
     print(

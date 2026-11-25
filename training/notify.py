@@ -230,7 +230,7 @@ class LocatorRun(LaptopRun):
             body += ["Latest held-out rows:", *self.table(view["spread"], 4), ""]
         if view.get("progress"):
             last = view["progress"][-1]
-            body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}" + visibility_text(last), *self.pace(view["progress"], total_steps), ""]
+            body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}", *self.pace(view["progress"], total_steps), ""]
         if view.get("console"):
             body += [f"Last {min(console_lines, len(view['console']))} console lines of {self.name}:", *view["console"][-console_lines:]]
         return "\n".join(body)
@@ -401,11 +401,13 @@ def number(text: str | None, digits: int) -> str:
 
 
 def visibility_text(row: dict) -> str:
-    """Text for the progress row's visibility and its weight, or "" for an older file or a run without the loss."""
-    if not row.get("visibility"):
-        return ""
-    text = f", visibility {number(row['visibility'], 2)}"
-    return text + (f", visibility weight {float(row['vis_weight']):.3g}" if row.get("vis_weight") else "")
+    """The progress row's visibility and its weight, each when present; "" for an older file or a run without the loss."""
+    parts = []
+    if row.get("visibility"):
+        parts.append(f"visibility {number(row['visibility'], 2)} (masked S-CIELAB delta E, mean of the report window)")
+    if row.get("vis_weight"):
+        parts.append(f"visibility-loss weight {number(row['vis_weight'], 4)}")
+    return ", ".join(parts)
 
 
 def pace(progress: list[dict], total_steps: int) -> list[str]:
@@ -416,6 +418,8 @@ def pace(progress: list[dict], total_steps: int) -> list[str]:
     lines = [f"Training time so far: {number(last['elapsed_hours'], 2)} h"]
     if last.get("cost_usd"):
         lines[0] += f", cost so far ${number(last['cost_usd'], 2)} (price per hour times training time)"
+    if visibility_text(last):
+        lines.append(f"Last row: {visibility_text(last)}")
     recent = progress[-6:]
     hours = float(recent[-1]["elapsed_hours"]) - float(recent[0]["elapsed_hours"])
     steps = int(recent[-1]["step"]) - int(recent[0]["step"])
@@ -471,8 +475,7 @@ def situation(name: str, view: dict, total_steps: int, console_lines: int = 30) 
         body += ["Latest spread rows:", *table(view["spread"], 4), ""]
     if view.get("progress"):
         last = view["progress"][-1]
-        body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}, bit accuracy {last['bit_acc']}, PSNR {last['psnr_db']} dB"
-                 + visibility_text(last),
+        body += [f"Last progress row: step {int(last['step']):,} at {last['utc_time']}, bit accuracy {last['bit_acc']}, PSNR {last['psnr_db']} dB",
                  *pace(view["progress"], total_steps), ""]
     if view.get("console"):
         body += [f"Last {min(console_lines, len(view['console']))} console lines of {name}:", *view["console"][-console_lines:]]

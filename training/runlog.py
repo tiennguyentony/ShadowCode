@@ -138,7 +138,8 @@ class ProgressLog:
             f"[report] step {step:7d}  bit_acc {bit_acc:.3f}  psnr {psnr_db:.1f} dB  "
             f"(mean of last {steps_averaged} steps)  "
             + ("" if image_scale is None else f"image-loss weight {image_scale:.3f}  ")
-            + ("" if visibility is None else f"seen {visibility:.2f}  vis weight {vis_weight:.3g}  ")
+            + ("" if visibility is None else f"seen {visibility:.2f}  ")
+            + ("" if vis_weight is None else f"vis weight {vis_weight:.3g}  ")
             + f"{clock.elapsed_seconds / 3600.0:.2f} h  {clock.cost_text()}"
         )
 

@@ -203,7 +203,7 @@ def tile_visibility(clean: torch.Tensor, marked: torch.Tensor, cfg: dict) -> dic
     tile_mm = float((cfg.get("demo") or {}).get("tile_mm", 50))
     ppd = pixels_per_degree(tile_mm, float(s["distance_mm"]), clean.shape[-1])
     masked = delta_e_map(clean, marked, ppd) * masking_factor(clean, cfg)
-    return {"map": masked, "mean": masked.mean(dim=(1, 2, 3)), "p95": _row_quantile(masked.flatten(1), 0.95)}
+    return {"map": masked, "mean": masked.mean(dim=(1, 2, 3)), "p95": _row_quantile(masked.detach().flatten(1), 0.95)}
 
 
 def batch_statistic(p95: torch.Tensor, quantile: float = 0.9) -> torch.Tensor:
