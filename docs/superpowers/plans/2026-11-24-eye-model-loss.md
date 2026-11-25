@@ -22,7 +22,7 @@
 - Viewing geometry: tile 50 mm (`demo.tile_mm`), viewing distance 500 mm, so **67.1 pixels per degree** for the 384 px tile.
 - Camera range for the new run: `camera_px_per_tile: [231, 340]`, `band.max_step: 12` (auto picks step 12: 24 to 76.8 cycles per tile, `message_grid` 192).
 - Masking floor: sqrt(0.25 / 1.5) = **0.408** unless the calibration raises it.
-- Controller: quantile **0.9** over the batch's per-tile values, EMA **0.98**, up above target, down below **0.9 x target**, rate **4.6e-4**, weight bounds **[0.01, 1000]**.
+- Controller: quantile **0.96** over a window of the last **256** per-tile values, across steps (was 0.9 over the batch's per-tile values; changed by the final review, 2026-11-24, see the spec's section 2), EMA **0.98**, up above target, down below **0.9 x target**, rate **4.6e-4**, weight bounds **[0.01, 1000]**.
 - Pass lines:
   - decodable (at most 4 wrong of the first 63 bits) at least **0.80** with **3 correlated frames** averaged;
   - at least **95 percent** of held-out tiles at or under the target;
@@ -147,7 +147,7 @@
 - [ ] **Step 3: Implement it.**
   - The image loss is `ramp × vis_weight × mean(tile_visibility(tiles, out["marked"], cfg)["mean"])`, where `ramp` is `image_loss_scale()`.
   - The peak penalty keeps `ramp × peak weight` and is not multiplied by `vis_weight`.
-  - `update_visibility` gets `batch_statistic(p95, quantile)`.
+  - `update_visibility` gets `batch_statistic(p95, quantile)`. (Final review: it now gets `observe_visibility(p95)`, the 0.96 quantile of a 256-tile window; defaults `quantile 0.96, window 256`.)
   - Console line: add `seen {visibility:.2f}  w {vis_weight:.3g}`.
   - TensorBoard: `image/visibility`, `schedule/vis_weight`.
   - Progress row: the mean `visibility` over the report window and the last `vis_weight`; columns appended at the end of `PROGRESS_COLUMNS`.
@@ -310,7 +310,7 @@
   - it prints band step 12 (24 to 76.8), range 231 to 340, the visibility settings and the target;
   - it trains 40 steps and saves.
 
-  Record the seconds per step and the checkpoint size in `docs/runs.md`. Set `checkpoint.keep` so keep × size + 0.3 GB (the kept bundle) + 2.7 GB (already on the volume) stays under 9 GB of the 10 GB volume.
+  Record the seconds per step and the checkpoint size in `docs/runs.md`. Set `checkpoint.keep` so keep × size + 0.3 GB (the kept bundle) + 2.7 GB (already on the volume) stays under 9 GB of the 10 GB volume. (Final review: the 2.7 GB figure is stale; keep is 8 and RUNPOD.md measures the volume before the run.)
 - [ ] **Step 4: Export a bundle from that 40-step checkpoint into a temp folder.** `contract.json` shows `camera.trained_px_per_tile [231, 340]`, `starting_band` 24 to 76.8 and `reading.frames_averaged: 3`. Delete the temp folder.
 - [ ] **Step 5: Commit.** `git commit -m "feat(training): eye-model configs, contract reading block, run docs"`.
 
@@ -328,7 +328,7 @@
 - [ ] **Step 1:**
   - Make the page: `.venv/Scripts/python.exe phone_gratings.py make --out runs/phone_gratings`.
   - Ask the user to print `gratings.html` at 100 percent and, on the S23 Ultra, open the measure page.
-  - At about 20 cm and about 28 cm they freeze a frame and save it, and measure px per cm on a ruler as they did before.
+  - At 21 to 22 cm and about 28 cm (nearer than 21 cm the corner squares fall off the 1080 px stream) they freeze a frame and save it, and measure px per cm on a ruler as they did before.
 - [ ] **Step 2:** `.venv/Scripts/python.exe phone_gratings.py measure --frame <file> --px-per-tile <px_per_cm × 5>` for each frame. Record both tables in `docs/runs.md`.
 - [ ] **Step 3:** If the verdict is "under half" for blue-yellow or red-green at any frequency the phone should resolve, stop. Bring the table to the user with a proposed chroma blur for the simulation, matched to the measured loss, before going on. Otherwise commit the record.
 
@@ -336,9 +336,9 @@
 
 - [ ] **Step 1:** Copy `kept/labels_generated_fresh/20261124-a05a3bd/checkpoint/step_00140000.pt` to `runs/probe_eye/checkpoints/` (a copy, never the kept file).
 - [ ] **Step 2:** `.venv/Scripts/python.exe train.py --config configs/probe_eye.yaml --max-minutes 30`, run in the background. It resumes at 140,000 and trains about 3,000 steps.
-- [ ] **Step 3:** Read the spread rows and look at the sample sheets at 140,000, 142,000 and the end. Pass:
+- [ ] **Step 3:** Read the spread rows (every 500 steps, `log.sheet_every: 500`; the 140,000 row, written on resume under the probe config, is the baseline) and look at the sample sheets at 140,000, 142,000 and the end. The probe shows the direction the loss pushes the mark, not where it settles (3,000 steps move the weight only about 4 times from 0.01); watch bit accuracy in its first few hundred steps. Pass:
   - `mark_cycles` or `colour_share` rises;
-  - `visibility_p90` falls toward the target;
+  - `visibility_p90` falls, or at least does not rise;
   - the sheets show the grid fading without a new patch.
 - [ ] **Step 4:** `.venv/Scripts/python.exe acceptance.py --config configs/probe_eye.yaml --checkpoint runs/probe_eye/checkpoints/<newest>.pt --alphas 0.30 --out runs/acceptance_probe_eye`. Pass: decodable with 3 correlated frames above 0.5.
 - [ ] **Step 5:**
@@ -349,7 +349,7 @@
 
 - [ ] **Step 1:** Push nothing. Tell the user the pod needs this branch's code. Commands are in `training/RUNPOD.md`, "The eye-model run" (Task 9):
   - `git fetch` and `git checkout training/eye-model-loss` on the pod (the branch must be pushed by the user);
-  - `bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 1500 data.num_workers=8`.
+  - `bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 900 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>` (final review: 900, and check the volume with `df -h /workspace` first; `checkpoint.keep` is 8).
 - [ ] **Step 2:** While it runs, read the progress emails and spread rows the user forwards. Look at the sheets at 30,000, 60,000 and 100,000, not only the numbers.
 - [ ] **Step 3:** At the end:
   - `python keep_result.py --run eye_model --pod root@<ip> --port <port> --key $HOME\.ssh\runpod_key`, until `CHECK PASSED`;

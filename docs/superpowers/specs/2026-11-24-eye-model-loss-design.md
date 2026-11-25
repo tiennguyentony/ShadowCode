@@ -134,10 +134,21 @@ tiles in sRGB [0, 1].
    the reports).
 6. **Across tiles** *(my call)*, so that flat tiles, the most visible,
    cannot hide behind an average:
-   - the controller uses the 90th percentile, over the batch's tiles, of
-     the per-tile visibility;
+   - the controller uses the 96th percentile of the per-tile visibility
+     over a window of the last 256 tiles, across steps (see the note
+     below);
    - acceptance requires at least 95 percent of held-out tiles at or under
      the target, and reports flat-colour tiles separately.
+
+   *Changed by the final review, 2026-11-24.* This said "the 90th
+   percentile, over the batch's tiles". Over a batch of 8 that sample
+   quantile sits near the 81st to 86th percentile of all tiles, so a run
+   that settled as designed would leave only about 86 to 89 percent of
+   tiles under the target, short of the 95 percent acceptance needs. The
+   controller now keeps the last 256 per-tile values and holds their 96th
+   percentile at the target (`quantile: 0.96`, `window: 256`): about 96
+   percent of tiles under it, a small margin over the pass line. EMA,
+   band, rate and weight bounds are unchanged.
 
 The unit is S-CIELAB ΔE, where about 1 is the threshold of a visible
 difference. That is only roughly true for print, which is why the target is
@@ -158,7 +169,8 @@ calibrated on paper (section 4).
   ramps in over 5,000 steps.
 - **New controller, `schedule.image_loss.follow_visibility`**, replacing
   `follow_accuracy` in this config:
-  - each step, smooth the batch's visibility (section 2, item 6; EMA 0.98);
+  - each step, add the batch's per-tile visibility to the 256-tile window
+    and smooth the window's 96th percentile (section 2, item 6; EMA 0.98);
   - while it is above the target, multiply `w` by `1 + rate`; while it is
     below `0.9 x target`, divide by `1 + rate`; in between, hold;
   - `w` starts at 1, is bounded to [0.01, 1000], is saved in checkpoints and
@@ -258,7 +270,9 @@ Also on the laptop: `smoke_test.py` gets checks for the new measure (a
 one of the same amplitude; blue-yellow costs less than luminance at the
 same spacing; a mark on flat colour costs more than the same mark on text;
 gradient reaches the embedder) and for the controller (up above target,
-down below 0.9 x target, held in between, saved and restored). A 40-step
+down below 0.9 x target, held in between, saved and restored; on a
+synthetic stream it settles with at least 95 percent of tiles under the
+target). A 40-step
 run of the pod config on the laptop confirms it starts, prints the band
 (step 12, 24 to 76.8), the range and the target, and times a step.
 
@@ -326,8 +340,9 @@ money is spent.
 - The blind-test pass line of 14 of 20.
 - A reading check at step 80,000 (1-frame bit accuracy at least 0.80).
 - Masking as the square root of the texture weights (busy detail 0.41).
-- Visibility across tiles: 90th percentile for the controller, 95 percent
-  of tiles for acceptance.
+- Visibility across tiles: 96th percentile of a 256-tile window for the
+  controller (was the batch's 90th percentile; changed by the final
+  review), 95 percent of tiles for acceptance.
 - Calibration rules for busy pairs and gratings.
 - Correlated frames as the reading pass line.
 - A phone check of fine colour detail before the pod.

@@ -412,7 +412,9 @@ seen. `runs/calibration/calibration_result.json` has it too. Exit code 1 and
 back to the design. If it also prints a new masking floor (a busy-label pair
 was seen at or below the target), rebuild the sheet with
 `loss.visibility.masking_floor=<floor>` appended to the first command, look at
-the busy rows again, and add the same override to every command below.
+the busy rows again, and add the same override to every command below. The
+rebuilt sheet's `calibration_key.json` keeps the override, so `--seen` on it
+measures under the same floor; `--seen` itself takes no override.
 
 **B. The phone's fine colour detail.** The eye model pushes the mark into fine
 colour, where phone cameras are weakest. Check the phone against the
@@ -425,8 +427,9 @@ python phone_gratings.py make --out runs/phone_gratings
 Print `runs/phone_gratings/gratings.html` at 100 percent. On the phone, open
 the web app's measure page (`npm run dev` in `web`, then the `/measure/` page
 on the phone), hold the sheet upright with all four black squares in view at
-about 20 cm and again at about 28 cm, press Freeze and then Save frame, and
-measure px per cm on a ruler as before. Copy each saved PNG to the laptop:
+21 to 22 cm and again at about 28 cm (nearer than 21 cm the corner squares
+fall off the 1080 px stream), press Freeze and then Save frame, and measure
+px per cm on a ruler as before. Copy each saved PNG to the laptop:
 
 ```powershell
 python phone_gratings.py measure --frame <frame.png> --px-per-tile <px per cm x 5>
@@ -447,26 +450,57 @@ Copy-Item kept/labels_generated_fresh/20261124-a05a3bd/checkpoint/step_00140000.
 python train.py --config configs/probe_eye.yaml schedule.image_loss.follow_visibility.target=<target>
 ```
 
-Pass: the spread rows (`runs/probe_eye/logs/spread.csv`) show the mark's mean
-frequency or colour share rising and the visibility falling toward the
-target; decodable with 3 correlated frames stays above 0.5 (copy the newest
-probe checkpoint elsewhere, then `python acceptance.py --config
-configs/probe_eye.yaml --checkpoint <the copy>
+The baseline is the first spread row: on resume, before its first step,
+train.py writes a row for step 140,000 to the probe's new
+`runs/probe_eye/logs/spread.csv`, measured under the probe config, so with
+the visibility columns (`visibility_p90`, `mark_cycles`, `colour_share`) that
+the kept run never had. After it comes a row, and a sample sheet, every 500
+steps (`log.sheet_every: 500`): 140,500 to 143,000.
+
+**What the probe can tell.** It tests the direction the new loss pushes the
+mark, not where it settles: the weight starts at 0.01 and climbs at most by
+1.00046 per step, so 3,000 steps move it only about 4 times (to about 0.04).
+The mark will not reach the target here.
+
+Watch bit accuracy in the first few hundred steps (the `step ...` lines and
+the first progress rows): L2 and LPIPS are off from the first step, so a fast
+fall there means the new loss is breaking the reading, not shaping it.
+
+Pass: against the 140,000 row, the later spread rows show the mark's mean
+frequency (`mark_cycles`) or its colour share (`colour_share`) rising and
+`visibility_p90` falling, or at least not rising; decodable with 3 correlated
+frames stays above 0.5 (copy the newest probe checkpoint elsewhere, then
+`python acceptance.py --config configs/probe_eye.yaml --checkpoint <the copy>
 schedule.image_loss.follow_visibility.target=<target>`); and the sample
 sheets show the grid fading, not a new patch. If it fails, go back to the
 design before any pod money is spent.
 
-**D. The pod run.** Set up the pod as in sections 1 to 4, then in tmux:
+**D. The pod run.** Push the branch from the laptop first (`git push origin
+training/eye-model-loss`): the pod checks it out from GitHub. Set up the pod
+as in sections 1 to 4, then look at the volume before starting:
+
+```bash
+df -h /workspace
+du -sh /workspace/runs/*
+```
+
+The run keeps 8 checkpoints of 0.5 GB (4.0 GB) plus a 0.3 GB bundle. If
+`/workspace` has less than about 5 GB free, delete the old runs' checkpoint
+folders, `/workspace/runs/labels_generated_fresh/checkpoints` and
+`/workspace/runs/labels_generated_v2/checkpoints`, but only once each run is
+kept on the laptop and `keep_result.py` printed `CHECK PASSED` for it
+(section 10). Then, in tmux:
 
 ```bash
 tmux new -s eye
-cd /workspace/ShadowCode && git pull && git log -1 --oneline
+cd /workspace/ShadowCode && git fetch origin && git checkout training/eye-model-loss && git pull && git log -1 --oneline
 cd training
-bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 720 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
+bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 900 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
 ```
 
-(plus `loss.visibility.masking_floor=<floor>` if the sheet gave one). Without
-the target train.py refuses to start. The first lines have to show
+(plus `loss.visibility.masking_floor=<floor>` if the sheet gave one). The
+commit `git log` prints has to be the branch's newest (compare with `git log
+-1 --oneline` on the laptop). Without the target train.py refuses to start. The first lines have to show
 `grating_step 12`, `message_grid 192`, `camera: 231 to 340 px per printed
 tile`, `visibility loss on: ...` and `visibility controller: target <your target> ...` (check the target here), `starting fresh`, `reading check: ... below 0.8 at step 80000` and
 `the run stops if the fixed-place measure goes above 2.5`.
@@ -475,13 +509,31 @@ tile`, `visibility loss on: ...` and `visibility controller: target <your target
 `init_weight` is left at its default 0.01. At 1 the first steps after the
 image loss switches on would wipe out the reading before the controller
 reacts. The weight then climbs by `rate` (4.6e-4) per step while the smoothed
-visibility is above the target, so it can move tenfold in about 5,000 steps.
+reading is above the target, so it can move tenfold in about 5,000 steps.
+
+**The controller's reading.** Each step's 8 tiles give one p95 masked delta
+E each; the controller keeps the last 256 of them (32 steps) and reads the
+**96th percentile** of that window (`follow_visibility.quantile: 0.96`,
+`window: 256`), smoothed. Held at the target, that leaves about 96 percent
+of tiles at or under it, against the pass line's 95. (Until 2026-11-24 it
+read the 0.9 quantile of each batch of 8, which settles near 86 to 89
+percent; the final review changed it.) The startup line `visibility
+controller: target ... (the 96th percentile ... over a window of the last 256
+tiles ...)` confirms it.
+
+**Two visibility numbers.** `visibility` in the progress rows and emails (and
+`seen` in the step lines) is the controller's reading above, on training
+tiles, averaged over the report window: it should come down to the target
+and stay between 0.9 x target and the target. `visibility_p90` in the spread
+rows is the 90th percentile over the 256 fixed images of their p95, measured
+at that step: a lower percentile, so it sits below the progress figure. Judge
+the controller by the first, the trend by the second.
 
 Time and cost: the design guessed about 10 hours and $7 at the fresh run's
 pace; the bigger message layer may slow it. The laptop's 40-step timing is in
 `/docs/runs.md` ("Eye-model run"); the pod's figure will differ, so read the
 steps per second off the pod's first report and redo the sum. `--max-minutes
-720` caps it at 12 hours ($8.28).
+900` caps it at 15 hours ($10.35); a time stop only costs a restart.
 
 On the laptop, as for the fresh run:
 

@@ -269,6 +269,22 @@ averaged, scan distance 19 to 28 cm).
 the first steps after the image loss switches on would wipe out the reading
 before the controller reacts.
 
+**Controller reading (changed by the final review, 2026-11-24).** The
+controller first took the 0.9 quantile over each batch's 8 tiles. Over 8
+values that sits near the 81st to 86th percentile of all tiles, so a run that
+settled as designed would leave about 86 to 89 percent of tiles at or under
+the target, while the pass line needs 95. It now keeps a window of the last
+256 per-tile p95 values (32 steps of 8, across steps) and drives that
+window's **0.96 quantile** to the target (`follow_visibility.quantile: 0.96`,
+`window: 256`); EMA, band, rate, start weight and bounds are unchanged. On a
+synthetic stream (lognormal per-tile values, spread 0.45, scale 1/weight)
+the smoke test settles with 0.968 of tiles at or under the target; the old
+batch reading gives 0.891 on the same stream. The window is saved in the
+checkpoint. The progress `visibility` (and the printed `seen`) is this
+reading, averaged over the report window; the spread rows' `visibility_p90`
+is a different number: the 90th percentile over the 256 fixed images of
+their p95, so it sits below the progress figure.
+
 **Laptop timing, 40 steps** (`train.py --config configs/runpod_eye.yaml --fresh
 --max-minutes 3 ... train.total_steps=40`, RTX 4070 Laptop, batch 8, 4
 workers): 1.57 steps per second over the process, 25.5 s for the 40 steps with
@@ -281,9 +297,13 @@ started, printed the band (step 12, 24 to 77 cycles per tile, `message_grid`
 192) and the range (231 to 340 px per tile), trained 40 steps and saved.
 
 **Checkpoint size:** 499,539,373 bytes (0.4995 GB, 477 MiB), against 0.243 GB
-for the fresh run. `checkpoint.keep: 12`: 12 x 0.4995 = 6.0 GB, plus 0.3 GB
-for the kept bundle and 2.7 GB already on the volume, is 9.0 GB, at the line
-of 9 of the 10 GB (13 would not fit).
+for the fresh run. `checkpoint.keep: 8`: 8 x 0.4995 = 4.0 GB, plus 0.3 GB for
+the kept bundle, plus what else is on the volume. That last part is not
+known: the earlier "2.7 GB already on the volume" was measured before the v2
+and fresh runs wrote their checkpoints and is stale. Measure it on the pod
+before starting (`df -h /workspace`, `du -sh /workspace/runs/*`) and delete
+the fresh and v2 runs' checkpoint folders once both are kept on the laptop
+with CHECK PASSED (RUNPOD.md, "The eye-model run", D).
 
 **Bundle from the 40-step checkpoint** (`export_bundle.py`, temp folder, since
 deleted): `contract_version` 2, `camera.trained_px_per_tile` `[231, 340]`,
