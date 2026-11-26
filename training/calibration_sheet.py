@@ -10,10 +10,17 @@ delta E of a tile (visibility.py). The number has to come from the eye that will
 Config overrides (dotted.key=value) go after the first form, e.g. loss.visibility.masking_floor=0.6 to rebuild
 the sheet under a new masking floor; they are kept in calibration_key.json and used by the second form.
 
-The first form writes <out>/calibration.html (print it at 100 percent: each tile is 50 mm wide),
-calibration_key.json and pairs/*.png. Every pair is a tile beside its clean original, left and right
-shuffled, and every marked tile is scaled to a set masked visibility (LEVELS). The pairs are flat-colour
-and busy labels marked by the model, and pure gratings on mid-grey in luminance and blue-yellow.
+The first form writes <out>/calibration.html (print it at 100 percent: each grating tile is 50 mm wide,
+each label LABEL_MM on its long side), calibration_key.json and pairs/*.png. Every pair is a picture beside
+its clean original, left and right shuffled, and every marked picture is scaled to a set masked visibility
+(LEVELS). The pairs are whole flat-colour and busy labels marked by the model, and pure gratings on mid-grey
+in luminance and blue-yellow.
+
+A whole label is marked the way the app marks artwork: cut into 50 mm tiles, each tile marked with the same
+message, the residuals put back together. Its visibility is that of its most visible 50 mm window
+(``_p95``), so a label's level means the same as the per-tile target the run trains to. At LABEL_MM = 75 mm
+a 50 mm tile covers 683 of the label's 1024 layout units, inside the zoom range the model trained on
+(labelgen.MIN_CROP up to the label's short side, which is at least 683).
 
 Look at each numbered pair from arm's length (about 50 cm) and write down the numbers of the pairs where
 you see any difference. The second form takes those numbers and applies the design's rules
@@ -57,11 +64,54 @@ GRATINGS = (("luminance", 23), ("luminance", 74), ("blue-yellow", 23), ("blue-ye
 MAX_FACTOR = 4.0
 TOLERANCE = 0.05
 SEED = 0
+LABEL_MM = 75.0         # long side of a whole label on paper; two fit side by side on A4
+WINDOW_STEP = 96        # px between the 50 mm windows a label's visibility is measured in
+
+
+def _starts(size: int) -> list[int]:
+    """Offsets of TILE_PX windows along a side of ``size`` px, WINDOW_STEP apart, the last flush with the end."""
+    if size < TILE_PX:
+        raise ValueError(f"a picture side of {size} px is under one tile ({TILE_PX} px)")
+    starts = list(range(0, size - TILE_PX + 1, WINDOW_STEP))
+    return starts if starts[-1] == size - TILE_PX else starts + [size - TILE_PX]
+
+
+def windows(x: torch.Tensor) -> torch.Tensor:
+    """The TILE_PX windows of one picture (1,3,H,W), stacked (N,3,TILE_PX,TILE_PX); a single tile is its own window."""
+    return torch.cat(
+        [x[..., top : top + TILE_PX, left : left + TILE_PX] for top in _starts(x.shape[-2]) for left in _starts(x.shape[-1])]
+    )
 
 
 @torch.no_grad()
 def _p95(clean: torch.Tensor, marked: torch.Tensor, cfg: dict) -> float:
-    return float(tile_visibility(clean, marked, cfg)["p95"][0])
+    """Masked p95 delta E of the picture's most visible 50 mm window (of the tile itself for a single tile)."""
+    return float(tile_visibility(windows(clean), windows(marked), cfg)["p95"].max())
+
+
+def label_image(seed: int, cfg: dict) -> torch.Tensor:
+    """Whole label ``seed`` at print scale, LABEL_MM on its long side, (1,3,H,W) in [0,1]."""
+    from labelgen import build_label, render_label
+
+    tile_mm = float((cfg.get("demo") or {}).get("tile_mm", 50))
+    image = render_label(build_label(int(seed)), round(LABEL_MM / tile_mm * TILE_PX))
+    return torch.from_numpy(image.copy()).permute(2, 0, 1).float().div(255.0)[None]
+
+
+@torch.no_grad()
+def mark_label(embedder, clean: torch.Tensor, bits: torch.Tensor, alpha: float) -> torch.Tensor:
+    """The residual for a whole picture (1,3,H,W): cut into TILE_PX tiles from the top left (edges padded by
+    repeating the border), each tile marked with ``bits`` (1, MESSAGE_BITS), put back together and cropped."""
+    import torch.nn.functional as F
+
+    h, w = clean.shape[-2:]
+    rows, cols = -(-h // TILE_PX), -(-w // TILE_PX)
+    padded = F.pad(clean, (0, cols * TILE_PX - w, 0, rows * TILE_PX - h), mode="replicate")
+    tiles = padded.unfold(2, TILE_PX, TILE_PX).unfold(3, TILE_PX, TILE_PX)  # (1,3,rows,cols,T,T)
+    tiles = tiles.permute(0, 2, 3, 1, 4, 5).reshape(rows * cols, 3, TILE_PX, TILE_PX)
+    residual = embedder(tiles, bits.expand(rows * cols, -1), alpha=alpha)
+    residual = residual.reshape(rows, cols, 3, TILE_PX, TILE_PX).permute(2, 0, 3, 1, 4)
+    return residual.reshape(1, 3, rows * TILE_PX, cols * TILE_PX)[..., :h, :w]
 
 
 def quantise(x: torch.Tensor) -> torch.Tensor:
@@ -72,7 +122,8 @@ def quantise(x: torch.Tensor) -> torch.Tensor:
 @torch.no_grad()
 def scale_factor(clean: torch.Tensor, residual: torch.Tensor, level: float, cfg: dict) -> tuple[float, torch.Tensor]:
     """The factor in [0, MAX_FACTOR] that makes ``(clean + factor * residual).clamp(0, 1)`` have a masked
-    p95 delta E within 5 percent of ``level``, and that tile. ``clean`` and ``residual`` are one tile, (1,3,H,W).
+    p95 delta E within 5 percent of ``level`` (``_p95``: its most visible window), and that picture.
+    ``clean`` and ``residual`` are one picture, (1,3,H,W), a tile or a whole label.
 
     The marked tile is quantised to 8 bits inside the search, so the p95 is that of the tile as printed
     (the p95 is then a step function of the factor, and the search keeps the closest tile it saw). The
@@ -222,7 +273,7 @@ def build(args: argparse.Namespace) -> int:
     from acceptance import IMAGES, PAGE_CSS, content_scores, fixed_bits
     from checkpoint import load_checkpoint
     from config import load_config
-    from data import data_source, generated_tiles
+    from data import data_source
     from labelgen import ACCEPTANCE_SEEDS
     from train import Trainer
     from viz import save_image
@@ -244,10 +295,18 @@ def build(args: argparse.Namespace) -> int:
     trainer.embedder.eval()
     print(f"checkpoint {path}, step {trainer.step}, device {device}")
 
-    seeds = ACCEPTANCE_SEEDS[:IMAGES]
-    tiles = generated_tiles(seeds)
-    busy, flat = content_scores(tiles, cfg)
-    flat_picks = flat.argsort(descending=True)[:FLAT_LABELS].tolist()
+    # Whole held-out labels: the flattest with anything drawn on them and, of the rest, the busiest, scored on the whole label.
+    seeds = [int(s) for s in ACCEPTANCE_SEEDS[:IMAGES]]
+    images = [label_image(seed, cfg) for seed in seeds]
+    # content_scores' windows need sides that are whole multiples of 48 px: score the label cut down to them.
+    scores = [content_scores(image[..., : image.shape[-2] // 48 * 48, : image.shape[-1] // 48 * 48], cfg) for image in images]
+    busy = torch.cat([s[0] for s in scores])
+    flat = torch.cat([s[1] for s in scores])
+    # A flat label still has something on it (a title, a logo): a blank rectangle does not look like a label.
+    from labelgen import build_label
+
+    drawn = torch.tensor([bool(build_label(seed).ops) for seed in seeds])
+    flat_picks = torch.where(drawn, flat, torch.full_like(flat, -1.0)).argsort(descending=True)[:FLAT_LABELS].tolist()
     busy_picks = [i for i in busy.argsort(descending=True).tolist() if i not in flat_picks][:BUSY_LABELS]
     labels = [(i, "flat label") for i in flat_picks] + [(i, "busy label") for i in busy_picks]
     bits = fixed_bits(len(labels), SEED)
@@ -264,10 +323,10 @@ def build(args: argparse.Namespace) -> int:
 
     with torch.no_grad():
         for n, (index, kind) in enumerate(labels):
-            tile = tiles[index][None].to(device)
-            residual = trainer.embedder(tile, bits[n : n + 1].to(device), alpha=ALPHA)
+            image = images[index].to(device)
+            residual = mark_label(trainer.embedder, image, bits[n : n + 1].to(device), ALPHA)
             for level in LEVELS:
-                add({"kind": kind, "source": f"seed {int(seeds[index])}"}, tile, residual, level)
+                add({"kind": kind, "source": f"seed {seeds[index]}"}, image, residual, level)
         for channel, cycles in GRATINGS:
             grey, residual = grating(channel, cycles)
             for level in LEVELS:
@@ -276,16 +335,19 @@ def build(args: argparse.Namespace) -> int:
     rng = random.Random(SEED)
     rng.shuffle(items)
     out = Path(args.out)
+    tile_mm = float((cfg.get("demo") or {}).get("tile_mm", 50))
     key_pairs, body = [], []
     for number, (desc, clean, marked) in enumerate(items, start=1):
         marked_left = rng.random() < 0.5
         left, right = (marked, clean) if marked_left else (clean, marked)
         save_image(left[0], out / "pairs" / f"{number:02d}_left.png")
         save_image(right[0], out / "pairs" / f"{number:02d}_right.png")
+        h_mm, w_mm = (px / TILE_PX * tile_mm for px in clean.shape[-2:])
+        size = f'style="width: {w_mm:.2f}mm; height: {h_mm:.2f}mm"'
         body.append(
             f'<div class="pair"><span class="n">{number}</span>'
-            f'<img src="pairs/{number:02d}_left.png" alt="pair {number}, left">'
-            f'<img src="pairs/{number:02d}_right.png" alt="pair {number}, right"></div>'
+            f'<img src="pairs/{number:02d}_left.png" {size} alt="pair {number}, left">'
+            f'<img src="pairs/{number:02d}_right.png" {size} alt="pair {number}, right"></div>'
         )
         key_pairs.append(
             {"pair": number, **desc, "marked": "left" if marked_left else "right", "p95": _p95(clean, marked, cfg)}
@@ -300,12 +362,14 @@ def build(args: argparse.Namespace) -> int:
 <title>Calibration sheet</title>
 <style>
 {PAGE_CSS}
+  @media print {{ body {{ margin: 0; }} }}  /* two {LABEL_MM:g} mm labels side by side need the page's full width */
 </style>
 </head>
 <body>
 <h1>Calibration sheet</h1>
 <p>Print at 100 percent, view from arm's length, about 50 cm, write down the numbers of the pairs where you can
-see any difference. Each tile is 50 mm wide on paper. In every pair one tile carries a faint mark. The answers are
+see any difference. On paper each grey grating square is {tile_mm:g} mm wide and each label {LABEL_MM:g} mm on its
+long side: check one grating square with a ruler. In every pair one picture carries a faint mark. The answers are
 in calibration_key.json; do not open it first.</p>
 {chr(10).join(body)}
 {footer}
@@ -315,7 +379,7 @@ in calibration_key.json; do not open it first.</p>
     (out / "calibration.html").write_text(page, encoding="utf-8")
     key = {
         "config": _relative(Path(args.config), out), "overrides": overrides,
-        "checkpoint": str(path), "step": trainer.step, "alpha": ALPHA,
+        "checkpoint": str(path), "step": trainer.step, "alpha": ALPHA, "label_mm": LABEL_MM,
         "levels": list(LEVELS), "seed": SEED, "pairs": key_pairs,
         "skipped": skipped,
     }

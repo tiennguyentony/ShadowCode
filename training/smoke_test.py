@@ -509,6 +509,40 @@ def check_calibration_levels() -> None:
             got = _recompute(key, pair, floor)
             assert abs(got - want) < 1e-5 * max(1.0, want), f"_recompute at floor {floor}: {got} against {want}"
 
+    # Whole labels: marked tile by tile and put back in place, measured in their most visible 50 mm window.
+    from calibration_sheet import LABEL_MM, label_image, mark_label, windows
+
+    image = label_image(labelgen.ACCEPTANCE_SEEDS[0], cfg)
+    long_px = round(LABEL_MM / float(cfg["demo"]["tile_mm"]) * TILE_PX)
+    assert max(image.shape[-2:]) == long_px and min(image.shape[-2:]) >= TILE_PX, f"whole label {tuple(image.shape)}"
+    h, w = image.shape[-2:]
+    cols = -(-w // TILE_PX)
+    numbered = lambda tiles, bits, alpha: torch.arange(len(tiles), dtype=torch.float32).view(-1, 1, 1, 1).expand_as(tiles) + 0 * bits.sum()
+    stitched = mark_label(numbered, image, torch.zeros(1, MESSAGE_BITS), 0.3)
+    assert stitched.shape == image.shape, f"stitched residual {tuple(stitched.shape)} for a label {tuple(image.shape)}"
+    for top, left in ((0, 0), (0, TILE_PX), (TILE_PX, 0), (h - 1, w - 1)):
+        want = (top // TILE_PX) * cols + left // TILE_PX
+        got = float(stitched[0, 0, min(top, h - 1), min(left, w - 1)])
+        assert got == want, f"residual at ({top}, {left}) came from tile {got}, not tile {want}"
+    corner = torch.zeros_like(image)
+    corner[..., :TILE_PX, :TILE_PX] = residual[0]
+    window = float(tile_visibility(image[..., :TILE_PX, :TILE_PX], (image + corner)[..., :TILE_PX, :TILE_PX], cfg)["p95"][0])
+    whole = _p95(image, image + corner, cfg)
+    # The label counts its most visible window, so at least the corner's own window (a window that cuts the
+    # mark part way can read higher: the cut edge is a hard step under the tile's circular filters).
+    assert whole >= window - 1e-4, f"a mark in one corner: label p95 {whole:.4f} under its window's {window:.4f}"
+    clean_far = _p95(image, image + corner * 0, cfg)
+    assert clean_far < 1e-4, f"an unmarked label reads p95 {clean_far}"
+    assert len(windows(image)) > 1 and len(windows(flat)) == 1, "a label has several windows, a tile one"
+    tiled = residual.repeat(1, 1, -(-h // TILE_PX), cols)[..., :h, :w]
+    with tempfile.TemporaryDirectory(prefix="tilemark_calibration_label_") as tmp:
+        for level in (1.0, 5.0):
+            marked = scale_to_level(image, tiled, level, cfg)
+            save_image(quantise(image)[0], Path(tmp) / "clean.png")
+            save_image(marked[0], Path(tmp) / "marked.png")
+            back = _p95(_read(Path(tmp) / "clean.png"), _read(Path(tmp) / "marked.png"), cfg)
+            assert abs(back - level) <= 0.05 * level, f"whole label at level {level}, read back from PNG: p95 {back:.3f}"
+
     # --seen on a synthetic key: per level one pair each of two flat labels, a busy label, a 74-cycle
     # luminance grating and a 23-cycle blue-yellow grating.
     pairs = []

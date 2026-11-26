@@ -397,9 +397,13 @@ python calibration_sheet.py --config configs/runpod_labels_generated_fresh.yaml 
 ```
 
 Print `runs/calibration/calibration.html` at 100 percent, on the printer the
-demo will use (each tile is 50 mm wide). Hold it at arm's length (about
-50 cm). Every pair is a tile and its clean original, left and right shuffled;
-write down the numbers of the pairs where you see any difference. Then:
+demo will use: each grey grating square is 50 mm wide (check one with a
+ruler), each label 75 mm on its long side. The labels are whole labels,
+marked 50 mm tile by tile as the app marks artwork, each scaled so its most
+visible 50 mm window sits at the pair's level. Hold the sheet at arm's length
+(about 50 cm). Every pair is a picture and its clean original, left and right
+shuffled; write down the numbers of the pairs where you see any difference.
+Then:
 
 ```powershell
 python calibration_sheet.py --out runs/calibration --seen 3,7,12
