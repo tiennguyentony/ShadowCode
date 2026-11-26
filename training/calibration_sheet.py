@@ -13,8 +13,9 @@ the sheet under a new masking floor; they are kept in calibration_key.json and u
 The first form writes <out>/calibration.html (print it at 100 percent: each grating tile is 50 mm wide,
 each label LABEL_MM on its long side), calibration_key.json and pairs/*.png. Every pair is a picture beside
 its clean original, left and right shuffled, and every marked picture is scaled to a set masked visibility
-(LEVELS). The pairs are whole flat-colour and busy labels marked by the model, and pure gratings on mid-grey
-in luminance and blue-yellow.
+(LEVELS). The pairs are 40 different whole labels marked by the model, each shown once at one level (12
+mostly flat-colour labels, 2 per level, and the 28 most detailed labels of the held-out pool, ``pick_labels``),
+and pure gratings on mid-grey in luminance and blue-yellow at every level.
 
 A whole label is marked the way the app marks artwork: cut into 50 mm tiles, each tile marked with the same
 message, the residuals put back together. Its visibility is that of its most visible 50 mm window
@@ -59,7 +60,8 @@ HERE = Path(__file__).resolve().parent
 LEVELS = (0.5, 1.0, 2.0, 3.0, 5.0, 8.0)  # masked p95 delta E of the marked tiles
 FLOORS = (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)  # masking floors tried when a busy pair is seen
 ALPHA = 0.30
-FLAT_LABELS, BUSY_LABELS = 3, 2
+FLAT_LABELS, BUSY_LABELS = 12, 28  # 40 different labels, each shown once, at one level
+POOL = 2000                         # held-out seeds the labels are picked from
 GRATINGS = (("luminance", 23), ("luminance", 74), ("blue-yellow", 23), ("blue-yellow", 74))
 MAX_FACTOR = 4.0
 TOLERANCE = 0.05
@@ -94,7 +96,13 @@ def label_image(seed: int, cfg: dict) -> torch.Tensor:
     from labelgen import build_label, render_label
 
     tile_mm = float((cfg.get("demo") or {}).get("tile_mm", 50))
-    image = render_label(build_label(int(seed)), round(LABEL_MM / tile_mm * TILE_PX))
+    label = build_label(int(seed))
+    long_px = round(LABEL_MM / tile_mm * TILE_PX)
+    # The longest labels (aspect 1.5) can round a few px under one tile on the short side: grow them that
+    # little (at most about 1 mm) so a 50 mm window fits.
+    while round(min(label.width, label.height) * long_px / max(label.width, label.height)) < TILE_PX:
+        long_px += 1
+    image = render_label(label, long_px)
     return torch.from_numpy(image.copy()).permute(2, 0, 1).float().div(255.0)[None]
 
 
@@ -265,16 +273,37 @@ def _relative(path: Path, folder: Path) -> str:
         return str(path.resolve())
 
 
+def pick_labels(seeds) -> list[tuple[int, str, float]]:
+    """The sheet's labels as (seed, kind, level), every label once.
+
+    FLAT_LABELS flat-colour labels (labelgen's "flat" kind) with something drawn on them, a blank rectangle
+    does not look like a label, in seed order; and the BUSY_LABELS most detailed of the rest, by how many
+    shapes and text runs they hold. Each kind goes round the levels in turn, so every level gets its share
+    of both (12 flat labels: 2 per level).
+    """
+    from labelgen import build_label
+
+    built = [(int(seed), build_label(int(seed))) for seed in seeds]
+    flat = [seed for seed, label in built if label.kind == "flat" and label.ops][:FLAT_LABELS]
+    rest = [(seed, label) for seed, label in built if label.kind != "flat"]
+    detailed = [seed for seed, _ in sorted(rest, key=lambda item: -len(item[1].ops))][:BUSY_LABELS]
+    if len(flat) < FLAT_LABELS or len(detailed) < BUSY_LABELS:
+        raise ValueError(f"{len(seeds)} seeds give {len(flat)} flat and {len(detailed)} detailed labels")
+    return [(seed, "flat label", LEVELS[i % len(LEVELS)]) for i, seed in enumerate(flat)] + [
+        (seed, "busy label", LEVELS[i % len(LEVELS)]) for i, seed in enumerate(detailed)
+    ]
+
+
 def kind_text(desc: dict) -> str:
     return f"grating, {desc['channel']}, {desc['cycles']} cycles" if desc["kind"] == "grating" else desc["kind"]
 
 
 def build(args: argparse.Namespace) -> int:
-    from acceptance import IMAGES, PAGE_CSS, content_scores, fixed_bits
+    from acceptance import PAGE_CSS, fixed_bits
     from checkpoint import load_checkpoint
     from config import load_config
     from data import data_source
-    from labelgen import ACCEPTANCE_SEEDS
+    from labelgen import HELDOUT_SEEDS
     from train import Trainer
     from viz import save_image
 
@@ -295,20 +324,7 @@ def build(args: argparse.Namespace) -> int:
     trainer.embedder.eval()
     print(f"checkpoint {path}, step {trainer.step}, device {device}")
 
-    # Whole held-out labels: the flattest with anything drawn on them and, of the rest, the busiest, scored on the whole label.
-    seeds = [int(s) for s in ACCEPTANCE_SEEDS[:IMAGES]]
-    images = [label_image(seed, cfg) for seed in seeds]
-    # content_scores' windows need sides that are whole multiples of 48 px: score the label cut down to them.
-    scores = [content_scores(image[..., : image.shape[-2] // 48 * 48, : image.shape[-1] // 48 * 48], cfg) for image in images]
-    busy = torch.cat([s[0] for s in scores])
-    flat = torch.cat([s[1] for s in scores])
-    # A flat label still has something on it (a title, a logo): a blank rectangle does not look like a label.
-    from labelgen import build_label
-
-    drawn = torch.tensor([bool(build_label(seed).ops) for seed in seeds])
-    flat_picks = torch.where(drawn, flat, torch.full_like(flat, -1.0)).argsort(descending=True)[:FLAT_LABELS].tolist()
-    busy_picks = [i for i in busy.argsort(descending=True).tolist() if i not in flat_picks][:BUSY_LABELS]
-    labels = [(i, "flat label") for i in flat_picks] + [(i, "busy label") for i in busy_picks]
+    labels = pick_labels(HELDOUT_SEEDS[:POOL])  # [(seed, kind, level)], every label once
     bits = fixed_bits(len(labels), SEED)
 
     items, skipped = [], []  # items: (description, clean (1,3,H,W), marked)
@@ -322,11 +338,10 @@ def build(args: argparse.Namespace) -> int:
         items.append(({**desc, "level": level, "factor": factor}, quantise(clean).cpu(), marked.cpu()))
 
     with torch.no_grad():
-        for n, (index, kind) in enumerate(labels):
-            image = images[index].to(device)
+        for n, (seed, kind, level) in enumerate(labels):
+            image = label_image(seed, cfg).to(device)
             residual = mark_label(trainer.embedder, image, bits[n : n + 1].to(device), ALPHA)
-            for level in LEVELS:
-                add({"kind": kind, "source": f"seed {seeds[index]}"}, image, residual, level)
+            add({"kind": kind, "source": f"seed {seed}"}, image, residual, level)
         for channel, cycles in GRATINGS:
             grey, residual = grating(channel, cycles)
             for level in LEVELS:

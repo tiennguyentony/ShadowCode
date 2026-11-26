@@ -509,6 +509,20 @@ def check_calibration_levels() -> None:
             got = _recompute(key, pair, floor)
             assert abs(got - want) < 1e-5 * max(1.0, want), f"_recompute at floor {floor}: {got} against {want}"
 
+    # The sheet's labels: 40 different ones, each once; every level has 2 flat ones and its share of detailed ones.
+    from calibration_sheet import BUSY_LABELS, FLAT_LABELS, POOL, pick_labels
+
+    picks = pick_labels(labelgen.HELDOUT_SEEDS[:POOL])
+    assert len(picks) == FLAT_LABELS + BUSY_LABELS == 40 and len({s for s, _, _ in picks}) == 40, "40 different labels"
+    for level in LEVELS:
+        flat_here = [s for s, kind, at in picks if kind == "flat label" and at == level]
+        assert len(flat_here) == 2, f"level {level} has {len(flat_here)} flat labels"
+        assert sum(kind == "busy label" and at == level for _, kind, at in picks) >= 4, f"level {level}: too few detailed labels"
+    built = {s: labelgen.build_label(s) for s, _, _ in picks}
+    assert all(built[s].kind == "flat" and built[s].ops for s, kind, _ in picks if kind == "flat label"), "flat labels, not blank"
+    fewest = min(len(built[s].ops) for s, kind, _ in picks if kind == "busy label")
+    assert fewest >= 40, f"the least detailed label holds only {fewest} shapes and text runs"
+
     # Whole labels: marked tile by tile and put back in place, measured in their most visible 50 mm window.
     from calibration_sheet import LABEL_MM, label_image, mark_label, windows
 
@@ -594,7 +608,7 @@ def check_calibration_levels() -> None:
 def check_calibration_overrides(trainer: Trainer) -> None:
     """calibration_sheet.py takes config overrides when making the sheet, keeps them in the key, and --seen uses them.
 
-    A small real build (one level, the 23-cycle luminance grating and one flat and one busy label from 4 images)
+    A small real build (one level, the 23-cycle luminance grating and one flat and one detailed label from 40 seeds)
     from a checkpoint of the smoke model, through main() and its argument parser.
     """
     import contextlib
@@ -602,15 +616,14 @@ def check_calibration_overrides(trainer: Trainer) -> None:
     import json
     import sys
 
-    import acceptance
     import calibration_sheet as cs
     import yaml
 
     overrides = ["data.source=generated_labels", "loss.visibility.distance_mm=350", "loss.visibility.masking_floor=0.7"]
-    saved = (cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, acceptance.IMAGES, sys.argv)
+    saved = (cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, cs.POOL, sys.argv)
     with tempfile.TemporaryDirectory(prefix="tilemark_calibration_overrides_") as tmp:
         try:
-            cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, acceptance.IMAGES = (2.0,), (("luminance", 23),), 1, 1, 4
+            cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, cs.POOL = (2.0,), (("luminance", 23),), 1, 1, 40
             path = save_checkpoint(trainer, Path(tmp) / "ckpt", keep=0)
             config = Path(tmp) / "smoke_config.yaml"  # the smoke trainer's own config, whichever file it came from
             config.write_text(yaml.safe_dump(trainer.cfg), encoding="utf-8")
@@ -629,7 +642,7 @@ def check_calibration_overrides(trainer: Trainer) -> None:
             else:
                 raise AssertionError("--seen accepted overrides")
         finally:
-            cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, acceptance.IMAGES, sys.argv = saved
+            cs.LEVELS, cs.GRATINGS, cs.FLAT_LABELS, cs.BUSY_LABELS, cs.POOL, sys.argv = saved
         key = json.loads((out / "calibration_key.json").read_text(encoding="utf-8"))
         assert key["overrides"] == overrides, f"the key does not record the overrides: {key.get('overrides')}"
         key["directory"] = str(out)
