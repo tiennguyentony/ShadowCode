@@ -116,6 +116,11 @@ loss:
     enabled: false
     distance_mm: 500           # viewing distance of the printed tile
     masking_floor: null        # lowest masking factor; null = sqrt(busy_weight / flat_weight), about 0.41
+    # false: the loss is the mean masked delta E, which pulls a mark of any size toward zero just as
+    # hard (delta E is linear in it). true: only the part of each pixel's masked delta E above
+    # follow_visibility's target costs, so a mark already faint enough is left alone. Needs
+    # schedule.image_loss.follow_visibility.
+    hinge: false
 
 schedule:
   image_loss:
@@ -139,7 +144,10 @@ schedule:
     # of tiles at or under it (acceptance.py needs 95%). Needs target and loss.visibility.enabled;
     # cannot be set together with follow_accuracy. The weight, the smoothed value and the window
     # are saved in checkpoints. Defaults when set: quantile 0.96, window 256, ema 0.98, low 0.9,
-    # rate 4.6e-4, init_weight 0.01, min_weight 0.01, max_weight 1000.
+    # rate 4.6e-4, init_weight 0.01, min_weight 0.01, max_weight 1000, min_bit_acc null.
+    # min_bit_acc, the reading guard: while the smoothed training bit accuracy (the trigger's) is
+    # below it, the weight is divided by 1 + rate whatever the visibility, so reading wins over the
+    # target. null: no guard, visibility always wins.
     follow_visibility: null
   sim_strength:
     start_step: 0              # strength is 0 before this step
@@ -270,6 +278,11 @@ image_loss_check:              # one look at at_step: did the image loss ever sw
 # the reading has fallen too far to pass, so no more GPU time is spent on it.
 # Like image_loss_check, it will not resume while on and recorded as failed;
 # add reading_check.enabled=false to continue anyway.
+# The reading watch, in the same block: watch_after_trigger: N stops the run the
+# same way at any step from N steps after the image loss switched on, if the
+# mean bit accuracy of the last log.report_every steps is below
+# watch_min_bit_acc (default min_bit_acc). Looked at every 100 steps once this
+# process has a full window. Off (null) by default.
 reading_check: null
 
 budget:                        # a limit on the whole run, summed over restarts. Both off by default.

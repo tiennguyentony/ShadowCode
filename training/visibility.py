@@ -23,7 +23,7 @@ from constants import TILE_PX
 from losses import texture_settings, texture_weights
 
 # Used when the config has no loss.visibility.
-VISIBILITY_DEFAULTS = {"enabled": False, "distance_mm": 500, "masking_floor": None}
+VISIBILITY_DEFAULTS = {"enabled": False, "distance_mm": 500, "masking_floor": None, "hinge": False}
 
 # sRGB (IEC 61966-2-1, D65) linear light to CIE XYZ. White (1, 1, 1) maps to WHITE below.
 SRGB_TO_XYZ = [[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]]
@@ -64,6 +64,8 @@ def visibility_settings(cfg: dict) -> dict:
     floor = s["masking_floor"]
     if floor is not None and not 0.0 < float(floor) <= 1.0:
         raise ValueError(f"loss.visibility.masking_floor must be null or in (0, 1], got {floor}")
+    if not isinstance(s["hinge"], bool):
+        raise ValueError(f"loss.visibility.hinge must be true or false, got {s['hinge']!r}")
     return s
 
 

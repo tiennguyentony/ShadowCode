@@ -499,14 +499,18 @@ kept on the laptop and `keep_result.py` printed `CHECK PASSED` for it
 tmux new -s eye
 cd /workspace/ShadowCode && git fetch origin && git checkout training/eye-model-loss && git pull && git log -1 --oneline
 cd training
-bash pod_run.sh eye_model configs/runpod_eye.yaml --price-per-hour 0.69 --max-minutes 900 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
+bash pod_run.sh eye_model configs/runpod_eye.yaml --fresh --price-per-hour 0.69 --max-minutes 900 data.num_workers=8 schedule.image_loss.follow_visibility.target=<target>
 ```
 
-(plus `loss.visibility.masking_floor=<floor>` if the sheet gave one). The
+(plus `loss.visibility.masking_floor=<floor>` if the sheet gave one).
+**`--fresh` is needed since 2026-11-26**: the volume holds the first pod
+run's `eye_model` checkpoints, which read at chance; `--fresh` moves them
+aside and starts from step 0 (`/docs/runs.md`, "Pod run, 2026-11-26"). The
 commit `git log` prints has to be the branch's newest (compare with `git log
 -1 --oneline` on the laptop). Without the target train.py refuses to start. The first lines have to show
 `grating_step 12`, `message_grid 192`, `camera: 231 to 340 px per printed
-tile`, `visibility loss on: ...` and `visibility controller: target <your target> ...` (check the target here), `starting fresh`, `reading check: ... below 0.8 at step 80000` and
+tile`, `visibility loss on: ... hinge at the target ...` and `visibility controller: target <your target> ... reading guard: the weight falls while smoothed bit accuracy is below 0.91` (check the target here), `starting fresh`, `reading check: ... below 0.8 at step 80000`,
+`reading watch: the run stops at any step from 5000 steps after the image loss switches on ... below 0.75` and
 `the run stops if the fixed-place measure goes above 2.5`.
 
 **The controller weight starts at 0.01, not 1.** The design says 1;

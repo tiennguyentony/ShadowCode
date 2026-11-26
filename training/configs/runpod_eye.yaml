@@ -47,19 +47,33 @@ loss:
   lpips_weight: 0
   visibility:
     enabled: true
+    # Safeguard (2026-11-26, after the first pod run read at chance from step 30,000): only masked delta E
+    # above the target costs. The plain mean pulls a mark of any size toward zero just as hard.
+    hinge: true
 
 schedule:
   image_loss:
+    # 0.95 -> 0.94: the first pod run levelled at 0.948 on this band and never switched the loss on.
+    acc_threshold: 0.94
     follow_accuracy: null
     follow_visibility:
       target: null             # from the calibration sheet; set on the command line
       quantile: 0.96           # of the window below: about 96% of tiles at or under the target
       window: 256              # the last 256 per-tile p95 values, across steps (32 batches of 8)
+      # Safeguards (2026-11-26): the weight falls while smoothed training bit accuracy is under 0.91
+      # (training reads with half the patch blanked at times, so it sits about 0.02 under eval), and may
+      # fall to 1e-4, not 0.01, to give the mark room to come back.
+      min_bit_acc: 0.91
+      min_weight: 1.0e-4
 
 reading_check:
   enabled: true
   at_step: 80000
   min_bit_acc: 0.80
+  # Safeguard (2026-11-26): stop at any step from 5,000 steps after the image loss switches on if the
+  # last 1,000 steps read under 0.75. The first pod run read at chance 6,000 steps after it switched on.
+  watch_after_trigger: 5000
+  watch_min_bit_acc: 0.75
 
 log:
   dir: /workspace/runs/eye_model/logs

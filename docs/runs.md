@@ -313,6 +313,145 @@ deleted): `contract_version` 2, `camera.trained_px_per_tile` `[231, 340]`,
 
 Results of the calibration, the phone check, the probe and the run go here.
 
+### Probe, 2026-11-25 (laptop, provisional target 1)
+
+Run before the calibration and the phone check, which were skipped to get the
+pod going; the target was set to 1 (S-CIELAB's visible threshold, the design's
+unit), not measured. In the probe any target below the mark's visibility
+pushes the same way, so the probe's result does not depend on it.
+`configs/probe_eye.yaml`, `follow_visibility.target=1.0`, steps 140,000 to
+143,000 from a copy of the fresh run's kept 140,000 checkpoint, 0.82 h at 1.03
+steps per second (a game was sharing the GPU), peak GPU memory 4,079 MiB.
+Controller weight 0.0100 to 0.0397.
+
+| Step | Visibility p90 | Mark cycles | Colour share | Fixed place | Strongest spot | PSNR |
+|---|---|---|---|---|---|---|
+| 140,000 | 19.83 | 44.6 | 37% | 2.05 | 3.72 | 27.7 dB |
+| 140,500 | 10.75 | 26.5 | 39% | 1.72 | 3.06 | 30.3 dB |
+| 141,000 | 10.25 | 25.5 | 38% | 1.81 | 3.35 | 29.6 dB |
+| 141,500 | 8.77 | 25.5 | 41% | 1.88 | 3.45 | 30.3 dB |
+| 142,000 | 8.06 | 25.4 | 40% | 1.93 | 3.54 | 30.2 dB |
+| 142,500 | 6.24 | 25.2 | 41% | 2.08 | 3.75 | 31.1 dB |
+| 143,000 | 5.99 | 25.4 | 42% | 2.00 | 3.61 | 31.2 dB |
+
+Training bit accuracy held: 0.917 mean of the last 1,000 steps, eval 0.937.
+Acceptance on a copy of the 143,000 checkpoint (`runs/probe_eye_eval/`), alpha
+0.3: decodable 0.633 with 1 frame, **0.766 with 3 correlated frames** (probe
+line 0.5), fixed place 2.03, share at or under p95 1: 0.000 (expected: the
+weight only moved fourfold).
+
+**Pass on the probe's lines**: visibility falling (19.83 to 5.99), colour share
+rising (37 to 42 percent), 3-frame decoding above 0.5. Two things against the
+design's expectation: the mark moved to *coarser* spacing (44.6 to 25.4 cycles
+per tile), not finer, in the first 500 steps; and on the sample sheets the
+mark leaves the middle of flat colour and stays on text, edges and, on flat
+tiles, the tile's border and corners. Fixed place stays at 2.0, so no single
+patch, but the border on flat tiles is the thing to look for on the pod's
+30,000 sheet.
+
+### Pod run, 2026-11-26: reading collapsed, cancelled
+
+Commit `981b279`, target 1 (provisional, not calibrated), one RTX PRO 4000
+Blackwell at $0.69 per hour, about 4.0 steps per second, **$3.10** in all.
+
+- **First start, stopped itself at 24,000** (exit code 5, image-loss check):
+  smoothed bit accuracy levelled at 0.948 and never passed the 0.95
+  trigger, so the visibility loss never switched on (PSNR 12.4 dB,
+  fixed place 1.01).
+- **Resumed from 24,000** with `schedule.image_loss.acc_threshold=0.94
+  image_loss_check.enabled=false`; the loss switched on at once. Bit
+  accuracy then fell to chance within 6,000 steps and stayed there:
+
+| Step | Bit acc | PSNR | Fixed place |
+|---|---|---|---|
+| 24,000 | 0.945 | 12.4 dB | 1.01 |
+| 30,000 | 0.516 | 40.2 dB | 1.31 |
+| 40,000 | 0.500 | 52.6 dB | 1.21 |
+| 50,000 | 0.504 | 48.2 dB | 1.41 |
+| 60,000 | 0.506 | 49.8 dB | 1.34 |
+| 62,000 | 0.507 | 50.0 dB | 1.40 (visibility p90 0.56) |
+
+  Cancelled by hand at 63,190 (checkpoint saved, result kept on the volume
+  as `kept/20261126-981b279`; the 24,000 result under the same id was
+  moved aside). The controller weight sat at its floor, 0.01, with `seen`
+  0.7 to 1.3.
+
+**Why.** Target 1 is far below what this mark can be read at.
+Measured on the laptop with the probe's 143,000 checkpoint (old band) by
+turning the strength down, on the 256 held-out labels:
+
+| Alpha | Visibility (0.96 quantile) | Bit acc, 1 frame | Decodable, 3 frames | PSNR |
+|---|---|---|---|---|
+| 0.30 | 8.66 | 0.931 | 0.766 | 32.5 dB |
+| 0.20 | 5.83 | 0.855 | 0.348 | 36.0 dB |
+| 0.15 | 4.39 | 0.779 | 0.125 | 38.5 dB |
+| 0.10 | 2.94 | 0.657 | 0.012 | 42.0 dB |
+| 0.07 | 2.07 | 0.567 | 0.000 | 45.1 dB |
+| 0.05 | 1.48 | 0.520 | 0.000 | 48.0 dB |
+| 0.03 | 0.89 | 0.500 | 0.000 | 52.4 dB |
+
+Visibility 1 is chance reading at about 52 dB, which is where the pod run
+ended up. The 0.80 pass line needs about 9 here. Nothing in the loss could
+stop the slide: by design bit accuracy is not in the controller
+("visibility wins"), `follow_accuracy` (which lowered the image loss when
+reading fell) is off, and the per-pixel delta E is linear in the mark's
+size, so its pull toward zero does not fade as the mark shrinks the way L2's
+did. Once the reader was at chance, its loss gave the embedder nothing to
+grow back towards, and even the floor weight 0.01 held the mark at about 1.
+The probe ran 3,000 steps with the weight under 0.04 and did not reach
+this. The reading check, at step 80,000 only, would have caught it 17,000
+steps late.
+
+### Safeguards, and their laptop test (2026-11-26)
+
+Three settings, all on in `configs/runpod_eye.yaml`:
+
+- `loss.visibility.hinge: true`: only masked delta E above the target
+  costs, so a mark already faint enough is not pulled further.
+- `follow_visibility.min_bit_acc: 0.91` (the reading guard): while the
+  smoothed training bit accuracy is below it, the weight falls whatever
+  the visibility; with `min_weight` 1e-4 (was 0.01) it can fall far.
+- `reading_check.watch_after_trigger: 5000`, `watch_min_bit_acc: 0.75`:
+  exit code 7 at any step from 5,000 steps after the image loss switches
+  on if the last 1,000 steps read under 0.75.
+
+Also `schedule.image_loss.acc_threshold` 0.95 -> 0.94 (the first pod run
+levelled at 0.948).
+
+**Test.** Two arms of 2,000 steps from a copy of the fresh run's 140,000
+checkpoint (`configs/probe_eye.yaml`, old band), target 1, weight starting
+at 0.1 (ten times the pod run's, to make it fail fast), `spread.stop_above`
+off: the control with the pod run's settings, the other with the hinge,
+the guard at 0.91 and `min_weight` 1e-4. Acceptance at alpha 0.3 on a copy
+of each 142,000 checkpoint:
+
+| | Baseline 140,000 | Control 142,000 | Safeguarded 142,000 |
+|---|---|---|---|
+| Visibility p90 (spread row) | 19.83 | 1.82 | 6.19 |
+| Weight at the end | | 0.251 (rising) | 0.041 (falling) |
+| Bit accuracy, 1 frame | 0.931 (143,000 probe) | 0.785 | 0.929 |
+| Decodable, 3 correlated frames | 0.766 (143,000 probe) | **0.039** | **0.750** |
+| Fixed place | 2.05 | 4.36 | 1.83 |
+| PSNR mean | 27.7 dB | 40.1 dB | 31.7 dB |
+
+The control repeats the pod run in 2,000 steps: reading gone, and the mark
+in a patch at the tile corners. The guard engaged in the first few hundred
+steps and lowered the weight; the safeguarded model reads as well as the
+baseline, its mark at about a third of the baseline's visibility and
+spread more evenly (fixed place 1.83, under the baseline's 2.05).
+Whole held-out labels marked by all three (seeds 3, 17, 42, 75 mm, marked
+tile by tile): `training/runs/marked_labels/`. On them the baseline's
+grid is plainly visible (most visible window 10.3 on seed 3), the
+safeguarded mark is fainter and even (3.9), the control's is the faintest
+(0.9) and gathered in patches.
+
+Not shown by this test: where the safeguarded run settles over a whole
+run, and whether target 1 is reachable at all while reading holds
+(visibility p90 stopped near 6 here). With the guard on, a target the
+model cannot reach while reading costs reading nothing: the run ends at
+the lowest visibility it can read at. The calibrated target still
+decides the pass line.
+
 ## Locator (stage 2)
 
 Design: `docs/model-contract.md`, "The locator: design note" (approved

@@ -168,6 +168,10 @@ class Trainer:
                 )
             self.vis_weight = follow_visibility["init_weight"]
             self.vis_window = deque(maxlen=follow_visibility["window"])
+        elif visibility_settings(cfg)["hinge"]:
+            raise ValueError(
+                "loss.visibility.hinge needs schedule.image_loss.follow_visibility: the hinge sits at its target"
+            )
         texture_settings(cfg)  # likewise for loss.texture_mask
 
     # -- schedules ---------------------------------------------------------
@@ -199,6 +203,7 @@ class Trainer:
             "init_weight": float(follow.get("init_weight", 0.01)),
             "min_weight": float(follow.get("min_weight", 0.01)),
             "max_weight": float(follow.get("max_weight", 1000.0)),
+            "min_bit_acc": None if follow.get("min_bit_acc") is None else float(follow["min_bit_acc"]),
         }
         ok = (
             settings["target"] > 0.0
@@ -208,11 +213,12 @@ class Trainer:
             and 0.0 < settings["low"] <= 1.0
             and settings["rate"] > 0.0
             and 0.0 < settings["min_weight"] <= settings["init_weight"] <= settings["max_weight"]
+            and (settings["min_bit_acc"] is None or 0.0 < settings["min_bit_acc"] <= 1.0)
         )
         if not ok:
             raise ValueError(
                 "schedule.image_loss.follow_visibility needs target > 0, quantile and low in (0, 1], window >= 1, ema in [0, 1), "
-                f"rate > 0 and 0 < min_weight <= init_weight <= max_weight, got {follow}"
+                f"rate > 0, 0 < min_weight <= init_weight <= max_weight and min_bit_acc null or in (0, 1], got {follow}"
             )
         return settings
 
@@ -239,6 +245,10 @@ class Trainer:
 
         Does nothing before the image-loss trigger. The weight is multiplied by 1 + rate while the smoothed value is
         above the target and divided by it while below ``low`` times the target, within min_weight to max_weight.
+
+        The reading guard (``min_bit_acc``) comes first: while the smoothed bit accuracy (``acc_ema``, the trigger's)
+        is below it, the weight is divided by 1 + rate whatever the visibility, so a mark that can no longer be read
+        is not pushed fainter still. Reading then wins over the target.
         """
         follow = self.visibility_follow_settings()
         if follow is None or self.image_ramp_start is None:
@@ -247,7 +257,9 @@ class Trainer:
             self.vis_ema = float(value)
         else:
             self.vis_ema = follow["ema"] * self.vis_ema + (1.0 - follow["ema"]) * float(value)
-        if self.vis_ema > follow["target"]:
+        if follow["min_bit_acc"] is not None and self.acc_ema < follow["min_bit_acc"]:
+            self.vis_weight = max(follow["min_weight"], self.vis_weight / (1.0 + follow["rate"]))
+        elif self.vis_ema > follow["target"]:
             self.vis_weight = min(follow["max_weight"], self.vis_weight * (1.0 + follow["rate"]))
         elif self.vis_ema < follow["low"] * follow["target"]:
             self.vis_weight = max(follow["min_weight"], self.vis_weight / (1.0 + follow["rate"]))
@@ -390,7 +402,15 @@ class Trainer:
                 loss = loss + image_scale * weights["lpips_weight"] * lpips_loss
             if vis_on:
                 visible = tile_visibility(tiles, out["marked"], self.cfg)
-                loss = loss + image_scale * vis_weight * visible["mean"].mean()
+                if visibility_settings(self.cfg)["hinge"]:
+                    # Only the part of each pixel's masked delta E above the target costs anything: no pull
+                    # toward zero on a mark that is already faint enough (the plain mean pulls just as hard
+                    # on a mark of any size, since delta E is linear in it).
+                    target = self.visibility_follow_settings()["target"]
+                    vis_term = (visible["map"] - target).clamp_min(0.0).mean()
+                else:
+                    vis_term = visible["mean"].mean()
+                loss = loss + image_scale * vis_weight * vis_term
         if vis_on and visible is None:
             # The image loss is not on yet: measure for the logs only.
             with torch.no_grad():
@@ -688,6 +708,16 @@ def main() -> int:
     reading_check_enabled = bool(reading_check.get("enabled", False))
     reading_check_step = int(reading_check.get("at_step", 80000))
     reading_check_min_acc = float(reading_check.get("min_bit_acc", 0.9))
+    # The reading watch: the same stop at any step from watch_after_trigger steps after the image loss switched on.
+    watch_after = reading_check.get("watch_after_trigger")
+    watch_after = None if watch_after is None else int(watch_after)
+    watch_min_acc = float(reading_check.get("watch_min_bit_acc", reading_check_min_acc))
+    if watch_after is not None and (watch_after < 0 or not 0.0 < watch_min_acc <= 1.0):
+        parser.error(
+            f"reading_check.watch_after_trigger must be at least 0 and watch_min_bit_acc in (0, 1], "
+            f"got {watch_after} and {watch_min_acc}"
+        )
+    watching = reading_check_enabled and watch_after is not None
     budget = cfg.get("budget") or {}
     max_hours, max_cost = budget.get("max_hours"), budget.get("max_cost_usd")
     if max_cost is not None and args.price_per_hour is None:
@@ -773,6 +803,7 @@ def main() -> int:
             f"visibility loss on: S-CIELAB masked delta E, {pixels_per_degree(tile_mm, float(vis['distance_mm'])):.1f} px per degree "
             f"({tile_mm:g} mm tile at {float(vis['distance_mm']) / 10:g} cm), masking floor "
             + ("default (sqrt of busy/flat texture weights)" if floor is None else f"{float(floor):g}")
+            + (", hinge at the target (only delta E above it costs)" if vis["hinge"] else ", plain mean (no hinge)")
         )
         vf = trainer.visibility_follow_settings()
         if vf is not None:
@@ -780,7 +811,12 @@ def main() -> int:
                 f"visibility controller: target {vf['target']:g} (the {vf['quantile'] * 100:g}th percentile of each tile's p95 masked delta E "
                 f"over a window of the last {vf['window']} tiles, across steps), "
                 f"ema {vf['ema']:g}, up above target, down below {vf['low']:g} x target, rate {vf['rate']:g} per step, "
-                f"weight starts at {vf['init_weight']:g} within {vf['min_weight']:g} to {vf['max_weight']:g}"
+                f"weight starts at {vf['init_weight']:g} within {vf['min_weight']:g} to {vf['max_weight']:g}; "
+                + (
+                    f"reading guard: the weight falls while smoothed bit accuracy is below {vf['min_bit_acc']:g}"
+                    if vf["min_bit_acc"] is not None
+                    else "no reading guard"
+                )
             )
     follow = trainer.follow_settings()
     if follow is not None:
@@ -820,6 +856,11 @@ def main() -> int:
         print(
             f"reading check: the run stops if mean bit accuracy is still below {reading_check_min_acc:g} "
             f"at step {reading_check_step}"
+        )
+    if watching:
+        print(
+            f"reading watch: the run stops at any step from {watch_after} steps after the image loss switches on "
+            f"if mean bit accuracy over the last {max(1, report_every)} steps is below {watch_min_acc:g}"
         )
     if max_hours is not None or max_cost is not None:
         limits = [f"{float(max_hours):g} h of training"] if max_hours is not None else []
@@ -1011,6 +1052,36 @@ def main() -> int:
                 )
                 if reading_low:
                     break
+            # The watch: every 100 steps (fewer with a shorter window), once the trigger is watch_after steps behind
+            # and `recent` holds a full window of this process's steps (a resumed run refills it first).
+            ramp = trainer.image_ramp_start
+            if (
+                watching
+                and ramp is not None
+                and step % min(100, recent.maxlen) == 0
+                and step >= ramp + watch_after
+                and len(recent) == recent.maxlen
+            ):
+                mean_acc = sum(a for a, _ in recent) / len(recent)
+                if mean_acc < watch_min_acc:
+                    reading_low = True
+                    clock.reading_check = {
+                        "result": "failed",
+                        "step": step,
+                        "bit_acc": mean_acc,
+                        "min_bit_acc": watch_min_acc,
+                        "kind": "watch",
+                        "image_ramp_start": ramp,
+                    }
+                    reading_check_pending = False
+                    clock.save()
+                    print(
+                        f"reading watch at step {step}, {step - ramp} steps after the image loss switched on: "
+                        f"mean bit accuracy over the last {len(recent)} steps is {mean_acc:.3f} "
+                        f"(required {watch_min_acc:g}) -> reading has collapsed, stopping the run",
+                        flush=True,
+                    )
+                    break
             spent = over_budget()
             if spent:
                 break
@@ -1082,7 +1153,8 @@ def main() -> int:
         checkpoint_now()
         print(
             f"Stopped: reading too weak. At step {trainer.step} the mean bit accuracy is "
-            f"{clock.reading_check['bit_acc']:.3f}, below {reading_check_min_acc:g} (reading_check): "
+            f"{clock.reading_check['bit_acc']:.3f}, below {clock.reading_check['min_bit_acc']:g} "
+            f"({'reading_check.watch_after_trigger' if clock.reading_check.get('kind') == 'watch' else 'reading_check'}): "
             f"the mark was made invisible at the cost of reading. {clock.cost_text()}.\n"
             "The machine is still running and still billed; see RUNPOD.md for how to stop it."
         )

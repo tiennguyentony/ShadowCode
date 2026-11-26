@@ -350,7 +350,7 @@ def check_visibility() -> None:
 
     cfg = load_config(HERE / "configs" / "default.yaml")
     s = visibility_settings(cfg)
-    assert s == {"enabled": False, "distance_mm": 500, "masking_floor": None}, f"default visibility settings {s}"
+    assert s == {"enabled": False, "distance_mm": 500, "masking_floor": None, "hinge": False}, f"default visibility settings {s}"
     for bad in ({"distance_mm": 0}, {"masking_floor": 0.0}, {"masking_floor": 1.5}):
         try:
             visibility_settings({"loss": {"visibility": bad}})
@@ -862,8 +862,24 @@ def check_follow_visibility(trainer: Trainer) -> None:
     settings = make(base).visibility_follow_settings()
     assert settings == {
         "target": 2.0, "quantile": 0.96, "window": 256, "ema": 0.0, "low": 0.9, "rate": 0.1,
-        "init_weight": 0.01, "min_weight": 0.01, "max_weight": 1000.0,
+        "init_weight": 0.01, "min_weight": 0.01, "max_weight": 1000.0, "min_bit_acc": None,
     }, f"follow_visibility defaults are wrong: {settings}"
+
+    # The reading guard: below min_bit_acc (smoothed, acc_ema) the weight falls whatever the visibility; at or
+    # above it the controller works as without the guard.
+    guarded = copy.deepcopy(base)
+    guarded["schedule"]["image_loss"]["follow_visibility"].update(min_bit_acc=0.9, init_weight=0.5)
+    probe = make(guarded)
+    probe.image_ramp_start, probe.acc_ema = 0, 0.6
+    for n in range(1, 4):
+        probe.update_visibility(9.0)
+        assert near(probe.vis_weight, 0.5 / 1.1**n), f"guard: weight {probe.vis_weight} after {n} steps of bad reading"
+    for _ in range(100):
+        probe.update_visibility(9.0)
+    assert probe.vis_weight == 0.01, f"guard: the weight fell below min_weight: {probe.vis_weight}"
+    probe.acc_ema = 0.9
+    probe.update_visibility(9.0)
+    assert near(probe.vis_weight, 0.011), f"guard: at min_bit_acc the weight did not rise: {probe.vis_weight}"
 
     probe = make(base)
     probe.update_visibility(3.0)
@@ -939,6 +955,7 @@ def check_follow_visibility(trainer: Trainer) -> None:
         ({"target": None}, None),
         ({"target": 2.0}, {"floor": 0.95, "band": 0.01}),
         ({"target": 2.0, "window": 0}, None),
+        ({"target": 2.0, "min_bit_acc": 1.5}, None),
     ):
         bad = copy.deepcopy(trainer.cfg)
         bad["loss"]["visibility"] = {**(bad["loss"].get("visibility") or {}), "enabled": True}
@@ -1061,6 +1078,32 @@ def check_visibility_step(trainer: Trainer) -> None:
     mp, _, _ = run(plain, None)
     expected = plain["loss"]["bit_weight"] * mp["bit_loss"] + mp["visibility_mean"]
     assert abs(mp["loss"] - expected) <= 1e-4 * max(1.0, abs(expected)), f"weight 1.0 loss: {mp['loss']} vs {expected}"
+
+    # loss.visibility.hinge: only delta E above the controller's target costs. A target above every pixel leaves
+    # the bit loss alone and no visibility gradient; a target near 0 gives the plain mean back.
+    hinged = copy.deepcopy(base)
+    hinged["loss"]["visibility"]["hinge"] = True
+    hinged["schedule"]["image_loss"]["follow_visibility"]["target"] = 1e6
+    mh, _, gh = run(hinged, 0.01)
+    expected = hinged["loss"]["bit_weight"] * mh["bit_loss"]
+    assert abs(mh["loss"] - expected) <= 1e-6 * max(1.0, abs(expected)), f"hinge above every pixel: {mh['loss']} vs {expected}"
+    hinged["loss"]["visibility"]["hinge"] = False
+    _, _, gp = run(hinged, 0.01)
+    assert any(not torch.allclose(a, b) for a, b in zip(gh, gp)), "the hinge above every pixel left the gradient as it was"
+    low = copy.deepcopy(hinged)
+    low["loss"]["visibility"]["hinge"] = True
+    low["schedule"]["image_loss"]["follow_visibility"]["target"] = 1e-9
+    ml, _, _ = run(low, 0.01)
+    expected = low["loss"]["bit_weight"] * ml["bit_loss"] + 0.01 * ml["visibility_mean"]
+    assert abs(ml["loss"] - expected) <= 1e-4 * max(1.0, abs(expected)), f"hinge near 0: {ml['loss']} vs {expected}"
+    lone = copy.deepcopy(plain)
+    lone["loss"]["visibility"]["hinge"] = True
+    try:
+        Trainer(lone, trainer.device)
+    except ValueError as error:
+        assert "follow_visibility" in str(error), f"unclear message: {error}"
+    else:
+        raise AssertionError("Trainer accepted loss.visibility.hinge without follow_visibility")
 
     ev = probe.evaluate(tiles)
     assert math.isfinite(ev["visibility"]), "evaluate has no visibility"
@@ -1451,7 +1494,14 @@ def check_eye_config() -> None:
     assert [m["distance_cm"] for m in cfg["demo"]["measured"]] == [20], cfg["demo"]["measured"]
     assert cfg["schedule"]["image_loss"]["follow_accuracy"] is None
     assert cfg["loss"]["visibility"]["enabled"] and cfg["loss"]["l2_weight"] == 0 and cfg["loss"]["lpips_weight"] == 0
-    assert cfg["reading_check"] == {"enabled": True, "at_step": 80000, "min_bit_acc": 0.80}, cfg["reading_check"]
+    assert cfg["reading_check"] == {
+        "enabled": True, "at_step": 80000, "min_bit_acc": 0.80, "watch_after_trigger": 5000, "watch_min_bit_acc": 0.75,
+    }, cfg["reading_check"]
+    # The safeguards added after the first pod run read at chance (docs/runs.md, "Pod run, 2026-11-26").
+    assert cfg["loss"]["visibility"]["hinge"] is True, cfg["loss"]["visibility"]
+    vf = cfg["schedule"]["image_loss"]["follow_visibility"]
+    assert (vf["min_bit_acc"], vf["min_weight"]) == (0.91, 1e-4), vf
+    assert cfg["schedule"]["image_loss"]["acc_threshold"] == 0.94, cfg["schedule"]["image_loss"]
     assert cfg["checkpoint"]["dir"].startswith("/workspace/runs/eye_model/")
     assert cfg["train"]["total_steps"] == 140000, cfg["train"]["total_steps"]
     assert cfg["checkpoint"]["keep"] == 8, f"runpod_eye: checkpoint.keep {cfg['checkpoint']['keep']}, want 8"
@@ -1499,7 +1549,29 @@ def check_reading_check(device_name: str) -> None:
         assert state["reading_check"]["result"] == "failed", state["reading_check"]
         second = subprocess.run(command, capture_output=True, text=True, cwd=HERE)
         assert second.returncode == 7 and "will not resume" in second.stdout, second.stdout[-1500:]
-    print("reading check passed: exit code 7, checkpoint saved, run_state.json says failed, no resume")
+
+        # The watch: the same stop at any step once the image loss is on (trigger forced at once), long before at_step.
+        watch = [
+            *command[:-3], "reading_check.enabled=true", "reading_check.at_step=100000", "reading_check.min_bit_acc=0.5",
+            "reading_check.watch_after_trigger=0", "reading_check.watch_min_bit_acc=0.99",
+            "schedule.image_loss.acc_threshold=0.0", "train.total_steps=40",
+            f"checkpoint.dir={(root / 'ckpt_watch').as_posix()}", f"log.dir={(root / 'logs_watch').as_posix()}",
+        ]
+        third = subprocess.run(watch, capture_output=True, text=True, cwd=HERE)
+        assert third.returncode == 7, f"reading watch: exit code {third.returncode}, expected 7\n{third.stdout[-1500:]}\n{third.stderr[-1500:]}"
+        assert "reading watch at step 10," in third.stdout and "reading has collapsed" in third.stdout, third.stdout[-1500:]
+        assert "(reading_check.watch_after_trigger)" in third.stdout, third.stdout[-1500:]
+        state = json.loads((root / "logs_watch" / "run_state.json").read_text(encoding="utf-8"))
+        assert state["reading_check"]["kind"] == "watch" and state["reading_check"]["step"] == 10, state["reading_check"]
+        # Off without watch_after_trigger: the same run trains to the end.
+        quiet = [arg for arg in watch if not arg.startswith("reading_check.watch")]
+        quiet = [*quiet[:-2], f"checkpoint.dir={(root / 'ckpt_quiet').as_posix()}", f"log.dir={(root / 'logs_quiet').as_posix()}"]
+        fourth = subprocess.run(quiet, capture_output=True, text=True, cwd=HERE)
+        assert fourth.returncode == 0 and "reading watch" not in fourth.stdout, f"{fourth.returncode}\n{fourth.stdout[-1500:]}"
+    print(
+        "reading check passed: exit code 7, checkpoint saved, run_state.json says failed, no resume; the reading "
+        "watch stops a run at the first full window after the trigger, and is off without watch_after_trigger"
+    )
 
 
 def describe_simulation(cfg: dict) -> str:
