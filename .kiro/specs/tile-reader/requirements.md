@@ -39,7 +39,7 @@ Out of scope: camera access, the race screen and its wiring (race spec task 8), 
 ### Requirement 1: Model bundle
 **User Story:** As the developer wiring the model, I want the app to serve the exact bundle that was trained and to take every model number from its contract, so that the browser runs the model the fixtures were made with.
 #### Acceptance Criteria
-1. THE Tile_Reader repository SHALL hold a copy of the folder `training/export/20261126-ba0ab4d/` at `web/public/models/20261126-ba0ab4d/` with every file byte-identical to the source.
+1. THE Tile_Reader repository SHALL hold a copy of the folder `training/export/20261126-ba0ab4d/` at `web/public/models/20261126-ba0ab4d/` with every file byte-identical to the source; `contract.json` and `reader.onnx` SHALL be committed, and the copy's `fixtures/` folder SHALL be git-ignored, so that it is never deployed. (Decided by Tony, 2026-11-28.)
 2. THE Tile_Reader SHALL take TILE_PX, MESSAGE_BITS, the Trained_Range, the Stream_Short_Side, the Window_Size, the reader's input and output names and shapes, and the flatten target from the Contract, and SHALL NOT hold copies of those numbers in code.
 3. WHEN the Tile_Reader loads a Contract whose `trained` is not `true`, whose `reader_input` is not `flattened`, whose MESSAGE_BITS differs from `MESSAGE_BITS` of the Message_Codec, or whose `flatten.target_size` is not [TILE_PX, TILE_PX], THE Tile_Reader SHALL reject the Contract with an error that names the field.
 4. THE test suite SHALL check that `web/public/models/20261126-ba0ab4d/reader.onnx` has the `bytes` and `sha256` of `models.reader` in the Contract, and that the Contract says `trained: true`, `reader_input: flattened`, TILE_PX 384 and MESSAGE_BITS 64.
@@ -93,6 +93,7 @@ Out of scope: camera access, the race screen and its wiring (race spec task 8), 
 1. THE Tile_Reader SHALL run `reader.onnx` with onnxruntime-web on the `webgpu` or `wasm` execution provider, and SHALL NOT use `webgl`.
 2. WHEN the Tile_Reader sets `ort.env.wasm.wasmPaths` in a browser, THE Tile_Reader SHALL set it to an absolute URL.
 3. THE Tile_Reader SHALL feed the reader by the input name and shape and read it by the output name in the Contract's `models.reader`.
+4. WHEN the browser loader has created the reader's session, THE Tile_Reader SHALL report which execution provider, `webgpu` or `wasm`, the session runs on. (Added 2026-11-28 at Tony's request, for the race screen's debug line.)
 ### Requirement 9: Pure steps
 **User Story:** As the developer, I want the image steps to run in Vitest under Node, so that they are checked against the fixtures without a browser.
 #### Acceptance Criteria
@@ -101,8 +102,8 @@ Out of scope: camera access, the race screen and its wiring (race spec task 8), 
 ### Requirement 10: Fixture acceptance
 **User Story:** As the developer, I want the reader checked against the reference scanner's answers on every fixture, so that a wiring mistake shows as a failing test.
 #### Acceptance Criteria
-1. THE fixture tests SHALL find the Fixture_Sets in the Fixture_Root.
-2. IF the Fixture_Root or the `synthetic` Fixture_Set does not exist, THEN THE fixture tests SHALL fail, not skip, with a message that contains the path looked at.
+1. THE fixture tests SHALL find the Fixture_Sets in the Fixture_Root and SHALL run with `npm run test:fixtures` in `/web`; `npm test` SHALL pass on a clean checkout without any git-ignored folder. (Split 2026-11-28 at Tony's request.)
+2. IF the Fixture_Root, the `synthetic` Fixture_Set, the source Model_Bundle or the Model_Bundle copy's `fixtures/` folder does not exist, THEN THE fixture tests SHALL fail, not skip, with a message that contains the path looked at.
 3. WHERE the `photos` Fixture_Set exists, THE fixture tests SHALL run every check of this requirement on it as well as on the `synthetic` Fixture_Set.
 4. FOR EVERY Fixture, THE Tile_Reader's steps of Requirements 2 to 5 on `NN_frame.png` with the Label_Layout SHALL give, for each Whole_Tile, Flatten_Corners within 1 px in x and in y of that tile's `corners` in `NN.json`, in the same order.
 5. FOR EVERY Fixture and Whole_Tile, flattening `NN_frame.png` with the tile's `corners` and rounding to 8-bit levels SHALL give every value within 1 level of the tile's patch file.

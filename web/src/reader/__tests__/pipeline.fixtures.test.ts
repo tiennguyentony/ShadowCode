@@ -1,4 +1,5 @@
-// Requirements 10.9 to 10.12 with the real model; 3.3 to 3.5, 5.3 to 5.5 and 7.3 with a stand-in model.
+// Requirements 10.9 to 10.12 with the real model; 3.3 to 3.5, 5.3 to 5.5 and 7.3 with a stand-in model,
+// on the Fixture frames. The tests that need no Fixture are in pipeline.test.ts.
 import { describe, expect, it, vi } from 'vitest'
 import { encodeMessage } from '../../codec/message'
 import { areaResize } from '../frame'
@@ -136,13 +137,6 @@ describe('missing tags (10.12, 3.3 to 3.5)', () => {
 })
 
 describe('distance hints (5.3 to 5.5)', () => {
-  it('limits come from camera.trained_px_per_tile', () => {
-    const [low, high] = contract.trainedPxPerTile
-    expect(distanceHint(low - 0.01, contract.trainedPxPerTile)).toBe('closer')
-    expect(distanceHint(low, contract.trainedPxPerTile)).toBeNull()
-    expect(distanceHint(high, contract.trainedPxPerTile)).toBeNull()
-    expect(distanceHint(high + 0.01, contract.trainedPxPerTile)).toBe('farther')
-  })
 
   it('5.3: a frame shrunk to 0.9 (about 218 px per tile) says closer and still reads', async () => {
     const f = products[0].frames[0]
@@ -180,11 +174,7 @@ describe('distance hints (5.3 to 5.5)', () => {
   })
 })
 
-describe('frame errors (2.1) and one call at a time', () => {
-  it('rejects a wrong data length', async () => {
-    const read = createFrameReader({ contract, runReader: standIn(1001) })
-    await expect(read({ width: 4, height: 4, data: new Uint8ClampedArray(63) })).rejects.toThrow(/expected 64/)
-  })
+describe('model output check', () => {
 
   it('rejects a model that returns the wrong number of logits, naming MESSAGE_BITS', async () => {
     const f = products[0].frames[0]

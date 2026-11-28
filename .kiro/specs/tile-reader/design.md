@@ -24,7 +24,9 @@ The Scanner gets one Decode_Result after every Processed_Frame (scanner design D
 | D10 | The reader instance is `ReadFrame = (frame) => Promise<TileReadout>`, the shape of the race spec's Tile_Reader_Interface (`web/src/race/tileReader.ts` on `web/race`). `types.ts` repeats the types structurally, so this branch does not depend on `web/race`; race task 8 can assign the reader without an adapter. `TileReadout.detail` adds corners, Px_Per_Tile, logits and timings for tests and a debug view; extra fields do not break the race type. |
 | D11 | ONNX Runtime Web 1.31.1 (MIT), the version `docs/model-contract.md` measured. In the browser, `executionProviders: ['webgpu', 'wasm']`; WebGL is never listed. The default `onnxruntime-web` import in a browser loads `ort-wasm-simd-threaded.jsep.wasm`; `browser.ts` imports that file with Vite's `?url` and sets `ort.env.wasm.wasmPaths = { wasm: <absolute URL> }`, made absolute with `new URL(url, import.meta.url)` (Requirement 8.2). Node uses `ort.node.min.mjs` and finds its wasm itself. Checked 2026-11-28 in headless Edge on this laptop, with a temporary page (deleted afterwards) that loaded the bundle through `loadTileReader` and read the synthetic frames of 1001 and 1003 in order, in Vite dev and in a production build: every frame decoded to its product. |
 | D12 | Fixture logits. Measured 2026-11-28: the Fixtures' tile `logits` are the reader's output on the frame flattened with the tile's `corners` without rounding (largest difference 4 × 10⁻⁵ of L over 18 tiles). On the 8-bit patch files the difference is 0.37% to 1.15% of L, bits identical. So Requirement 10.6 checks L / 1000 on the unrounded flatten and L / 50 plus identical bits on the patch file; 10.7 checks L / 1000 on the bundle's own `fixtures/`, whose logits do come from the patch (measured 1.2 × 10⁻⁶ of L). |
-| D13 | Bundle copy: `web/scripts/copy-bundle.mjs` copies `TILEMARK_BUNDLE_SRC` (default `../training/export/20261126-ba0ab4d` from `/web`) to `web/public/models/20261126-ba0ab4d/` byte for byte and checks the sha256 of `reader.onnx` against the Contract. It never writes the source. `reader.onnx` (8.3 MB) and `fixtures/` (6.6 MB) are committed only after Tony agrees. |
+| D14 | Tests are split (Tony, 2026-11-28). `npm test` (`vitest.config.ts`) excludes `**/*.fixtures.test.ts` and passes on a clean checkout: it needs only the committed `contract.json` and `reader.onnx`. `npm run test:fixtures` (`vitest.fixtures.config.ts`, 120 s test timeout) runs the `*.fixtures.test.ts` files, which need the demo fixtures, the source bundle or the copy's `fixtures/`, and fail with the path when one is missing. The Pages workflow runs `npm test` only. |
+| D15 | Execution provider in use. `loadTileReader` creates the session with one provider at a time, in the order given (default `webgpu`, then `wasm`), and keeps the first whose session runs one blank input; the source reports it as `executionProvider` (Requirement 8.4). The blank run also makes WebGPU compile its shaders during loading instead of on the first timed frame (measured before: 200 to 2,309 ms on frame 1). |
+| D13 | Bundle copy: `web/scripts/copy-bundle.mjs` copies `TILEMARK_BUNDLE_SRC` (default `../training/export/20261126-ba0ab4d` from `/web`) to `web/public/models/20261126-ba0ab4d/` byte for byte and checks the sha256 of `reader.onnx` against the Contract. It never writes the source. Tony decided on 2026-11-28: `contract.json` and `reader.onnx` (8.3 MB) are committed; `web/public/models/*/fixtures/` is git-ignored (`.gitignore`), so it is never committed or deployed, and `npm run copy-bundle` puts it back for the fixture tests. |
 ## Architecture
 ```mermaid
 flowchart LR
@@ -122,22 +124,24 @@ The race screen shows a rejected `ReadFrame` call and continues (race 5.8).
 | File | Contents |
 |---|---|
 | `__tests__/fixtures.ts` | Fixture_Root from `TILEMARK_DEMO_FIXTURES` or `../training/export/demo-fixtures`; lists Fixture_Sets, products and frames; decodes PNGs with pngjs (MIT); throws with the path when a folder is missing (10.1, 10.2). Bundle folder `web/public/models/20261126-ba0ab4d/`. |
-| `__tests__/bundle.test.ts` | 1.1, 1.4: sha256 and bytes of `reader.onnx`; Contract fields; `parseContract` accepts it and rejects altered copies (1.3); `bundleId` (1.5). |
-| `__tests__/layout.test.ts` | 4.2 for every product folder of every Fixture_Set. |
+| `__tests__/bundle.test.ts` | 1.4: sha256 and bytes of `reader.onnx`; Contract fields; `parseContract` accepts it and rejects altered copies (1.3); `bundleId` (1.5). |
+| `__tests__/layout.fixtures.test.ts` | 4.2 for every product folder of every Fixture_Set. |
 | `__tests__/frame.test.ts` | 2.1 to 2.3; Property 4. |
 | `__tests__/geometry.properties.test.ts` | Properties 2 and 3. |
 | `__tests__/window.test.ts` | Property 1; examples for 1, 2, 3, 4 pushes and clear. |
-| `__tests__/fixtures.corners.test.ts` | 10.4 (corners), 10.5 (patch levels) for every Fixture. |
-| `__tests__/fixtures.reader.test.ts` | 10.6, 10.7, 10.8 with onnxruntime-web wasm. |
-| `__tests__/fixtures.pipeline.test.ts` | 10.9, 10.10, 10.11: the whole reader per product, frames in order, bit differences printed. 10.12: one Tag covered. 3.4, 3.5, 5.3 to 5.5, 7.3 with a stand-in `RunReader`. |
-| `__tests__/reader.perf.test.ts` | Requirement 11: times per step over the 9 synthetic frames, printed. |
+| `__tests__/corners.fixtures.test.ts` | 10.4 (corners), 10.5 (patch levels) for every Fixture. |
+| `__tests__/reader.fixtures.test.ts` | 10.6, 10.7, 10.8 with onnxruntime-web wasm. |
+| `__tests__/pipeline.fixtures.test.ts` | 10.9, 10.10, 10.11: the whole reader per product, frames in order, bit differences printed. 10.12: one Tag covered. 3.4, 3.5, 5.3 to 5.5, 7.3 with a stand-in `RunReader`. |
+| `__tests__/bundle.fixtures.test.ts` | 1.1: every file of the copy equals the source bundle. |
+| `__tests__/pipeline.test.ts` | No-Fixture pipeline checks: 2.1, 2.2, 3.3, 3.4 on a blank frame, distance-hint limits. |
+| `__tests__/perf.fixtures.test.ts` | Requirement 11: times per step over the 9 synthetic frames, printed. |
 | `__tests__/reader.isolation.test.ts` | 9.1: pure files import no UI module and use no browser API; 8.1: no `webgl` in `browser.ts` and `onnx.ts`. |
 Property tests use fast-check with `FC_SEED = 0x711e4ead`, 500 runs, tagged `// Feature: tile-reader, Property {n}: {title}`.
 ### Fixture folder
-`training/export/` is git-ignored and exists only in `D:\Coding\ShadowCode`. In any other worktree, set `TILEMARK_DEMO_FIXTURES=D:\Coding\ShadowCode\training\export\demo-fixtures` and `TILEMARK_BUNDLE_SRC=D:\Coding\ShadowCode\training\export\20261126-ba0ab4d`, then run `npm run copy-bundle` and `npm test` in `/web`. Without the folder the fixture tests fail with the path in the message (10.2). The GitHub Pages workflow runs `npm test` on master and has no fixtures, so it will fail there once this branch is merged; that needs a decision by Tony (see Open Items).
+`training/export/` is git-ignored and exists only in `D:\Coding\ShadowCode`. In any other worktree, set `TILEMARK_DEMO_FIXTURES=D:\Coding\ShadowCode\training\export\demo-fixtures` and `TILEMARK_BUNDLE_SRC=D:\Coding\ShadowCode\training\export\20261126-ba0ab4d`, then run `npm run copy-bundle` and `npm run test:fixtures` in `/web`. Without the folder the fixture tests fail with the path in the message (10.2). These tests run with `npm run test:fixtures`; `npm test`, which the GitHub Pages workflow runs, needs none of these folders (D14).
 ## Measured timing
 Laptop: 13th Gen Intel Core i7-13620H (16 logical CPUs), NVIDIA GeForce RTX 4070 Laptop GPU and Intel UHD Graphics, on mains power, 2026-11-28. Per Processed_Frame of the synthetic 1080 x 1920 frames. Target (`.kiro/steering/tech.md`): under 100 ms per decode attempt.
-**Node, Vitest, onnxruntime-web 1.31.1 wasm, 4 threads** (`reader.perf.test.ts`, 9 frames x 3 rounds after a warm-up of 3 frames, medians):
+**Node, Vitest, onnxruntime-web 1.31.1 wasm, 4 threads** (`perf.fixtures.test.ts`, 9 frames x 3 rounds after a warm-up of 3 frames, medians):
 | Run | Tag detection | Two flattens | Two reader runs | Whole frame |
 |---|---|---|---|---|
 | quiet machine, fastest of 4 runs | 43.0 ms | 18.6 ms | 119.9 ms | 185.7 ms |
@@ -153,7 +157,6 @@ Laptop: 13th Gen Intel Core i7-13620H (16 logical CPUs), NVIDIA GeForce RTX 4070
 **Against 100 ms per attempt.** No path meets it. The closest is WebGPU at a median of 139 ms per frame in the production build (112 to 156 ms in dev), of which the two reader runs are about 70 ms and tag detection about 45 ms. On wasm the reader alone takes 120 to 190 ms in Node with 4 threads, and 350 ms or more in a browser page without cross-origin isolation, so wasm is a fallback that works but is slow. With scanner design D8 (sliding window, Confirmation_Count 2) the least successful read is 2 frames, about 280 ms at 139 ms per frame on WebGPU, which still meets the 500 ms successful-read target; at 4 frames (about 560 ms) it no longer does.
 Ways to get under 100 ms, none of them built: export the reader with batch size 2 so both tiles run in one call (needs `/training`); run tag detection on the next frame while the reader runs (a worker); skip full detection on frames where the tags moved little; serve the page cross-origin isolated so wasm can use threads (GitHub Pages cannot set the headers; a service worker can).
 ## Open Items
-- Commit `reader.onnx` (8.3 MB) and the bundle's `fixtures/` (6.6 MB) under `web/public/models/20261126-ba0ab4d/`: waits for Tony.
-- The Pages workflow (`.github/workflows/deploy-web.yml`) runs `npm test` without fixtures. Options: set `TILEMARK_DEMO_FIXTURES` there to a folder that exists (it does not, the fixtures are git-ignored), run the fixture tests only locally (a separate `npm run test:fixtures`), or commit the fixtures. Waits for Tony.
+- Decided 2026-11-28: `reader.onnx` committed, the bundle's `fixtures/` git-ignored (D13); tests split (D14); no speed work for now; execution provider on the race debug line (D15, race 7.4).
 - Requirement 10.6 differs from the first request (patch file within L / 1000); see D12.
-- Timing misses 100 ms per attempt on every path (see "Measured timing"); which of the listed ways to try is Tony's choice.
+- Timing misses 100 ms per attempt on every path (see "Measured timing"). Tony chose no speed fix for now.

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { decodeMessage } from '../../codec/message'
 import { flatten, imageToInput } from '../flatten'
 import { meanOf } from '../logitWindow'
-import { bitsOf, bundleDir, countDiff, largestAbs, loadContract, loadProducts, maxAbsDiff, readPng } from './fixtures'
+import { bitsOf, bundleDir, requireDir, countDiff, largestAbs, loadContract, loadProducts, maxAbsDiff, readPng } from './fixtures'
 import { nodeRunReader } from './ortNode'
 
 // Model runs and full-frame detection share the CPU with the other test files.
@@ -33,7 +33,7 @@ describe('reader on each Whole_Tile (10.6)', () => {
 })
 
 describe('reader on the bundle fixtures (10.7)', () => {
-  const dir = join(bundleDir(), 'fixtures')
+  const dir = requireDir(join(bundleDir(), 'fixtures'), "the bundle's fixtures/ folder", 'Run `npm run copy-bundle` in /web (set TILEMARK_BUNDLE_SRC outside the main checkout).')
   const names = readdirSync(dir).filter((n) => /^\d+\.json$/.test(n)).map((n) => n.slice(0, -5)).sort()
   it('has bundle fixtures', () => expect(names.length).toBeGreaterThan(0))
   it.each(names)('fixtures/%s_patch.png', async (name) => {

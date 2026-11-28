@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
         measure: resolve(import.meta.dirname, 'measure/index.html'),
+        race: resolve(import.meta.dirname, 'race/index.html'),
       },
     },
   },

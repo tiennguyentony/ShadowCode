@@ -1,6 +1,6 @@
 # Implementation Plan: Tile Reader
 ## Overview
-Build the Tile_Reader in `/web/src/reader/` as pure TypeScript steps plus a thin ONNX Runtime Web layer, then the fixture, property and timing tests. Files are created or modified only under `/web` and `.kiro/specs/tile-reader/`, plus one `docs/kiro-log.md` entry per task. Nothing under `/training` is created, edited or deleted; the Model_Bundle and the Fixture_Sets are only read. Tests run with `npm test` from `/web` (with `TILEMARK_DEMO_FIXTURES` and `TILEMARK_BUNDLE_SRC` set outside the main checkout); the build with `npm run build`.
+Build the Tile_Reader in `/web/src/reader/` as pure TypeScript steps plus a thin ONNX Runtime Web layer, then the fixture, property and timing tests. Files are created or modified only under `/web` and `.kiro/specs/tile-reader/`, plus one `docs/kiro-log.md` entry per task. Nothing under `/training` is created, edited or deleted; the Model_Bundle and the Fixture_Sets are only read. Tests run with `npm test` from `/web` (clean checkout) and `npm run test:fixtures` (with `TILEMARK_DEMO_FIXTURES` and `TILEMARK_BUNDLE_SRC` set outside the main checkout, after `npm run copy-bundle`); the build with `npm run build`.
 ## Tasks
 - [x] 1. Bundle copy and dependencies
   - [x] 1.1 Add `web/scripts/copy-bundle.mjs` and the `copy-bundle` npm script; copy `20261126-ba0ab4d` unchanged to `web/public/models/20261126-ba0ab4d/`
@@ -47,5 +47,10 @@ Build the Tile_Reader in `/web/src/reader/` as pure TypeScript steps plus a thin
   - Write `__tests__/reader.perf.test.ts`; record detection, two flattens, two reader runs and the total per frame in the design, against 100 ms per attempt
   - _Requirements: 11.1, 11.2_
 - [x] 8. Checkpoint: `npm test` and `npm run build` pass in `/web`
-- [ ] 9. Commit `reader.onnx` and the bundle's `fixtures/` (waits for Tony)
+- [x] 9. Commit `reader.onnx`; git-ignore `web/public/models/*/fixtures/` (Tony, 2026-11-28)
   - _Requirements: 1.1_
+- [x] 10. Split the tests: `*.fixtures.test.ts` run with `npm run test:fixtures` (`vitest.fixtures.config.ts`); `npm test` passes on a clean checkout (design D14)
+  - _Requirements: 10.1, 10.2_
+- [x] 11. Report the execution provider in use from `loadTileReader` (design D15) and wire the real reader into the race screen (race task 8, race 7.4)
+  - _Requirements: 8.4, 12.1, 12.2_
+- [x] 12. Checkpoint: merge `origin/master`; `npm test` on a clean clone, `npm run test:fixtures` and `npm run build` pass in `/web`

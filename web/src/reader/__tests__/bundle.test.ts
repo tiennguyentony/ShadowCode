@@ -1,20 +1,13 @@
-// Requirement 1: the bundle copy and the Contract.
+// Requirement 1: the committed bundle files (contract.json, reader.onnx) and the Contract.
+// Runs on a clean checkout; the comparison with the source bundle is in bundle.fixtures.test.ts.
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseContract } from '../contract'
-import { BUNDLE_ID, bundleDir, loadContractJson, WEB_DIR } from './fixtures'
+import { BUNDLE_ID, bundleDir, loadContractJson } from './fixtures'
 
 const sha256 = (buf: Buffer) => createHash('sha256').update(buf).digest('hex')
-
-function* files(dir: string): Generator<string> {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) yield* files(p)
-    else yield p
-  }
-}
 
 describe('model bundle 20261126-ba0ab4d (Requirement 1)', () => {
   it('1.4: reader.onnx has the bytes and sha256 of models.reader', () => {
@@ -31,24 +24,6 @@ describe('model bundle 20261126-ba0ab4d (Requirement 1)', () => {
     expect(json.reader_input).toBe('flattened')
     expect(json.TILE_PX).toBe(384)
     expect(json.MESSAGE_BITS).toBe(64)
-  })
-
-  it('1.1: every file of the copy is byte-identical to the source bundle', () => {
-    const src = process.env.TILEMARK_BUNDLE_SRC ?? join(WEB_DIR, '..', 'training', 'export', BUNDLE_ID)
-    let compared = 0
-    try {
-      statSync(src)
-    } catch {
-      throw new Error(`source bundle not found at ${src}; set TILEMARK_BUNDLE_SRC`)
-    }
-    const copied = [...files(bundleDir())].map((f) => relative(bundleDir(), f)).sort()
-    const source = [...files(src)].map((f) => relative(src, f)).sort()
-    expect(copied).toEqual(source)
-    for (const rel of source) {
-      expect(sha256(readFileSync(join(bundleDir(), rel))), rel).toBe(sha256(readFileSync(join(src, rel))))
-      compared++
-    }
-    expect(compared).toBeGreaterThanOrEqual(2)
   })
 
   it('1.2, 1.5: parseContract reads the model numbers and the bundle_id', () => {
