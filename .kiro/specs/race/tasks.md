@@ -49,14 +49,14 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
   - [x] 5.3 Write `web/src/print/__tests__/qrSheet.test.ts`
     - jsQR decodes each code's matrix to its ID; QR_Symbol ≥ 30 mm; Quiet_Zone 4 modules; text under each code; cut lines; committed files equal generator output
     - _Requirements: 8.2, 8.4–8.7, 8.9_
-- [ ] 6. Label_Sheets
-  - [ ] 6.1 Write `print/labels.html`, `print/labels.js`, `print/labels/README.md`, `print/README.md`
+- [x] 6. Label_Sheets
+  - [x] 6.1 Write `print/labels.html`, `print/labels.js`, `print/labels/README.md`, `print/README.md`
     - _Requirements: 9.1–9.12_
-  - [ ] 6.2 Write `web/src/print/__tests__/labels.test.ts` (happy-dom, added as a dev dependency)
+  - [x] 6.2 Write `web/src/print/__tests__/labels.test.ts` (happy-dom, added as a dev dependency)
     - **Property 5: Sheet plan keeps every copy, two per Sheet** (Validates: Requirements 9.4, 9.5, 9.6)
     - Every Label element `114mm` × `149mm`; outlines for missing images; ruler and text on every Sheet
     - _Requirements: 9.2–9.9, 11.2_
-  - [ ] 6.3 Printed check: open `print/labels.html` headless in Edge and record the on-screen size check result in the kiro log
+  - [x] 6.3 Printed check: open `print/labels.html` headless in Edge and record the on-screen size check result in the kiro log
     - _Requirements: 9.10_
 - [ ] 7. Checkpoint: `npm test` and `npm run build` pass in `/web`
   - _Requirements: 11.3_

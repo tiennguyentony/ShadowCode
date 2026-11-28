@@ -291,3 +291,16 @@ Nothing recorded.
 - The SVG is drawn from the `qrcode` matrix instead of `QRCode.toString`, so the size can be set in millimetres and the test can read every module back.
 **Went wrong or had to redo:**
 Nothing recorded.
+
+**Feature:** spec (race task 6: Label_Sheets)
+**Output:**
+- `print/labels.html` and `print/labels.js` (classic script): Copies input per product (default 6, 0-60), two Labels per A4 Sheet turned 90 degrees (slots at 30.5 mm left, 12 mm and 136 mm top), each Label element 114mm x 149mm with the turn done by a CSS transform, caption with ID and copy number, a 100 mm SVG ruler with 10 mm ticks and "print at 100% (actual size)" on every Sheet, outline with the Product_ID when `labels/<id>.png` does not load, and an on-screen size check (offsetWidth/offsetHeight against the ruler, 0.5 mm tolerance) hidden in print.
+- `print/README.md`, `print/labels/README.md`.
+- `web/src/print/__tests__/labels.test.ts` (happy-dom, 11 tests): Property 5 (seed 0x7ace2026, 1,000 runs), 9 Sheets of 2 for 6 copies each, `clampCopies`, every Label element `114mm` x `149mm` with no px, image paths, outlines, slot positions, captions, ruler and text on every Sheet, `@page { size: A4`, screen-only check, no `/training` reference. Dev dependency `happy-dom` ^21.0.4 (MIT).
+- Printed check in headless Edge (`--dump-dom`): from `print/` with no images, "18 labels on 9 sheets. Size check: all 18 labels measure 114 × 149 mm (1 mm = 3.779 screen px)", with outlines drawn for all three. From a temporary copy in `%TEMP%` with a generated 876 x 1144 px test image as `1001.png`: the same check passed, and the page showed "876 × 1144 px, 7.68 px per mm" for it. `--print-to-pdf` of that copy: 9 pages, all A4 (594.96 x 841.92 pt). A screenshot shows the image turned 90 degrees clockwise (its top-left corner at the top right).
+**Caught, corrected, or changed my mind about:**
+- 114 mm x 7.68 px/mm = 875.52 px, so a label PNG cannot match the 114:149 ratio exactly. Both CSS sizes are set in mm, so the image is stretched by less than 0.1 %. The page reports each image's px per mm and warns when it is more than 1 % off 7.68.
+- `labels.html` first listed the three file names in its loading text. Changed to a generic text, so the page holds no product IDs of its own.
+**Went wrong or had to redo:**
+- The first test run failed with "The URL must be of scheme file": under happy-dom the global `URL` is not Node's. The test now builds paths with `node:path` and `fileURLToPath`.
+- One headless run printed nothing because two Edge runs shared a profile folder. Re-run with separate profiles.
