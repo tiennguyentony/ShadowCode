@@ -244,3 +244,13 @@ Nothing recorded.
 - The Property 1 reference is a separate mutable simulation written from the requirements, so it does not reuse `race.ts` code.
 **Went wrong or had to redo:**
 Nothing recorded.
+
+**Feature:** spec (race task 2: QR_Text_Parser and Frame_Rate)
+**Output:**
+- `web/src/race/qrText.ts`: `createQrTextParser(catalog)`; a text counts only if it equals `String(id)` of a Catalog_ID; 0 never counts.
+- `web/src/race/frameRate.ts`: `createFrameRateCounter(windowMs = 1000)` with `record`, `perSecond`, `reset`.
+- `web/src/race/__tests__/qrText.test.ts` (16 tests: 1001, 1002, 1003 accepted; 13 rejected texts including `1004`, `0`, ` 1001x`, empty, `01001`, `+1001`, full-width digits; Property 4 with seed 0x7ace2026, 1,000 runs) and `frameRate.test.ts` (4 tests). 20 tests pass.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.

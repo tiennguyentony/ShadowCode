@@ -21,10 +21,10 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
     - **Property 1: Finds equal the reference model** (Validates: Requirements 3.1, 3.2, 3.4, 3.5, 3.6)
     - **Property 2: Ignored events change nothing** (Validates: Requirements 3.3, 3.5, 3.7, 3.8)
     - **Property 3: A Run finishes exactly when all Catalog_IDs are found** (Validates: Requirements 3.9, 6.1, 6.3)
-- [ ] 2. QR_Text_Parser and Frame_Rate
-  - [ ] 2.1 Implement `web/src/race/qrText.ts` and `web/src/race/frameRate.ts`
+- [x] 2. QR_Text_Parser and Frame_Rate
+  - [x] 2.1 Implement `web/src/race/qrText.ts` and `web/src/race/frameRate.ts`
     - _Requirements: 4.4, 4.5, 7.3_
-  - [ ] 2.2 Write `web/src/race/__tests__/qrText.test.ts` and `frameRate.test.ts`
+  - [x] 2.2 Write `web/src/race/__tests__/qrText.test.ts` and `frameRate.test.ts`
     - Accepts `1001`, `1002`, `1003`; ignores `1004`, `0`, ` 1001x`, empty and the other cases in the design
     - **Property 4: The QR_Text_Parser accepts exactly the catalog's decimal texts** (Validates: Requirements 4.4, 4.5)
     - _Requirements: 4.4, 4.5, 7.3_
