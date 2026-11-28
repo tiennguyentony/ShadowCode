@@ -314,3 +314,120 @@ Nothing recorded.
 Nothing recorded.
 **Went wrong or had to redo:**
 Nothing recorded.
+**Feature:** spec (tile-reader: requirements, design and tasks)
+**Output:**
+- `.kiro/specs/tile-reader/requirements.md` (12 requirements, EARS), `design.md` (decisions D1 to D13, 4 correctness properties, measured timing), `tasks.md` (9 tasks), `.config.kiro`.
+- Branch `web/tile-reader` from `web/scanner` (it has the scanner design D8 and `.kiro/steering/model-bundle.md`), worktree `D:\Coding\ShadowCode-wt\tile-reader`.
+**Caught, corrected, or changed my mind about:**
+- The synthetic Fixtures' tile `logits` are the reader's output on the frame flattened with the tile's `corners` without rounding (largest difference 4 � 10?5 of L over 18 tiles). On the 8-bit patch files the reader differs by 0.37% to 1.15% of L, with the same bits. The requested check "patch file within L / 1000" cannot pass, so Requirement 10.6 checks the unrounded flatten within L / 1000 and the patch file within L / 50 with identical bits; 10.7 keeps L / 1000 on the bundle's own `fixtures/` (1.2 � 10?6 of L). Recorded as design D12 and an open item for Tony.
+- The race spec's Tile_Reader_Interface (`web/src/race/tileReader.ts`, branch `web/race`) is repeated structurally in `web/src/reader/types.ts`, so this branch does not depend on `web/race` (design D10).
+- Window rule per the request: no tag found empties the window, one to three found leave it unchanged (design D8).
+**Went wrong or had to redo:**
+- Feasibility code (homography, flatten, tag detection prototypes) was written before the spec documents, to measure corner accuracy and model timing for the design. It was kept and is covered by tasks 2 to 4.
+**Feature:** spec (tile-reader task 1: bundle copy and dependencies)
+**Output:**
+- `web/scripts/copy-bundle.mjs` and `npm run copy-bundle`: copies `TILEMARK_BUNDLE_SRC` (default `../training/export/20261126-ba0ab4d`) byte for byte to `web/public/models/20261126-ba0ab4d/` (17 files) and checks the sha256 of `reader.onnx` (`3c8a9b67�9fea`).
+- `web/package.json`: `onnxruntime-web` 1.31.1 (exact), dev `pngjs` ^7.0.0 and `@types/pngjs` (all MIT).
+- `web/src/reader/vendor/js-aruco2/`: `cv.js`, `aruco.js`, `apriltag_36h11.js` from js-aruco2 2.0.0 (MIT; 36h11 codes BSD-2-Clause) with `LICENSE.txt`; only the module lines changed (diff: 6, 7 and 4 lines).
+**Caught, corrected, or changed my mind about:**
+- js-aruco2 was first installed from npm. In Edge (Vite dev) it failed with `TypeError: Cannot read properties of undefined (reading 'CV')`: the CommonJS files read `this.CV` at the top level, which is `undefined` in the bundle. Vendoring as ES modules fixed it in dev and build; the npm dependency was removed.
+- `onnxruntime-web` was first added as ^1.31.1 and pinned to 1.31.1, the version `docs/model-contract.md` measured.
+**Went wrong or had to redo:**
+- `npx prettier --version` asked to install prettier and swallowed the rest of that command line; nothing was installed.
+**Feature:** spec (tile-reader task 2: contract and frame)
+**Output:**
+- `web/src/reader/types.ts`, `contract.ts` (`parseContract`, errors name the field), `frame.ts` (`checkFrame`, `areaResize`, `shrinkToShortSide`).
+- Tests: `__tests__/fixtures.ts` (Fixture_Root from `TILEMARK_DEMO_FIXTURES`, fails with the path when missing), `bundle.test.ts` (13 tests: sha256 and bytes, contract fields, byte-identical copy, 8 altered contracts rejected), `frame.test.ts` (Property 4).
+**Caught, corrected, or changed my mind about:**
+- Property 4 first compared every pixel with `expect` and timed out at 5 s; it now counts wrong pixels and runs 100 cases on frames scaled down by 10.
+**Went wrong or had to redo:**
+- Property 4 timeout, above.
+**Feature:** spec (tile-reader task 3: geometry)
+**Output:**
+- `web/src/reader/layout.ts` (`LABEL_LAYOUT`, frozen), `homography.ts` and `flatten.ts` (the contract's code, typed), `locate.ts` (`locateTiles`, `meanSide`).
+- `__tests__/layout.test.ts` (layout equals all 3 `label.json`), `geometry.properties.test.ts` (Properties 2 and 3, 500 runs each).
+**Caught, corrected, or changed my mind about:**
+- Property 2 first drew 4 random points and rejected non-convex ones; fast-check gave up after 50,001 rejections. It now builds a convex quadrilateral with one corner per quadrant.
+**Went wrong or had to redo:**
+- Property 2 generator, above.
+**Feature:** spec (tile-reader task 4: tag detection and fixture corners)
+**Output:**
+- `web/src/reader/tags.ts`: detection on a half-size copy with full-frame fallback, contour index q to q + 0.5, edge refinement (24 normals per side, half-level crossing, line fit, two passes), Hamming limit 4 bits.
+- `__tests__/fixtures.corners.test.ts`: 9 frames, Flatten_Corners within 0.162 to 0.312 px of the reference (limit 1 px); 18 patches, 76 to 495 of 442,368 values off by 1 level, none by more.
+**Caught, corrected, or changed my mind about:**
+- Detection on the full 1080 x 1920 frame took 110 to 200 ms in Node; on the half-size copy about 45 ms.
+**Went wrong or had to redo:**
+Nothing recorded.
+**Feature:** spec (tile-reader task 5: model run)
+**Output:**
+- `web/src/reader/onnx.ts` (`createOnnxRunReader`, providers `['webgpu', 'wasm']`), `browser.ts` (`loadTileReader`: absolute `wasmPaths` for the jsep wasm, contract and sha256 checks, optional provider list without WebGL).
+- `__tests__/ortNode.ts`, `fixtures.reader.test.ts`: 18 tiles, unrounded flatten 5.6 � 10?6 to 3.7 � 10?5 of L, patch file 3.5 � 10?� to 1.13 � 10?� of L, bits identical; 5 bundle fixtures within L / 1000; 9 frame means within L / 1000, `decodeMessage` gives 1001, 1002, 1003.
+- Headless Edge check with a temporary page (deleted): 1001 and 1003 decode on every frame in Vite dev with `['webgpu', 'wasm']` and with `['wasm']` only, and in a production build with `['webgpu', 'wasm']`.
+**Caught, corrected, or changed my mind about:**
+- The first browser run fetched the fixture PNG through `/@fs/` without `server.fs.allow` and failed to decode it; a temporary Vite config allowed the folder.
+**Went wrong or had to redo:**
+- `--dump-dom` returned before the reader finished; the check was rerun over the Chrome DevTools Protocol.
+**Feature:** spec (tile-reader task 6: frame pipeline)
+**Output:**
+- `web/src/reader/logitWindow.ts` (`LogitWindow`, `meanOf`, `logitsToBits`), `pipeline.ts` (`createFrameReader`, `distanceHint`).
+- `__tests__/window.test.ts` (Property 1), `fixtures.pipeline.test.ts` (12 tests), `reader.isolation.test.ts`.
+- Whole reader per product, frames in order: decodes the product after every frame; own frame bits and window bits differ from the fixture's `bits` in 0 of 64 on all 9 frames; one tag covered gives `null`, `show all four corners`, `[2]`.
+**Caught, corrected, or changed my mind about:**
+- `window.ts` and a variable named `window` would trip the isolation check for the browser global; renamed to `logitWindow.ts` and `logitWindow`.
+**Went wrong or had to redo:**
+- The 3-frame product test timed out at 5 s while all test files ran together; the three fixture test files set a 120 s timeout.
+**Feature:** spec (tile-reader task 7: timing)
+**Output:**
+- `__tests__/reader.perf.test.ts`. Node, wasm 4 threads, medians of quiet runs: detection 43.0 to 48.1 ms, two flattens 15.5 to 18.6 ms, two reader runs 119.9 to 187.4 ms, whole frame 185.7 to 253.8 ms. Edge, WebGPU, production build, median of frames 2 to 6: 45, 17, 71 and 139 ms. Edge, wasm only: two reader runs 352 to 1,114 ms.
+- Recorded in `design.md`, "Measured timing": no path meets 100 ms per attempt.
+**Caught, corrected, or changed my mind about:**
+- The perf test first used one reader for all 9 frames, so the window mixed products and decoded `null`; it now uses one reader per product.
+**Went wrong or had to redo:**
+- Later runs in the session were about 3 times slower in every step (whole frame 689 to 829 ms), from the machine's state; recorded as such.
+**Feature:** spec (tile-reader task 8: checkpoint)
+**Output:**
+- `npm test` in `web` with `TILEMARK_DEMO_FIXTURES` and `TILEMARK_BUNDLE_SRC` set: 28 files, 298 tests pass. Without them the fixture tests fail with the path. `npm run build` exits 0.
+- Task 9 (commit `reader.onnx` and the bundle's `fixtures/`) is open until Tony answers.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+**Feature:** spec (tile-reader task 9: commit reader.onnx, ignore the bundle's fixtures/)
+**Output:**
+- `web/public/models/20261126-ba0ab4d/reader.onnx` committed (8,324,600 bytes, sha256 as in `contract.json`).
+- `.gitignore`: `web/public/models/*/fixtures/`, so the bundle's fixtures are never committed or deployed. A clean clone's `npm run build` has only `contract.json` and `reader.onnx` under `dist/models/20261126-ba0ab4d/`.
+- `requirements.md` 1.1 and design D13 record Tony's decision.
+**Caught, corrected, or changed my mind about:**
+- A local build from a checkout that ran `npm run copy-bundle` still copies `fixtures/` into `dist/`; the Pages build does not, because it starts from git.
+**Went wrong or had to redo:**
+Nothing recorded.
+**Feature:** spec (tile-reader task 10: split the tests)
+**Output:**
+- `web/vitest.config.ts` excludes `**/*.fixtures.test.ts`; `web/vitest.fixtures.config.ts` runs only them (120 s timeout); `npm run test:fixtures` in `web/package.json`.
+- Renamed: `layout.fixtures.test.ts`, `corners.fixtures.test.ts`, `reader.fixtures.test.ts`, `pipeline.fixtures.test.ts`, `perf.fixtures.test.ts`. The copy-equals-source check moved from `bundle.test.ts` to `bundle.fixtures.test.ts`. The checks that need no Fixture (distance-hint limits, wrong data length, a blank frame with no tag, a 1440 x 2560 frame shrunk) moved to `pipeline.test.ts`. The bundle's `fixtures/` folder is checked with `requireDir`, so a missing folder fails with its path.
+- Clean clone of `web/tile-reader` (temp folder, deleted): `npm ci`, `npm test` 33 files, 310 tests pass; `npm run test:fixtures` fails in all 6 files with the Fixture_Root and source-bundle paths.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+**Feature:** spec (tile-reader task 11 and race task 8: execution provider, real reader in the race)
+**Output:**
+- `web/src/reader/browser.ts`: providers tried one at a time (`webgpu`, then `wasm`), each with one blank run; the first that works is `executionProvider`; optional `bundleId` check against `contract.json` (design D15, requirement 8.4).
+- `web/src/race/tileReader.ts`: `TileReaderSource` gains `executionProvider` and `preload()`; `TILE_READER_SOURCE` removed from it so it stays pure. `web/src/race/readerSource.ts`: `TILE_READER_SOURCE`, the real reader at `../models/20261126-ba0ab4d/` from the race page, loaded once.
+- `web/src/ui/race.ts`: imports the real source, preloads the model at start-up, Debug_Line shows `reader on webgpu`, `reader on wasm` or `reader on loading`; the stand-in note only appears for a stand-in source.
+- Tests: `race/__tests__/tileReader.test.ts` (real source not a stand-in, bundle `20261126-ba0ab4d`, no provider before loading); `race/__tests__/licenses.test.ts` allows `onnxruntime-web` (MIT) as the second runtime dependency.
+- Race spec: requirement 7.4 added, design and task 8 updated. Headless Edge, `vite preview` of the build, fake camera: Debug_Line `bundle 20261126-ba0ab4d · reader on webgpu · … · stream 1080×1920`, no stand-in note; after Start Tilemark the hint `show all four corners (missing tag 0, 1, 2, 3)` and 2.0 frames/s.
+**Caught, corrected, or changed my mind about:**
+- The blank run at load also moves WebGPU's shader compile (200 to 2,309 ms on the first frame before) out of the timed Run.
+- The race isolation test allows `tileReader.ts` to import only the codec type, so the ONNX-loading source went into a new file instead.
+**Went wrong or had to redo:**
+- `licenses.test.ts` from master failed after the merge (`jsqr` was the only allowed runtime dependency); updated.
+- In one headless run the fake camera stream ended 4 s after Start and the page reset; a second run with Start after 1.5 s read frames. Not seen with a real camera; left to race task 9.
+**Feature:** spec (tile-reader task 12: merge and checkpoint)
+**Output:**
+- Merged `origin/master` (race screen, PR #7) into `web/tile-reader`. Conflicts: `docs/kiro-log.md` (both appended blocks kept, race first), `web/package.json` (scripts and dependencies of both), `web/package-lock.json` (master's, then `npm install`).
+- In the worktree: `npm test` 33 files, 310 tests pass; `npm run test:fixtures` with `TILEMARK_DEMO_FIXTURES` and `TILEMARK_BUNDLE_SRC` 6 files, 75 tests pass; `npm run build` exits 0.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+- The first resolution of the log conflict cut one line off master's block and kept a `=======` marker; a second attempt with `git checkout -m` wrote the conflict markers again. The log was rebuilt as merge base + master's additions + this branch's additions, with a script that checks both are pure appends.

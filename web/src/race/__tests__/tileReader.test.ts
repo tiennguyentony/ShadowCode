@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { STAND_IN_BUNDLE_ID, TILE_READER_SOURCE, standInReaderSource, type RgbaFrame } from '../tileReader'
+import { BUNDLE_ID, TILE_READER_SOURCE } from '../readerSource'
+import { STAND_IN_BUNDLE_ID, standInReaderSource, type RgbaFrame } from '../tileReader'
 
 const frame = (width: number, height: number, bytes = width * height * 4): RgbaFrame => ({
   width,
@@ -25,9 +26,21 @@ describe('Stand_In_Reader (5.7, 7.1)', () => {
     expect(a).not.toBe(b)
   })
 
-  it('the race uses the stand-in for now, with bundle 20261126-ba0ab4d', () => {
+  it('the stand-in has no execution provider and preloads at once', async () => {
     expect(STAND_IN_BUNDLE_ID).toBe('20261126-ba0ab4d')
+    expect(standInReaderSource.executionProvider).toBeNull()
+    await expect(standInReaderSource.preload()).resolves.toBeUndefined()
+  })
+})
+
+describe('TILE_READER_SOURCE (race task 8, 7.1)', () => {
+  it('is the real reader on bundle 20261126-ba0ab4d, not the stand-in', () => {
+    expect(BUNDLE_ID).toBe('20261126-ba0ab4d')
     expect(TILE_READER_SOURCE.bundleId).toBe('20261126-ba0ab4d')
-    expect(TILE_READER_SOURCE.standIn).toBe(true)
+    expect(TILE_READER_SOURCE.standIn).toBe(false)
+  })
+
+  it('has no execution provider before the model is loaded', () => {
+    expect(TILE_READER_SOURCE.executionProvider).toBeNull()
   })
 })

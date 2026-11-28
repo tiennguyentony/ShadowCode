@@ -48,6 +48,8 @@ Thumbs.db
 *.onnx
 !web/public/models/
 !web/public/models/**/*.onnx
+# The bundles' fixtures/ folders are test data: never committed, never deployed.
+web/public/models/*/fixtures/
 
 # Private settings of the laptop-side training tools (training/podlink.py).
 # They live in ~/.shadowcode, outside the repository; these lines only catch a

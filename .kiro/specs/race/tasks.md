@@ -60,9 +60,10 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
     - _Requirements: 9.10_
 - [x] 7. Checkpoint: `npm test` and `npm run build` pass in `/web`
   - _Requirements: 11.3_
-- [ ] 8. Wire the real Tile_Reader (open until the `tile-reader` spec is built)
-  - Set `TILE_READER_SOURCE` to a source built on `web/src/reader/`, with `bundleId` from the bundle's `contract.json`; add an adapter if the reader's function differs from `ReadFrame`; remove the stand-in note from the Race_Screen when the source is not a stand-in
-  - _Requirements: 5.1–5.7, 7.1_
+- [x] 8. Wire the real Tile_Reader (built in spec `tile-reader`, branch `web/tile-reader`)
+  - `TILE_READER_SOURCE` moved to `web/src/race/readerSource.ts` (it loads ONNX Runtime, so `tileReader.ts` stays pure): the real reader from `web/src/reader/browser.ts` on bundle `20261126-ba0ab4d`, `bundleId` checked against `contract.json`; no adapter needed; the stand-in note shows only for a stand-in source
+  - `TileReaderSource` gains `executionProvider` and `preload()`; the Race_Screen preloads the model at start-up and shows the provider on the Debug_Line (7.4)
+  - _Requirements: 5.1–5.7, 7.1, 7.4_
 - [ ] 9. Hand check on a phone (needs Tony, the printed QR_Sheet and labels)
   - Both Modes start on one Camera_Stream; QR_Mode finds the three codes in any order and stops; the hint shows in Tilemark_Mode; results and difference; Reset clears both
   - _Requirements: 2.1–2.5, 3.10, 3.11, 4.1–4.3, 4.6, 4.7, 5.5, 5.6, 6.1–6.5, 7.2_

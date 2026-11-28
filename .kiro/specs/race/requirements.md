@@ -155,6 +155,7 @@ Out of scope: the Tile_Reader itself, the label artwork, and making the label PN
 1. THE Debug_Line SHALL show the Bundle_ID `20261126-ba0ab4d`.
 2. WHILE a Tilemark_Mode Run is a Running_Run, THE Debug_Line SHALL show the Frame_Rate, updated at least once per second.
 3. THE Race_Logic SHALL compute the Frame_Rate from the Run_Clock times of Processed_Frames passed in as arguments.
+4. WHEN the Tile_Reader's model is loaded, THE Debug_Line SHALL show the ONNX Runtime execution provider in use, `webgpu` or `wasm`, and SHALL show `loading` before that. (Added 2026-11-28 at Tony's request, with race task 8.)
 
 ### Requirement 8: QR sheet
 

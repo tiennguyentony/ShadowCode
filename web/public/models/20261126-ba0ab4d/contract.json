@@ -1,0 +1,183 @@
+{
+  "contract_version": 2,
+  "bundle_id": "20261126-ba0ab4d",
+  "created": "2026-11-26T19:03:29+00:00",
+  "git_commit": "ba0ab4dcb63aa8768b419804182b4cc3ff33b95b",
+  "git_dirty": false,
+  "trained": true,
+  "checkpoint_step": 140000,
+  "reader_input": "flattened",
+  "MESSAGE_BITS": 64,
+  "TILE_PX": 384,
+  "models": {
+    "reader": {
+      "file": "reader.onnx",
+      "bytes": 8324600,
+      "sha256": "3c8a9b67daf4d466d37c48faa88ee63802d6d9b761464a65031eaeee10149fea",
+      "opset": 20,
+      "operators": {
+        "Add": 4,
+        "Concat": 1,
+        "Conv": 12,
+        "Div": 2,
+        "Gather": 1,
+        "Gemm": 1,
+        "MatMul": 1,
+        "Mul": 2,
+        "ReduceMean": 6,
+        "Relu": 11,
+        "Reshape": 2,
+        "Sub": 3,
+        "Transpose": 1
+      },
+      "input": {
+        "name": "image",
+        "shape": [1, 3, 384, 384],
+        "dtype": "float32",
+        "layout": "NCHW: [batch, channel, row, column], rows top to bottom",
+        "channel_order": "RGB",
+        "range": [0.0, 1.0],
+        "scale": "8-bit value divided by 255",
+        "content": "One flattened patch: a square of the surface exactly one tile period on a side, upright, starting anywhere within the tile pattern. Made by the flatten step below."
+      },
+      "output": {
+        "name": "logits",
+        "shape": [1, 64],
+        "dtype": "float32",
+        "content": "One number per message bit. logits[0][i] belongs to Message index i of /docs/message-format.md. Bit i is 1 when the number is greater than 0, else 0.",
+        "range": "any real number"
+      }
+    },
+    "locator": null
+  },
+  "flatten": {
+    "input": "the camera frame as RGB, and four corners in frame pixels",
+    "corner_order": ["top-left", "top-right", "bottom-right", "bottom-left"],
+    "corner_format": "[x, y]",
+    "coordinates": "x to the right, y down, in pixels of the image. The top-left corner of the image is (0, 0) and the centre of the pixel in column j, row i is (j + 0.5, i + 0.5).",
+    "target_size": [384, 384],
+    "target_corners": [
+      [0, 0],
+      [384, 0],
+      [384, 384],
+      [0, 384]
+    ],
+    "mapping": "Find the homography H (3x3, perspective) that takes the four target_corners to the four frame corners, in the order listed. For the output pixel in column j, row i, compute (u, v, w) = H * (j + 0.5, i + 0.5, 1) and read the frame at (x, y) = (u / w, v / w).",
+    "interpolation": "bilinear",
+    "interpolation_detail": "Blend the four frame pixels whose centres surround (x, y): with fx = x - 0.5 and fy = y - 0.5, the columns are floor(fx) and floor(fx) + 1 with weights 1 - frac(fx) and frac(fx), and the same for rows. No smoothing or mipmapping before sampling.",
+    "outside_frame": "pixels outside the frame count as 0 (black)",
+    "colour": "no colour conversion; sample the 8-bit RGB values as they are",
+    "output": "float values; divide by 255 to get the reader input. In use, do not round. When checking against a fixture, round to whole 8-bit levels first: the expected logits come from the 8-bit patch.",
+    "reference_code": "training/geometry.py, flatten_from_corners"
+  },
+  "center_crop": null,
+  "camera": {
+    "trained_px_per_tile": [231, 340],
+    "px_per_tile_means": "camera pixels across one printed tile (one tile period), seen straight on",
+    "tile_mm": 50,
+    "stream_px": [1080, 1920],
+    "stream_px_order": "[width, height]",
+    "orientation": "portrait",
+    "tiles_across_stream_width": [3.18, 4.68],
+    "measured": [
+      {
+        "device": "Galaxy S23 Ultra",
+        "distance_cm": 20,
+        "px_per_cm": 66.3,
+        "px_per_tile": 331.5
+      }
+    ],
+    "starting_band": {
+      "cycles_per_tile": [24.0, 76.8],
+      "grating_step": 12,
+      "camera_px_per_cycle_of_highest": [3.01, 4.42],
+      "note": "where training starts; the trained code is free to sit elsewhere"
+    }
+  },
+  "reading": {
+    "frames_averaged": 3,
+    "frames_averaged_means": "average the reader's logits over the last 3 frames of one scan, then read the bits",
+    "scan_distance_cm": [19, 28],
+    "scan_distance_means": "phone to print; the trained camera range (camera.trained_px_per_tile) is this distance on the measured phone"
+  },
+  "bits": {
+    "rule": "bit i = 1 if logits[i] > 0 else 0",
+    "order": "index i is Message index i in /docs/message-format.md",
+    "decoding": "error correction and checksum are not part of the models; see /docs/message-format.md"
+  },
+  "fixtures": {
+    "directory": "fixtures",
+    "names": ["01", "02", "03", "04", "05"],
+    "files_per_fixture": ["<name>_frame.png", "<name>_patch.png", "<name>.json"],
+    "expected_values_from": "PyTorch, reading <name>_patch.png as 8-bit RGB divided by 255",
+    "compare": "the logits, not only the bits; /docs/model-contract.md says how closely",
+    "embedded_bits_follow_message_format": false,
+    "frames_from": "generated images put through the training simulation; no camera, no dataset",
+    "frame_size": [768, 1366],
+    "frame_size_order": "[width, height]",
+    "frame_is": "a portrait window onto the surface at TILE_PX pixels per tile, in the 9:16 shape of the camera stream but not at its size; a real frame is camera.stream_px"
+  },
+  "verification": {
+    "what": "each ONNX file run in ONNX Runtime (CPU) against PyTorch (CPU, float32) on the same inputs",
+    "tolerance": 0.0001,
+    "reader": {
+      "passed": true,
+      "max_abs_diff": 1.7404556274414062e-05,
+      "inputs": [
+        {
+          "input": "fixture 01",
+          "max_abs_diff": 1.621246337890625e-05,
+          "largest_output": 28.815353393554688,
+          "bits_equal": 64
+        },
+        {
+          "input": "fixture 02",
+          "max_abs_diff": 1.430511474609375e-05,
+          "largest_output": 21.162818908691406,
+          "bits_equal": 64
+        },
+        {
+          "input": "fixture 03",
+          "max_abs_diff": 1.049041748046875e-05,
+          "largest_output": 20.979887008666992,
+          "bits_equal": 64
+        },
+        {
+          "input": "fixture 04",
+          "max_abs_diff": 1.33514404296875e-05,
+          "largest_output": 19.010894775390625,
+          "bits_equal": 64
+        },
+        {
+          "input": "fixture 05",
+          "max_abs_diff": 1.430511474609375e-05,
+          "largest_output": 21.756223678588867,
+          "bits_equal": 64
+        },
+        {
+          "input": "random 1",
+          "max_abs_diff": 1.33514404296875e-05,
+          "largest_output": 25.99712562561035,
+          "bits_equal": 64
+        },
+        {
+          "input": "random 2",
+          "max_abs_diff": 1.7404556274414062e-05,
+          "largest_output": 30.129596710205078,
+          "bits_equal": 64
+        },
+        {
+          "input": "random 3",
+          "max_abs_diff": 1.4066696166992188e-05,
+          "largest_output": 23.7040958404541,
+          "bits_equal": 64
+        }
+      ]
+    }
+  },
+  "exported_with": {
+    "torch": "2.8.0+cu129",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.32.0"
+  }
+}

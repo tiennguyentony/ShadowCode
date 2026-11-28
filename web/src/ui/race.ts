@@ -20,7 +20,8 @@ import {
   type Mode,
   type RaceState,
 } from '../race/race'
-import { TILE_READER_SOURCE, type ReadFrame, type RgbaFrame, type TileReadout } from '../race/tileReader'
+import { TILE_READER_SOURCE } from '../race/readerSource'
+import type { ReadFrame, RgbaFrame, TileReadout } from '../race/tileReader'
 import { createScanner, type Scanner } from '../scanner/scanner'
 
 /** jsQR runs on a copy of the frame with this short side (design D9). */
@@ -131,8 +132,9 @@ function renderDebug(now: number) {
   const fps = tilemarkOn ? frameRate.perSecond(now).toFixed(1) : '–'
   const stream = video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : '–'
   const reader = TILE_READER_SOURCE.standIn ? ' (stand-in reader)' : ''
+  const provider = TILE_READER_SOURCE.standIn ? '' : ` · reader on ${TILE_READER_SOURCE.executionProvider ?? 'loading'}`
   debugEl.textContent =
-    `bundle ${TILE_READER_SOURCE.bundleId}${reader} · ${fps} frames/s · stream ${stream} · QR reader: ${qrReaderName}`
+    `bundle ${TILE_READER_SOURCE.bundleId}${reader}${provider} · ${fps} frames/s · stream ${stream} · QR reader: ${qrReaderName}`
 }
 
 // Timers and the debug line, every animation frame (Requirements 3.10, 7.2).
@@ -338,6 +340,8 @@ resetBtn.addEventListener('click', onReset)
 if (TILE_READER_SOURCE.standIn) {
   noteEl.textContent = 'Stand-in tile reader: Tilemark mode cannot find products until the tile-reader spec is built.'
 }
+// Load the model while the page starts, so the first Tilemark Run does not wait for it.
+TILE_READER_SOURCE.preload().catch((e) => showError(`Tile reader could not load: ${(e as Error).message}`))
 renderRows()
 renderButtons()
 requestAnimationFrame(tick)
