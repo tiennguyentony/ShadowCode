@@ -254,3 +254,12 @@ Nothing recorded.
 Nothing recorded.
 **Went wrong or had to redo:**
 Nothing recorded.
+
+**Feature:** spec (race task 3: Tile_Reader_Interface and Stand_In_Reader)
+**Output:**
+- `web/src/race/tileReader.ts`: `RgbaFrame`, `ReaderHint`, `TileReadout` (with optional `missingTags`), `ReadFrame`, `TileReaderSource`, `STAND_IN_BUNDLE_ID` = `20261126-ba0ab4d`, `standInReaderSource` (checks the frame's byte length, returns `{ result: null, hint: null }`), `TILE_READER_SOURCE` = the stand-in. Imports only the `DecodeResult` type.
+- `web/src/race/__tests__/tileReader.test.ts`: 4 tests pass.
+**Caught, corrected, or changed my mind about:**
+- The stand-in never returns a product, so Tilemark mode cannot finish a Run until task 8 wires the real reader. A stand-in that faked reads (for example from the QR code) was rejected, because it would make the race look real.
+**Went wrong or had to redo:**
+Nothing recorded.

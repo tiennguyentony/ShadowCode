@@ -28,10 +28,10 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
     - Accepts `1001`, `1002`, `1003`; ignores `1004`, `0`, ` 1001x`, empty and the other cases in the design
     - **Property 4: The QR_Text_Parser accepts exactly the catalog's decimal texts** (Validates: Requirements 4.4, 4.5)
     - _Requirements: 4.4, 4.5, 7.3_
-- [ ] 3. Tile_Reader_Interface and Stand_In_Reader
-  - [ ] 3.1 Implement `web/src/race/tileReader.ts`: types, `standInReaderSource`, `TILE_READER_SOURCE`, `STAND_IN_BUNDLE_ID`
+- [x] 3. Tile_Reader_Interface and Stand_In_Reader
+  - [x] 3.1 Implement `web/src/race/tileReader.ts`: types, `standInReaderSource`, `TILE_READER_SOURCE`, `STAND_IN_BUNDLE_ID`
     - _Requirements: 5.2, 5.7, 7.1_
-  - [ ] 3.2 Write `web/src/race/__tests__/tileReader.test.ts`
+  - [x] 3.2 Write `web/src/race/__tests__/tileReader.test.ts`
     - _Requirements: 5.7, 7.1_
 - [ ] 4. Race_Screen
   - [ ] 4.1 Add `web/race/index.html` and `web/src/ui/race.ts`; add the page to `web/vite.config.ts`
