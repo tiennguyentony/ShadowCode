@@ -9,13 +9,19 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "gen:vectors": "node scripts/gen-message-vectors.mjs"
+    "gen:vectors": "node scripts/gen-message-vectors.mjs",
+    "copy-bundle": "node scripts/copy-bundle.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/pngjs": "^6.0.5",
     "fast-check": "^4.10.2",
+    "pngjs": "^7.0.0",
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
     "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.31.1"
   }
 }
