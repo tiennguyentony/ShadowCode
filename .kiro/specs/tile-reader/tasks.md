@@ -1,0 +1,51 @@
+# Implementation Plan: Tile Reader
+## Overview
+Build the Tile_Reader in `/web/src/reader/` as pure TypeScript steps plus a thin ONNX Runtime Web layer, then the fixture, property and timing tests. Files are created or modified only under `/web` and `.kiro/specs/tile-reader/`, plus one `docs/kiro-log.md` entry per task. Nothing under `/training` is created, edited or deleted; the Model_Bundle and the Fixture_Sets are only read. Tests run with `npm test` from `/web` (with `TILEMARK_DEMO_FIXTURES` and `TILEMARK_BUNDLE_SRC` set outside the main checkout); the build with `npm run build`.
+## Tasks
+- [x] 1. Bundle copy and dependencies
+  - [x] 1.1 Add `web/scripts/copy-bundle.mjs` and the `copy-bundle` npm script; copy `20261126-ba0ab4d` unchanged to `web/public/models/20261126-ba0ab4d/`
+    - Source `TILEMARK_BUNDLE_SRC`, default `../training/export/20261126-ba0ab4d`; byte-for-byte copy of every file; sha256 of `reader.onnx` checked against the Contract; never writes the source
+    - _Requirements: 1.1_
+  - [x] 1.2 Add dependencies: `onnxruntime-web` 1.31.1 (MIT), dev `pngjs` 7.0.0 (MIT) and `@types/pngjs`; vendor js-aruco2 2.0.0 (MIT) as ES modules in `web/src/reader/vendor/js-aruco2/` (design D1)
+    - _Requirements: 3.1, 8.1_
+- [x] 2. Contract and frame
+  - [x] 2.1 Implement `types.ts`, `contract.ts` (`parseContract`) and `frame.ts` (`checkFrame`, `areaResize`, `shrinkToShortSide`)
+    - _Requirements: 1.2, 1.3, 1.5, 2.1–2.3_
+  - [x] 2.2 Write `__tests__/fixtures.ts`, `__tests__/bundle.test.ts` and `__tests__/frame.test.ts`
+    - sha256, bytes and Contract fields; altered Contracts rejected naming the field; Frame errors; shrink to short side 1080
+    - **Property 4: Area shrink keeps a flat colour** (Validates: Requirement 2.2)
+    - _Requirements: 1.1, 1.3, 1.4, 1.5, 2.1–2.3, 10.1, 10.2_
+- [x] 3. Geometry
+  - [x] 3.1 Implement `layout.ts`, `homography.ts`, `locate.ts` and `flatten.ts` (contract code, typed)
+    - _Requirements: 4.1, 4.3, 5.1, 5.2, 6.1, 6.2, 6.4_
+  - [x] 3.2 Write `__tests__/layout.test.ts` and `__tests__/geometry.properties.test.ts`
+    - Layout equals every `label.json`
+    - **Property 2: Homography fits its four points** (Validates: Requirement 5.1)
+    - **Property 3: Tile corner order follows the tags** (Validates: Requirement 5.2)
+    - _Requirements: 4.2, 5.1, 5.2_
+- [x] 4. Tag detection and fixture corners
+  - [x] 4.1 Implement `tags.ts` and the vendored detector's `.d.ts` files: half-size detection, full-frame fallback, + 0.5 pixel conversion, edge refinement, centres
+    - _Requirements: 3.1, 3.2_
+  - [x] 4.2 Write `__tests__/fixtures.corners.test.ts`: corners within 1 px, patch values within 1 level, for every Fixture of every Fixture_Set
+    - _Requirements: 10.3, 10.4, 10.5_
+- [x] 5. Model run
+  - [x] 5.1 Implement `onnx.ts` (`createOnnxRunReader`) and `browser.ts` (`loadTileReader`: absolute `wasmPaths`, `['webgpu', 'wasm']`); check it once in headless Edge, dev and build
+    - _Requirements: 8.1–8.3, 12.2_
+  - [x] 5.2 Write `__tests__/fixtures.reader.test.ts` with onnxruntime-web wasm in Node
+    - Unrounded flatten within L / 1000 and bits; patch within L / 50 and bits; bundle fixtures within L / 1000; tile mean within L / 1000 of the frame logits; `decodeMessage` of the frame bits gives `product_id`
+    - _Requirements: 10.6, 10.7, 10.8_
+- [x] 6. Frame pipeline
+  - [x] 6.1 Implement `logitWindow.ts` (`LogitWindow`) and `pipeline.ts` (`createFrameReader`)
+    - _Requirements: 3.3–3.5, 5.3–5.5, 6.3, 7.1–7.5, 9.2, 12.1_
+  - [x] 6.2 Write `__tests__/window.test.ts` and `__tests__/fixtures.pipeline.test.ts`
+    - **Property 1: The window decodes the mean of the last frames** (Validates: Requirements 7.1, 3.4)
+    - Whole reader per product, frames in order, `product_id` after every frame; bit differences printed; one Tag covered; all Tags gone empties the window; hints from a stand-in `RunReader`
+    - _Requirements: 3.3–3.5, 5.3–5.5, 7.1–7.4, 10.9–10.12_
+  - [x] 6.3 Write `__tests__/reader.isolation.test.ts`
+    - _Requirements: 8.1, 9.1_
+- [x] 7. Timing
+  - Write `__tests__/reader.perf.test.ts`; record detection, two flattens, two reader runs and the total per frame in the design, against 100 ms per attempt
+  - _Requirements: 11.1, 11.2_
+- [x] 8. Checkpoint: `npm test` and `npm run build` pass in `/web`
+- [ ] 9. Commit `reader.onnx` and the bundle's `fixtures/` (waits for Tony)
+  - _Requirements: 1.1_
