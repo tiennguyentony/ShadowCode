@@ -304,3 +304,13 @@ Nothing recorded.
 **Went wrong or had to redo:**
 - The first test run failed with "The URL must be of scheme file": under happy-dom the global `URL` is not Node's. The test now builds paths with `node:path` and `fileURLToPath`.
 - One headless run printed nothing because two Edge runs shared a profile folder. Re-run with separate profiles.
+
+**Feature:** spec (race task 7: checkpoint)
+**Output:**
+- `npm test` in `web`: 27 files, 258 tests pass (9 new files, 83 new tests against the 18 files and 175 tests of `web/scanner`). `npm run build` exits 0 and builds `dist/race/index.html`. `npm run print:check` reports the print pages are up to date; the message-vector `--check` still passes.
+- `git diff web/scanner -- training` is empty: nothing under `/training` was changed.
+- Tasks 8 (wire the real Tile_Reader) and 9 (hand check on a phone) are left unchecked: the `tile-reader` spec is not built, and the phone check needs Tony with the printed sheets.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.

@@ -58,7 +58,7 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
     - _Requirements: 9.2–9.9, 11.2_
   - [x] 6.3 Printed check: open `print/labels.html` headless in Edge and record the on-screen size check result in the kiro log
     - _Requirements: 9.10_
-- [ ] 7. Checkpoint: `npm test` and `npm run build` pass in `/web`
+- [x] 7. Checkpoint: `npm test` and `npm run build` pass in `/web`
   - _Requirements: 11.3_
 - [ ] 8. Wire the real Tile_Reader (open until the `tile-reader` spec is built)
   - Set `TILE_READER_SOURCE` to a source built on `web/src/reader/`, with `bundleId` from the bundle's `contract.json`; add an adapter if the reader's function differs from `ReadFrame`; remove the stand-in note from the Race_Screen when the source is not a stand-in
