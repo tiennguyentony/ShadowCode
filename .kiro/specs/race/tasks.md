@@ -41,12 +41,12 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
     - _Requirements: 10.1, 10.2, 10.4_
   - [x] 4.3 Write `web/src/race/__tests__/race.isolation.test.ts`
     - _Requirements: 1.4, 11.1_
-- [ ] 5. QR_Sheet
-  - [ ] 5.1 Implement `web/src/print/qrSheet.ts` and `web/scripts/gen-print-pages.mjs` (with `--check`); add `qrcode` and `@types/qrcode` as dev dependencies and the `print:gen` script
+- [x] 5. QR_Sheet
+  - [x] 5.1 Implement `web/src/print/qrSheet.ts` and `web/scripts/gen-print-pages.mjs` (with `--check`); add `qrcode` and `@types/qrcode` as dev dependencies and the `print:gen` script
     - _Requirements: 1.3, 8.1–8.8, 10.3_
-  - [ ] 5.2 Generate and commit `print/qr-codes.html` and `print/products.js`
+  - [x] 5.2 Generate and commit `print/qr-codes.html` and `print/products.js`
     - _Requirements: 8.9_
-  - [ ] 5.3 Write `web/src/print/__tests__/qrSheet.test.ts`
+  - [x] 5.3 Write `web/src/print/__tests__/qrSheet.test.ts`
     - jsQR decodes each code's matrix to its ID; QR_Symbol ≥ 30 mm; Quiet_Zone 4 modules; text under each code; cut lines; committed files equal generator output
     - _Requirements: 8.2, 8.4–8.7, 8.9_
 - [ ] 6. Label_Sheets

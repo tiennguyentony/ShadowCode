@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "gen:vectors": "node scripts/gen-message-vectors.mjs"
+    "gen:vectors": "node scripts/gen-message-vectors.mjs",
+    "print:gen": "node scripts/gen-print-pages.mjs",
+    "print:check": "node scripts/gen-print-pages.mjs --check"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

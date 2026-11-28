@@ -15,6 +15,7 @@ const PURE_FILES: Record<string, string[]> = {
   '../qrText.ts': [],
   '../frameRate.ts': [],
   '../tileReader.ts': ['../codec/message'],
+  '../../print/qrSheet.ts': ['qrcode', '../config'],
 }
 
 describe('race isolation (11.1)', () => {
@@ -35,7 +36,16 @@ describe('race isolation (11.1)', () => {
 })
 
 describe('product names only in config.ts (1.4)', () => {
-  const files = ['../race.ts', '../qrText.ts', '../frameRate.ts', '../tileReader.ts', '../../ui/race.ts', '../../../race/index.html']
+  const files = [
+    '../race.ts',
+    '../qrText.ts',
+    '../frameRate.ts',
+    '../tileReader.ts',
+    '../../ui/race.ts',
+    '../../../race/index.html',
+    '../../print/qrSheet.ts',
+    '../../../scripts/gen-print-pages.mjs',
+  ]
   for (const file of files) {
     it(`${file} holds no product name`, () => {
       const src = read(file)

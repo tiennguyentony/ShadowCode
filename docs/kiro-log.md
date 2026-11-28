@@ -279,3 +279,15 @@ Nothing recorded.
 **Went wrong or had to redo:**
 - The first two headless checks (`--dump-dom` with `--virtual-time-budget`, then with `--timeout`) did not start the fake camera or ran no animation frames. Replaced by the DevTools-protocol script.
 - Not tested on a phone or with a real QR code yet (task 9).
+
+**Feature:** spec (race task 5: QR_Sheet)
+**Output:**
+- `web/src/print/qrSheet.ts`: `qrMatrix` (module matrix from `qrcode` `create`, error correction M), `qrSvg` (size in mm: 42 mm QR_Symbol, 4-module Quiet_Zone, 2 mm modules for the 21-module codes, 58 mm overall), `qrSheetHtml`, `productsScript`.
+- `web/scripts/gen-print-pages.mjs` with `--check`; `web/package.json` scripts `print:gen` and `print:check`; dev dependencies `qrcode` ^1.5.4 (MIT) and `@types/qrcode` ^1.5.6 (MIT), installed before task 4 and committed with it.
+- Generated and committed `print/qr-codes.html` (A4, a column of three 80 x 85 mm cells with 0.3 mm dashed cut lines, name and ID under each code) and `print/products.js`.
+- `web/src/print/__tests__/qrSheet.test.ts` (10 tests): each code is read back from the committed SVG path and decoded with jsQR to `1001`, `1002`, `1003`; the modules equal the `qrcode` matrix; symbol 42 mm (≥ 30 mm); Quiet_Zone 4 white modules; name and ID under each code; cut lines; committed files equal generator output. The isolation test now also covers `qrSheet.ts` and the generator. `src/print` and `src/race`: 8 files, 72 tests pass; `tsc` passes.
+- Headless Edge `--print-to-pdf` of `print/qr-codes.html`: 1 page, MediaBox 594.96 x 841.92 pt (A4). A screenshot shows the three codes with names, IDs and cut lines.
+**Caught, corrected, or changed my mind about:**
+- The SVG is drawn from the `qrcode` matrix instead of `QRCode.toString`, so the size can be set in millimetres and the test can read every module back.
+**Went wrong or had to redo:**
+Nothing recorded.
