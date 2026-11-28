@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tilemark race: label sheets</title>
+    <style>
+      @page { size: A4; margin: 0; }
+      html, body { margin: 0; padding: 0; }
+      body { font: 10pt/1.3 system-ui, sans-serif; color: #000; }
+
+      .sheet { position: relative; width: 210mm; height: 297mm; overflow: hidden; background: #fff; break-after: page; }
+      .sheet:last-child { break-after: auto; }
+      /* A slot is the 149 x 114 mm area of one Label turned 90 degrees. */
+      .slot { position: absolute; width: 149mm; height: 114mm; }
+      /* The Label keeps its own 114 x 149 mm size; only the transform turns it. */
+      .label { position: absolute; left: 50%; top: 50%; box-sizing: border-box; display: block;
+               width: 114mm; height: 149mm; transform: translate(-50%, -50%) rotate(90deg); }
+      .outline { border: 0.3mm solid #000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+      .outline-id { font: 700 24pt/1.2 ui-monospace, Consolas, monospace; }
+      .outline-note { font-size: 9pt; }
+      .caption { position: absolute; left: 30.5mm; width: 149mm; height: 5mm; font-size: 8pt; text-align: center; }
+      .ruler-box { position: absolute; left: 55mm; top: 262mm; width: 100mm; height: 8mm; }
+      .ruler { display: block; }
+      .actual-size { position: absolute; left: 0; right: 0; top: 274mm; text-align: center; font-size: 11pt; font-weight: 600; }
+      .sheet-no { position: absolute; left: 0; right: 0; top: 281mm; text-align: center; font-size: 8pt; }
+
+      .screen-only { padding: 4mm 8mm; font-size: 11pt; }
+      .screen-only h1 { font-size: 14pt; margin: 0 0 2mm; }
+      .copies-input { margin-right: 6mm; white-space: nowrap; }
+      .copies-input input { width: 4em; font: inherit; }
+      #check.ok { color: #060; font-weight: 600; }
+      #check.bad { color: #c00; font-weight: 600; }
+      #images { color: #444; }
+
+      @media screen {
+        body { background: #ccc; }
+        .screen-only { background: #fff; }
+        .sheet { margin: 8mm auto; box-shadow: 0 1mm 4mm rgba(0, 0, 0, 0.3); }
+      }
+      @media print {
+        .screen-only { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="screen-only">
+      <h1>Tilemark label sheets</h1>
+      <p>Copies per product (one per side of a box): <span id="copies"></span></p>
+      <p id="images">Loading the label images from labels/...</p>
+      <p id="check" data-ok="">Size check pending.</p>
+      <p>Print from the browser at 100% (actual size, no "fit to page"), A4 portrait. Measure the 100 mm line on each sheet.</p>
+    </div>
+    <div id="sheets"></div>
+    <script src="products.js"></script>
+    <script src="labels.js"></script>
+  </body>
+</html>

@@ -224,3 +224,93 @@ Nothing recorded.
 - The design now notes that the 2-frame minimum uses windows of 1 and 2 frames, which `docs/model-contract.md` says read worse than 3. At 100 ms per frame a read can use at most 4 frames (400 ms) and still meet the target.
 **Went wrong or had to redo:**
 - The first draft of the timing text said up to 5 frames fit under 500 ms. At 100 ms per frame, 5 frames take exactly 500 ms and miss "under 500 ms". Corrected to 4 frames before the commit.
+
+**Feature:** spec (race: requirements, design and task list, branch `web/race`, worktree `D:\Coding\ShadowCode-wt\race`)
+**Output:**
+- Added `.kiro/specs/race/requirements.md` (11 requirements, EARS criteria), `.kiro/specs/race/design.md` (decisions D1-D14, interfaces, print layout in mm, Properties 1-5, test plan) and `.kiro/specs/race/tasks.md` (tasks 1-9), plus `.kiro/specs/race/.config.kiro`.
+**Caught, corrected, or changed my mind about:**
+- `web/src/config.ts` and the Scanner exist only on `web/scanner`, which is not merged into `master`. Branch `web/race` was made from `web/scanner` (D1), in a new worktree, because the main checkout is on `training/demo-pipeline`.
+- The `tile-reader` spec is not built (no `web/src/reader/`, no `.kiro/specs/tile-reader/`). The race calls a `ReadFrame` function through `web/src/race/tileReader.ts` with a stand-in that returns `result: null`; task 8 (wire the real reader) stays open.
+- jsQR 1.4.0 is Apache-2.0. Listed in the design as a permissive dependency under the "MIT-compatible" rule, with its license text shipped in the build. Not asked of Tony.
+- The interface is asynchronous (`Promise<TileReadout>`), because ONNX Runtime Web's `session.run` is.
+**Went wrong or had to redo:**
+- `jsqr`, `qrcode` and `@types/qrcode` were installed in `web/` before the requirements were written. The installs were kept and are recorded under tasks 4.2 and 5.1.
+
+**Feature:** spec (race task 1: Race_Logic)
+**Output:**
+- `web/src/race/race.ts`: `createRace`, `start`, `productFound`, `reset`, `isRunning`, `runningMode`, `elapsedMs`, `results`, `formatSeconds`. No imports; every time comes from a `now` argument. Ignored events return the same state object.
+- `web/src/race/__tests__/fakeClock.ts`, `race.unit.test.ts` (18 tests: start, product found, duplicate ignored, any order, non-catalog ignored, finish after three, reset, results, formatting) and `race.properties.test.ts` (Properties 1-3, seed 0x7ace2026, 1,000 runs each). 21 tests pass.
+**Caught, corrected, or changed my mind about:**
+- The Property 1 reference is a separate mutable simulation written from the requirements, so it does not reuse `race.ts` code.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (race task 2: QR_Text_Parser and Frame_Rate)
+**Output:**
+- `web/src/race/qrText.ts`: `createQrTextParser(catalog)`; a text counts only if it equals `String(id)` of a Catalog_ID; 0 never counts.
+- `web/src/race/frameRate.ts`: `createFrameRateCounter(windowMs = 1000)` with `record`, `perSecond`, `reset`.
+- `web/src/race/__tests__/qrText.test.ts` (16 tests: 1001, 1002, 1003 accepted; 13 rejected texts including `1004`, `0`, ` 1001x`, empty, `01001`, `+1001`, full-width digits; Property 4 with seed 0x7ace2026, 1,000 runs) and `frameRate.test.ts` (4 tests). 20 tests pass.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (race task 3: Tile_Reader_Interface and Stand_In_Reader)
+**Output:**
+- `web/src/race/tileReader.ts`: `RgbaFrame`, `ReaderHint`, `TileReadout` (with optional `missingTags`), `ReadFrame`, `TileReaderSource`, `STAND_IN_BUNDLE_ID` = `20261126-ba0ab4d`, `standInReaderSource` (checks the frame's byte length, returns `{ result: null, hint: null }`), `TILE_READER_SOURCE` = the stand-in. Imports only the `DecodeResult` type.
+- `web/src/race/__tests__/tileReader.test.ts`: 4 tests pass.
+**Caught, corrected, or changed my mind about:**
+- The stand-in never returns a product, so Tilemark mode cannot finish a Run until task 8 wires the real reader. A stand-in that faked reads (for example from the QR code) was rejected, because it would make the race look real.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (race task 4: Race_Screen)
+**Output:**
+- `web/race/index.html` and `web/src/ui/race.ts`: one rear Camera_Stream (`facingMode: 'environment'`, ideal 1080 x 1920, no audio); QR loop with `BarcodeDetector` (`qr_code`) or jsQR on a copy shrunk to a 540 px short side; Tilemark loop with a new Scanner (`SCANNER_CONFIGURATION`) and a new reader per Run, one frame at a time, hint and missing tags shown; two timers, results table, difference line, Reset, Debug_Line.
+- `web/vite.config.ts`: added the `race` page input.
+- `web/package.json`: runtime dependency `jsqr` ^1.4.0. jsQR is loaded with a dynamic `import()` only when `BarcodeDetector` cannot read QR codes; the build puts it in its own 130 kB chunk, and `race-*.js` is 11 kB.
+- `web/public/licenses/jsQR-LICENSE.txt`: copy of `node_modules/jsqr/LICENSE`; it is in `dist/licenses/` after the build.
+- `web/src/race/__tests__/licenses.test.ts` (3 tests) and `race.isolation.test.ts` (11 tests). `src/race`: 7 files, 59 tests pass. `npm run build` exits 0.
+- Smoke run in headless Edge with a fake camera, through the DevTools protocol (temporary script in `%TEMP%`, not committed): stream 1080x1920, both Start buttons enabled after `playing`, QR timer ran (1.52 s after 1.5 s) with Start Tilemark disabled, Reset cleared both, Tilemark Run with the stand-in processed 7.0 frames/s, no exceptions.
+**Caught, corrected, or changed my mind about:**
+- The isolation test flagged the word "window" in an error message of `frameRate.ts`. Reworded to "windowMs".
+- The reader and the Scanner are created before `start` is called, so loading the real reader later is not counted in the Tilemark time.
+- The license test lives in `web/src/race/__tests__/`, not `web/src/print/__tests__/` as the design first said; the design table was corrected.
+**Went wrong or had to redo:**
+- The first two headless checks (`--dump-dom` with `--virtual-time-budget`, then with `--timeout`) did not start the fake camera or ran no animation frames. Replaced by the DevTools-protocol script.
+- Not tested on a phone or with a real QR code yet (task 9).
+
+**Feature:** spec (race task 5: QR_Sheet)
+**Output:**
+- `web/src/print/qrSheet.ts`: `qrMatrix` (module matrix from `qrcode` `create`, error correction M), `qrSvg` (size in mm: 42 mm QR_Symbol, 4-module Quiet_Zone, 2 mm modules for the 21-module codes, 58 mm overall), `qrSheetHtml`, `productsScript`.
+- `web/scripts/gen-print-pages.mjs` with `--check`; `web/package.json` scripts `print:gen` and `print:check`; dev dependencies `qrcode` ^1.5.4 (MIT) and `@types/qrcode` ^1.5.6 (MIT), installed before task 4 and committed with it.
+- Generated and committed `print/qr-codes.html` (A4, a column of three 80 x 85 mm cells with 0.3 mm dashed cut lines, name and ID under each code) and `print/products.js`.
+- `web/src/print/__tests__/qrSheet.test.ts` (10 tests): each code is read back from the committed SVG path and decoded with jsQR to `1001`, `1002`, `1003`; the modules equal the `qrcode` matrix; symbol 42 mm (≥ 30 mm); Quiet_Zone 4 white modules; name and ID under each code; cut lines; committed files equal generator output. The isolation test now also covers `qrSheet.ts` and the generator. `src/print` and `src/race`: 8 files, 72 tests pass; `tsc` passes.
+- Headless Edge `--print-to-pdf` of `print/qr-codes.html`: 1 page, MediaBox 594.96 x 841.92 pt (A4). A screenshot shows the three codes with names, IDs and cut lines.
+**Caught, corrected, or changed my mind about:**
+- The SVG is drawn from the `qrcode` matrix instead of `QRCode.toString`, so the size can be set in millimetres and the test can read every module back.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (race task 6: Label_Sheets)
+**Output:**
+- `print/labels.html` and `print/labels.js` (classic script): Copies input per product (default 6, 0-60), two Labels per A4 Sheet turned 90 degrees (slots at 30.5 mm left, 12 mm and 136 mm top), each Label element 114mm x 149mm with the turn done by a CSS transform, caption with ID and copy number, a 100 mm SVG ruler with 10 mm ticks and "print at 100% (actual size)" on every Sheet, outline with the Product_ID when `labels/<id>.png` does not load, and an on-screen size check (offsetWidth/offsetHeight against the ruler, 0.5 mm tolerance) hidden in print.
+- `print/README.md`, `print/labels/README.md`.
+- `web/src/print/__tests__/labels.test.ts` (happy-dom, 11 tests): Property 5 (seed 0x7ace2026, 1,000 runs), 9 Sheets of 2 for 6 copies each, `clampCopies`, every Label element `114mm` x `149mm` with no px, image paths, outlines, slot positions, captions, ruler and text on every Sheet, `@page { size: A4`, screen-only check, no `/training` reference. Dev dependency `happy-dom` ^21.0.4 (MIT).
+- Printed check in headless Edge (`--dump-dom`): from `print/` with no images, "18 labels on 9 sheets. Size check: all 18 labels measure 114 × 149 mm (1 mm = 3.779 screen px)", with outlines drawn for all three. From a temporary copy in `%TEMP%` with a generated 876 x 1144 px test image as `1001.png`: the same check passed, and the page showed "876 × 1144 px, 7.68 px per mm" for it. `--print-to-pdf` of that copy: 9 pages, all A4 (594.96 x 841.92 pt). A screenshot shows the image turned 90 degrees clockwise (its top-left corner at the top right).
+**Caught, corrected, or changed my mind about:**
+- 114 mm x 7.68 px/mm = 875.52 px, so a label PNG cannot match the 114:149 ratio exactly. Both CSS sizes are set in mm, so the image is stretched by less than 0.1 %. The page reports each image's px per mm and warns when it is more than 1 % off 7.68.
+- `labels.html` first listed the three file names in its loading text. Changed to a generic text, so the page holds no product IDs of its own.
+**Went wrong or had to redo:**
+- The first test run failed with "The URL must be of scheme file": under happy-dom the global `URL` is not Node's. The test now builds paths with `node:path` and `fileURLToPath`.
+- One headless run printed nothing because two Edge runs shared a profile folder. Re-run with separate profiles.
+
+**Feature:** spec (race task 7: checkpoint)
+**Output:**
+- `npm test` in `web`: 27 files, 258 tests pass (9 new files, 83 new tests against the 18 files and 175 tests of `web/scanner`). `npm run build` exits 0 and builds `dist/race/index.html`. `npm run print:check` reports the print pages are up to date; the message-vector `--check` still passes.
+- `git diff web/scanner -- training` is empty: nothing under `/training` was changed.
+- Tasks 8 (wire the real Tile_Reader) and 9 (hand check on a phone) are left unchecked: the `tile-reader` spec is not built, and the phone check needs Tony with the printed sheets.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
