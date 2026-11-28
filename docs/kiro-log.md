@@ -392,3 +392,42 @@ Nothing recorded.
 Nothing recorded.
 **Went wrong or had to redo:**
 Nothing recorded.
+**Feature:** spec (tile-reader task 9: commit reader.onnx, ignore the bundle's fixtures/)
+**Output:**
+- `web/public/models/20261126-ba0ab4d/reader.onnx` committed (8,324,600 bytes, sha256 as in `contract.json`).
+- `.gitignore`: `web/public/models/*/fixtures/`, so the bundle's fixtures are never committed or deployed. A clean clone's `npm run build` has only `contract.json` and `reader.onnx` under `dist/models/20261126-ba0ab4d/`.
+- `requirements.md` 1.1 and design D13 record Tony's decision.
+**Caught, corrected, or changed my mind about:**
+- A local build from a checkout that ran `npm run copy-bundle` still copies `fixtures/` into `dist/`; the Pages build does not, because it starts from git.
+**Went wrong or had to redo:**
+Nothing recorded.
+**Feature:** spec (tile-reader task 10: split the tests)
+**Output:**
+- `web/vitest.config.ts` excludes `**/*.fixtures.test.ts`; `web/vitest.fixtures.config.ts` runs only them (120 s timeout); `npm run test:fixtures` in `web/package.json`.
+- Renamed: `layout.fixtures.test.ts`, `corners.fixtures.test.ts`, `reader.fixtures.test.ts`, `pipeline.fixtures.test.ts`, `perf.fixtures.test.ts`. The copy-equals-source check moved from `bundle.test.ts` to `bundle.fixtures.test.ts`. The checks that need no Fixture (distance-hint limits, wrong data length, a blank frame with no tag, a 1440 x 2560 frame shrunk) moved to `pipeline.test.ts`. The bundle's `fixtures/` folder is checked with `requireDir`, so a missing folder fails with its path.
+- Clean clone of `web/tile-reader` (temp folder, deleted): `npm ci`, `npm test` 33 files, 310 tests pass; `npm run test:fixtures` fails in all 6 files with the Fixture_Root and source-bundle paths.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+**Feature:** spec (tile-reader task 11 and race task 8: execution provider, real reader in the race)
+**Output:**
+- `web/src/reader/browser.ts`: providers tried one at a time (`webgpu`, then `wasm`), each with one blank run; the first that works is `executionProvider`; optional `bundleId` check against `contract.json` (design D15, requirement 8.4).
+- `web/src/race/tileReader.ts`: `TileReaderSource` gains `executionProvider` and `preload()`; `TILE_READER_SOURCE` removed from it so it stays pure. `web/src/race/readerSource.ts`: `TILE_READER_SOURCE`, the real reader at `../models/20261126-ba0ab4d/` from the race page, loaded once.
+- `web/src/ui/race.ts`: imports the real source, preloads the model at start-up, Debug_Line shows `reader on webgpu`, `reader on wasm` or `reader on loading`; the stand-in note only appears for a stand-in source.
+- Tests: `race/__tests__/tileReader.test.ts` (real source not a stand-in, bundle `20261126-ba0ab4d`, no provider before loading); `race/__tests__/licenses.test.ts` allows `onnxruntime-web` (MIT) as the second runtime dependency.
+- Race spec: requirement 7.4 added, design and task 8 updated. Headless Edge, `vite preview` of the build, fake camera: Debug_Line `bundle 20261126-ba0ab4d · reader on webgpu · … · stream 1080×1920`, no stand-in note; after Start Tilemark the hint `show all four corners (missing tag 0, 1, 2, 3)` and 2.0 frames/s.
+**Caught, corrected, or changed my mind about:**
+- The blank run at load also moves WebGPU's shader compile (200 to 2,309 ms on the first frame before) out of the timed Run.
+- The race isolation test allows `tileReader.ts` to import only the codec type, so the ONNX-loading source went into a new file instead.
+**Went wrong or had to redo:**
+- `licenses.test.ts` from master failed after the merge (`jsqr` was the only allowed runtime dependency); updated.
+- In one headless run the fake camera stream ended 4 s after Start and the page reset; a second run with Start after 1.5 s read frames. Not seen with a real camera; left to race task 9.
+**Feature:** spec (tile-reader task 12: merge and checkpoint)
+**Output:**
+- Merged `origin/master` (race screen, PR #7) into `web/tile-reader`. Conflicts: `docs/kiro-log.md` (both appended blocks kept, race first), `web/package.json` (scripts and dependencies of both), `web/package-lock.json` (master's, then `npm install`).
+- In the worktree: `npm test` 33 files, 310 tests pass; `npm run test:fixtures` with `TILEMARK_DEMO_FIXTURES` and `TILEMARK_BUNDLE_SRC` 6 files, 75 tests pass; `npm run build` exits 0.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+- The first resolution of the log conflict cut one line off master's block and kept a `=======` marker; a second attempt with `git checkout -m` wrote the conflict markers again. The log was rebuilt as merge base + master's additions + this branch's additions, with a script that checks both are pure appends.
