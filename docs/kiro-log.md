@@ -136,3 +136,91 @@ Entries before this log are not backfilled.
 - Checked the stated values against `training/export/20261126-ba0ab4d/contract.json` (read only): `TILE_PX` 384, `MESSAGE_BITS` 64, `trained_px_per_tile` [231, 340], `frames_averaged` 3, `reader_input` flattened. The sha256 of `reader.onnx` equals `models.reader.sha256`. The section names cited exist in `docs/model-contract.md`.
 **Went wrong or had to redo:**
 Nothing recorded.
+## 2026-11-28
+
+**Feature:** spec (scanner: design and task list, branch `web/scanner`, worktree `D:\Coding\ShadowCode-wt\scanner`)
+**Output:**
+- Added `.kiro/specs/scanner/design.md`: state machine, interfaces of `web/src/scanner/scanner.ts` and `web/src/config.ts`, error messages, Properties 1-6, test plan, and the section "Frame windows and the independence argument".
+- Window analysis at 100 ms per frame: sliding window N = 2 needs 4 frames (400 ms), N = 3 needs 5 (500 ms); separate windows N = 2 needs 6 (600 ms), N = 3 needs 9 (900 ms). Recommended sliding window with N = 2. Open as D8, waiting for Tony.
+- Added `.kiro/specs/scanner/tasks.md`: tasks 1-5, and task 6 (record the window choice), which is blocked on Tony.
+**Caught, corrected, or changed my mind about:**
+- The first draft capped Match_Run at N. Removed the cap, because Requirement 2.2 says Match_Run increases by 1.
+- Under a sliding window, consecutive Decode_Attempts share 2 of 3 frames, so the "N independent false accepts" reason in the requirements introduction and in Requirement 4 overstates the protection. The acceptance criteria are not affected. `requirements.md` was not edited; the question is in the design for Tony.
+- Catalog check estimate, assuming false-accept IDs are spread evenly over 2^32: 3 / 2^32 ≈ 7.0e-10, about 2.0e-13 per Decode_Attempt at the 2.9e-4 rate. The even spread is an assumption and was not measured.
+**Went wrong or had to redo:**
+- A PowerShell `[IO.File]` edit of `design.md` failed because .NET resolved the relative path against `D:\Coding\ShadowCode`. Made the edit with the editor instead.
+
+**Feature:** spec (scanner task 1.1: `web/src/scanner/scanner.ts`)
+**Output:**
+- `createScanner(config)` with `push(result)` and `state()`. Exports `CONFIRMATION_COUNT_MIN` / `MAX`, `ScannerConfiguration`, `ScannerState`, `Scanner`. A missing Confirmation_Count, or one that is not an integer in [2, 3], throws `RangeError`. A null or non-object configuration throws `TypeError`.
+- The top comment block holds the documentation items of Requirements 1.6, 2.12, 2.13, 3.5, 3.6 and 4.3, citing 2.9 × 10⁻⁴ and 0.031% from "Residual risk". The file imports only `import type { DecodeResult }` from the codec.
+**Caught, corrected, or changed my mind about:**
+- Reserved_ID 0 is rejected before the catalog lookup, so a catalog that contains 0 still never shows it (1.3).
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (scanner task 1.2: unit tests)
+**Output:**
+- `web/src/scanner/__tests__/scanner.unit.test.ts` and helpers `scanner.helpers.ts`: one or more tests per criterion 1.1-1.5, 2.1-2.11 and 4.1, each run for N = 2 and N = 3. 2.8 uses fake timers with 10 s between pushes.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (scanner task 1.3: property tests)
+**Output:**
+- `web/src/scanner/__tests__/scanner.properties.test.ts`: Properties 1-5 (2.10 and 2.11 among them), each run with N drawn from {2, 3}, with N = 2 and with N = 3. Seed 0x5ca77e12, 2,000 runs each.
+- Mutation check on `scanner.ts`, with each mutant run against the scanner and config tests: show at N − 1 (25 failed), no Reserved_ID check (16), `null` not clearing (13), accept 4 (2), ID depends on `correctedBits` (12), Match_Run += 2 (15). Each planted bug made at least one test fail.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+- The first mutation loop, typed into the shell, printed only the first result because the multi-line command was split. Re-ran it from a temporary script file.
+
+**Feature:** spec (scanner task 2.1: configuration errors)
+**Output:**
+- `web/src/scanner/__tests__/scanner.config.test.ts`: rejects 0, 1, 4, -1, 2.5, NaN, Infinity, -Infinity, '2' and null (message names Confirmation_Count and [2, 3]). Rejects an absent and an explicit undefined value (message says missing). Accepts 2 and 3. Property 6 runs over `fc.anything()` and numbers.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (scanner tasks 3.1 and 3.2: app configuration)
+**Output:**
+- `web/src/config.ts`: frozen `PRODUCTS` (1001 "Product 1001", 1002 "Product 1002", 1003 "Product 1003"), frozen `SCANNER_CONFIGURATION` (catalog from `PRODUCTS`, `confirmationCount: 2`), `productName(id)`.
+- `web/src/__tests__/config.test.ts`: exactly 1001, 1002, 1003, the names, Confirmation_Count 2, accepted by `createScanner`.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (scanner tasks 4.1 and 4.2: documentation and isolation checks)
+**Output:**
+- `web/src/scanner/__tests__/scanner.docs.test.ts`: checks the top comment block of `scanner.ts` for the items of 1.6, 2.12, 2.13, 3.5, 3.6 and 4.3.
+- `web/src/scanner/__tests__/scanner.isolation.test.ts`: `scanner.ts` imports only `../codec/message`, `config.ts` imports only `./scanner/scanner`, and neither uses window, document, navigator or getUserMedia.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (scanner task 5: checkpoint)
+**Output:**
+- `npm test` in `web`: 18 files, 174 tests pass (6 new files, 82 new tests). `npm run build` exits 0.
+- Task 6 (record the frame-window choice) is left unchecked until Tony answers design D8.
+**Caught, corrected, or changed my mind about:**
+Nothing recorded.
+**Went wrong or had to redo:**
+Nothing recorded.
+
+**Feature:** spec (scanner task 6: record the frame-window choice)
+**Output:**
+- Tony chose D8: sliding window, Confirmation_Count 2. The tile reader gives one Decode_Result after every processed frame, from the first frame, averaging 1, then 2, then 3 frames.
+- `.kiro/specs/scanner/design.md`: D8, overview, window section and "Open Items" updated. Timing table: the chosen schedule needs at least 2 frames for N = 2 (200 ms at 100 ms per frame) and 3 for N = 3 (300 ms); separate windows (not chosen) stay at 6 frames (600 ms) and 9 frames (900 ms).
+- `.kiro/specs/scanner/requirements.md`, at Tony's request: reason wording in the introduction (consecutive-match bullet, line 10) and Requirement 4 (Reason paragraph, line 90). They now say that consecutive Decode_Attempts share frames and are not independent, that confirmation removes a wrong read lasting one Decode_Attempt, and that the catalog check is the main protection. 2.9 × 10⁻⁴ and 0.031% are kept and called single-decode rates. The diff has 2 changed lines and changes no acceptance criterion.
+- `web/src/scanner/scanner.ts`: the comment block's 2.12 and 2.13 paragraphs state the schedule, the lack of independence, and the 2-frame, 200 ms minimum. `scanner.docs.test.ts` has 1 new test for them.
+- `.kiro/specs/scanner/tasks.md`: task 6 checked, overview text updated.
+- `npm test` in `web`: 18 files, 175 tests pass. `npm run build` exits 0.
+**Caught, corrected, or changed my mind about:**
+- The earlier timing table assumed a full 3-frame window before the first Decode_Attempt (4 frames, 400 ms for N = 2). Tony's schedule starts at frame 1, so the minimum is 2 frames, 200 ms.
+- The design now notes that the 2-frame minimum uses windows of 1 and 2 frames, which `docs/model-contract.md` says read worse than 3. At 100 ms per frame a read can use at most 4 frames (400 ms) and still meet the target.
+**Went wrong or had to redo:**
+- The first draft of the timing text said up to 5 frames fit under 500 ms. At 100 ms per frame, 5 frames take exactly 500 ms and miss "under 500 ms". Corrected to 4 frames before the commit.
