@@ -263,3 +263,19 @@ Nothing recorded.
 - The stand-in never returns a product, so Tilemark mode cannot finish a Run until task 8 wires the real reader. A stand-in that faked reads (for example from the QR code) was rejected, because it would make the race look real.
 **Went wrong or had to redo:**
 Nothing recorded.
+
+**Feature:** spec (race task 4: Race_Screen)
+**Output:**
+- `web/race/index.html` and `web/src/ui/race.ts`: one rear Camera_Stream (`facingMode: 'environment'`, ideal 1080 x 1920, no audio); QR loop with `BarcodeDetector` (`qr_code`) or jsQR on a copy shrunk to a 540 px short side; Tilemark loop with a new Scanner (`SCANNER_CONFIGURATION`) and a new reader per Run, one frame at a time, hint and missing tags shown; two timers, results table, difference line, Reset, Debug_Line.
+- `web/vite.config.ts`: added the `race` page input.
+- `web/package.json`: runtime dependency `jsqr` ^1.4.0. jsQR is loaded with a dynamic `import()` only when `BarcodeDetector` cannot read QR codes; the build puts it in its own 130 kB chunk, and `race-*.js` is 11 kB.
+- `web/public/licenses/jsQR-LICENSE.txt`: copy of `node_modules/jsqr/LICENSE`; it is in `dist/licenses/` after the build.
+- `web/src/race/__tests__/licenses.test.ts` (3 tests) and `race.isolation.test.ts` (11 tests). `src/race`: 7 files, 59 tests pass. `npm run build` exits 0.
+- Smoke run in headless Edge with a fake camera, through the DevTools protocol (temporary script in `%TEMP%`, not committed): stream 1080x1920, both Start buttons enabled after `playing`, QR timer ran (1.52 s after 1.5 s) with Start Tilemark disabled, Reset cleared both, Tilemark Run with the stand-in processed 7.0 frames/s, no exceptions.
+**Caught, corrected, or changed my mind about:**
+- The isolation test flagged the word "window" in an error message of `frameRate.ts`. Reworded to "windowMs".
+- The reader and the Scanner are created before `start` is called, so loading the real reader later is not counted in the Tilemark time.
+- The license test lives in `web/src/race/__tests__/`, not `web/src/print/__tests__/` as the design first said; the design table was corrected.
+**Went wrong or had to redo:**
+- The first two headless checks (`--dump-dom` with `--virtual-time-budget`, then with `--timeout`) did not start the fake camera or ran no animation frames. Replaced by the DevTools-protocol script.
+- Not tested on a phone or with a real QR code yet (task 9).

@@ -33,13 +33,13 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
     - _Requirements: 5.2, 5.7, 7.1_
   - [x] 3.2 Write `web/src/race/__tests__/tileReader.test.ts`
     - _Requirements: 5.7, 7.1_
-- [ ] 4. Race_Screen
-  - [ ] 4.1 Add `web/race/index.html` and `web/src/ui/race.ts`; add the page to `web/vite.config.ts`
+- [x] 4. Race_Screen
+  - [x] 4.1 Add `web/race/index.html` and `web/src/ui/race.ts`; add the page to `web/vite.config.ts`
     - One rear Camera_Stream at ideal 1080 × 1920; QR loop (`BarcodeDetector` `qr_code`, else jsQR at 540 px short side); Tilemark loop (new Scanner and reader per Run, one frame at a time, hint, errors); timer; results; Reset; Debug_Line
     - _Requirements: 1.1, 1.2, 2.1–2.5, 3.3, 3.9–3.11, 4.1–4.3, 4.6, 4.7, 5.1–5.8, 6.1–6.5, 7.1, 7.2_
-  - [ ] 4.2 Add `jsqr` (runtime) and copy its license to `web/public/licenses/jsQR-LICENSE.txt`; write `licenses.test.ts`
+  - [x] 4.2 Add `jsqr` (runtime) and copy its license to `web/public/licenses/jsQR-LICENSE.txt`; write `licenses.test.ts`
     - _Requirements: 10.1, 10.2, 10.4_
-  - [ ] 4.3 Write `web/src/race/__tests__/race.isolation.test.ts`
+  - [x] 4.3 Write `web/src/race/__tests__/race.isolation.test.ts`
     - _Requirements: 1.4, 11.1_
 - [ ] 5. QR_Sheet
   - [ ] 5.1 Implement `web/src/print/qrSheet.ts` and `web/scripts/gen-print-pages.mjs` (with `--check`); add `qrcode` and `@types/qrcode` as dev dependencies and the `print:gen` script

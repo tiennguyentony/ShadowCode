@@ -12,7 +12,7 @@ export interface FrameRateCounter {
 
 export function createFrameRateCounter(windowMs = 1000): FrameRateCounter {
   if (!(windowMs > 0) || !Number.isFinite(windowMs)) {
-    throw new RangeError(`Frame_Rate window must be a positive number of ms, got ${String(windowMs)}`)
+    throw new RangeError(`Frame_Rate windowMs must be a positive number of ms, got ${String(windowMs)}`)
   }
   let times: number[] = []
   const prune = (now: number) => {
