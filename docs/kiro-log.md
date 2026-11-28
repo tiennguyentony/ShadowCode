@@ -126,3 +126,13 @@ Entries before this log are not backfilled.
 - The IDE workspace `D:\Coding\ShadowCode` (branch `training/pipeline`) has its own copy of the hook file. It keeps the old PT-1 to PT-6 prompt until that branch gets this change.
 **Went wrong or had to redo:**
 - First `tsc` run after removing the exclude failed with 16 TS2769 errors in `message.properties.test.ts` (the `params()` helper type). Fixed as above.
+## 2026-11-27
+
+**Feature:** steering (branch `web/model-bundle-steering`, worktree `D:\Coding\ShadowCode-wt\web-model-bundle-steering`)
+**Output:**
+- Added `.kiro/steering/model-bundle.md` with `inclusion: fileMatch` and `fileMatchPattern: "web/src/reader/**"`. It points reader code at `docs/model-contract.md`, names bundle `20261126-ba0ab4d` and its served copy `web/public/models/20261126-ba0ab4d/`, lists the `contract.json` fields to read instead of hard-coding (`TILE_PX`, `MESSAGE_BITS`, `camera.trained_px_per_tile`, `reading.frames_averaged`), describes the fixtures in `training/export/demo-fixtures/` and the `TILEMARK_DEMO_FIXTURES` / `TILEMARK_BUNDLE_SRC` variables, and states the bundle and isolation rules.
+**Caught, corrected, or changed my mind about:**
+- The main checkout `D:\Coding\ShadowCode` is on `training/demo-pipeline`, so the branch was made from `master` in a separate worktree instead of switching that checkout.
+- Checked the stated values against `training/export/20261126-ba0ab4d/contract.json` (read only): `TILE_PX` 384, `MESSAGE_BITS` 64, `trained_px_per_tile` [231, 340], `frames_averaged` 3, `reader_input` flattened. The sha256 of `reader.onnx` equals `models.reader.sha256`. The section names cited exist in `docs/model-contract.md`.
+**Went wrong or had to redo:**
+Nothing recorded.
