@@ -2,9 +2,9 @@
 
 ## Overview
 
-Implement the Scanner as a pure TypeScript module `/web/src/scanner/scanner.ts` and the app configuration `/web/src/config.ts`, then the unit, property, configuration, documentation and isolation tests. Tasks 1–5 do not depend on the frame-window choice (design D8). Task 6 waits for Tony's answer.
+Implement the Scanner as a pure TypeScript module `/web/src/scanner/scanner.ts` and the app configuration `/web/src/config.ts`, then the unit, property, configuration, documentation and isolation tests. Tasks 1–5 do not depend on the frame-window choice (design D8). Task 6 records Tony's choice.
 
-Files are created or modified only under `/web` and `.kiro/specs/scanner/`, plus one `docs/kiro-log.md` entry per task. Nothing under `/training` is touched. `requirements.md` is not edited. Tests run with `npm test` from `/web`; the build with `npm run build`.
+Files are created or modified only under `/web` and `.kiro/specs/scanner/`, plus one `docs/kiro-log.md` entry per task. Nothing under `/training` is touched. `requirements.md` is edited only in task 6, at Tony's request, and only in its reason wording. Tests run with `npm test` from `/web`; the build with `npm run build`.
 
 ## Tasks
 
@@ -49,7 +49,8 @@ Files are created or modified only under `/web` and `.kiro/specs/scanner/`, plus
   - [x] 4.2 Write `/web/src/scanner/__tests__/scanner.isolation.test.ts`
     - `scanner.ts` imports only `../codec/message` (type only); `config.ts` imports only `./scanner/scanner`; no package imports; no `window`, `document`, `navigator`, `getUserMedia`
 - [x] 5. Checkpoint: `npm test` and `npm run build` pass in `/web`
-- [ ] 6. Record the frame-window choice (blocked: waits for Tony, design D8)
-  - Write Tony's choice (sliding or separate windows) into design D8 and "Open Items", and one sentence into the comment block of `scanner.ts` stating which schedule produces the Decode_Results and how much it weakens or keeps the independence argument
-  - If Tony asks for new reason wording in `requirements.md`, he or a session he approves makes that edit
+- [x] 6. Record the frame-window choice (design D8; Tony chose the sliding window with Confirmation_Count 2 on 2026-11-28)
+  - Write the choice into design D8, the window section (timing table: least successful read 2 frames, 200 ms at 100 ms per frame) and "Open Items"
+  - Update the comment block of `scanner.ts`: the reader gives one Decode_Result per processed frame over a window of 1, then 2, then 3 frames; consecutive Decode_Attempts share frames and are not independent; the catalog check is the main protection; extend `scanner.docs.test.ts` to check it
+  - At Tony's request, change the reason wording in `requirements.md` (introduction and Requirement 4) to the same effect, keeping 2.9 × 10⁻⁴ and 0.031% as single-decode rates; no acceptance criterion changes
   - _Requirements: 2.12, 2.13_

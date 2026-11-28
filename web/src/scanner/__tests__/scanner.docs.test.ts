@@ -20,6 +20,13 @@ describe('scanner documentation block', () => {
   it('2.12 gives the reason for confirmation with the measured False_Accept_Rate', () => {
     expect(text).toMatch(/Why consecutive-match confirmation \(Requirement 2\.12\)\. A false accept at the 2\.9 × 10⁻⁴ rate/)
   })
+  it('D8 states the sliding-window schedule and that consecutive Decode_Attempts are not independent', () => {
+    expect(text).toContain('removes a wrong read that lasts one Decode_Attempt')
+    expect(text).toContain('sliding window of 1, then 2, then 3 frames')
+    expect(text).toContain('share frames and are not independent')
+    expect(text).toContain('The catalog check is the main protection')
+    expect(text).toContain('least successful read is 2 frames: 200 ms at 100 ms per frame')
+  })
   it('2.13 states at least N Decode_Attempts count against the 500 ms target', () => {
     expect(text).toContain('at least N Decode_Attempts')
     expect(text).toContain('under 500 ms')

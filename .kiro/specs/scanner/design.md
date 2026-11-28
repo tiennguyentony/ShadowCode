@@ -6,7 +6,7 @@ The Scanner is a pure TypeScript module, `/web/src/scanner/scanner.ts`. It takes
 
 The app's configuration lives in one module, `/web/src/config.ts`. It holds the Product_Catalog (IDs 1001, 1002, 1003 with display names) and the Confirmation_Count 2. The race screen (a later UI task) and the code that creates the Scanner both import it, so the product names exist in one place only.
 
-The tile reader (later spec `tile-reader`) produces the Decode_Results. It decodes the average of the reader's logits over the last 3 frames (`reading.frames_averaged` in the bundle's `contract.json`, `docs/model-contract.md`, "How to read a scan"). That averaging changes the independence argument of Requirement 2. The section "Frame windows and the independence argument" works this out and asks Tony to choose between two decode schedules. The Scanner code is the same for both schedules; the choice affects the tile-reader spec and the wording of the reason in this spec.
+The tile reader (later spec `tile-reader`) produces the Decode_Results. It decodes the average of the reader's logits over the last 3 frames (`reading.frames_averaged` in the bundle's `contract.json`, `docs/model-contract.md`, "How to read a scan"), one Decode_Result after every processed frame (sliding window, D8). Consecutive Decode_Attempts therefore share frames and are not independent. The section "Frame windows and the independence argument" works out what this does to Requirement 2's argument and to timing. The Scanner code does not depend on the schedule.
 
 ### Decisions in this design
 
@@ -19,7 +19,7 @@ The tile reader (later spec `tile-reader`) produces the Decode_Results. It decod
 | D5 | The Product_Catalog is passed to the Scanner as a `ReadonlySet<number>` of Product_IDs. Display names stay in `/web/src/config.ts` and are not part of the Scanner. |
 | D6 | The Reserved_ID 0 is rejected before the catalog lookup, so a catalog that contains 0 by mistake still never shows it (Requirement 1.3). |
 | D7 | The documentation items of Requirements 1.6, 2.12, 2.13, 3.5, 3.6 and 4.3 are written in a comment block at the top of `scanner.ts`. The window analysis, which needs tables, stays in this design. |
-| D8 | Open: sliding or separate frame windows. Recommended: sliding. Waits for Tony (see "Frame windows and the independence argument"). |
+| D8 | Sliding window with Confirmation_Count 2, chosen by Tony on 2026-11-28. The tile reader gives one Decode_Result after every processed frame, from the first frame of a scan, averaging 1, then 2, then 3 frames. Least successful read: 2 frames, 200 ms at 100 ms per frame (see "Frame windows and the independence argument"). |
 
 ## Architecture
 
@@ -103,39 +103,34 @@ Both messages contain the text `Confirmation_Count`; the invalid-value message a
 
 ## Frame windows and the independence argument
 
+Decision (D8, Tony, 2026-11-28): sliding window, Confirmation_Count 2. The tile reader gives the Scanner one Decode_Result after every processed frame. It starts at the first frame of a scan and averages the logits of however many frames the window holds: 1, then 2, then 3, after which the window slides.
+
 ### What averaging does to Requirement 2's argument
 
-Requirement 2 and Requirement 4 justify confirmation with "N independent false accepts would have to produce the same wrong ID back to back". The measured rates in the Residual_Risk_Section (2.9 × 10⁻⁴ under heavy corruption, 0.031% on random input) are single-decode rates on independent draws. Squaring them is valid only if the N Decode_Attempts are independent.
+The measured rates in the Residual_Risk_Section (2.9 × 10⁻⁴ under heavy corruption, 0.031% on random input) are single-decode rates on independent draws. Multiplying them over N Decode_Attempts is valid only if those Decode_Attempts are independent.
 
-With 3-frame averaging they are not independent when windows overlap. Under a sliding window, Decode_Attempt k uses frames k−2, k−1, k and Decode_Attempt k+1 uses frames k−1, k, k+1. They share 2 of their 3 frames, so two thirds of the averaged logits are the same. A wrong read that comes from the shared frames (one strongly wrong frame, or two frames of a tile-free area) tends to produce the same bits, and so the same wrong ID, in both Decode_Attempts. One bad frame stays in 3 consecutive windows. In the worst case a confirmation with N = 2 under a sliding window protects no better than one decode.
+Under the sliding window they are not. Decode_Attempt k averages frames max(1, k−2) … k. From the third frame on, Decode_Attempt k and k+1 share 2 of their 3 frames; at the start, Decode_Attempt 2 (frames 1–2) contains all of Decode_Attempt 1 (frame 1). A wrong read that comes from the shared frames (one strongly wrong frame, or two frames of a tile-free area) tends to produce the same bits, and so the same wrong ID, in consecutive Decode_Attempts. One bad frame stays in up to 3 consecutive windows. Confirmation with N = 2 therefore removes a wrong read that lasts one Decode_Attempt, but not one caused by frames that two consecutive windows share. In that case it protects no better than one decode.
 
-Separate windows (frames 1–3, then 4–6, …) share no frames. That removes the shared-frame correlation but not all of it: a hand-held camera looking at the same wrong spot for 6 frames gives two similar windows. So the "independent" wording is an approximation in both schedules, and it is false for the shared frames of a sliding window.
+Separate windows (frames 1–3, then 4–6, …), the option not chosen, share no frames, but a hand-held camera looking at the same wrong spot still gives similar windows. So independence is an approximation in either schedule.
 
-The catalog check does not depend on independence. A false accept returns an arbitrary 32-bit ID. If such IDs are spread evenly over 2^32 values (an assumption; it is not measured), the chance that one lands on one of the 3 catalog IDs is 3 / 2^32 ≈ 7.0 × 10⁻¹⁰. Per Decode_Attempt that gives about 2.9 × 10⁻⁴ × 7.0 × 10⁻¹⁰ ≈ 2.0 × 10⁻¹³ (heavy corruption) and 3.1 × 10⁻⁴ × 7.0 × 10⁻¹⁰ ≈ 2.2 × 10⁻¹³ (random input), before any confirmation. Under either schedule the catalog check carries most of the protection for a 3-product demo; confirmation adds a factor that is near 1 for shared frames and smaller for separate windows. How much smaller has not been measured on averaged logits. The photo fixture set (`training/export/demo-fixtures/photos/`) could measure how often two consecutive Decode_Attempts return the same wrong ID.
+The catalog check is the main protection, and it does not depend on independence. A false accept returns an arbitrary 32-bit ID. If such IDs are spread evenly over 2^32 values (an assumption; it is not measured), the chance that one lands on one of the 3 catalog IDs is 3 / 2^32 ≈ 7.0 × 10⁻¹⁰. Per Decode_Attempt that gives about 2.9 × 10⁻⁴ × 7.0 × 10⁻¹⁰ ≈ 2.0 × 10⁻¹³ (heavy corruption) and 3.1 × 10⁻⁴ × 7.0 × 10⁻¹⁰ ≈ 2.2 × 10⁻¹³ (random input), before any confirmation. How often two consecutive Decode_Attempts return the same wrong ID on averaged logits has not been measured. The photo fixture set (`training/export/demo-fixtures/photos/`) could measure it.
 
 ### Timing of the two schedules
 
-Assumptions: each processed frame costs up to 100 ms (locate, flatten, reader inference; the message decode itself measured 0.003 ms), which is the per-attempt target in `.kiro/steering/tech.md`. A Decode_Attempt needs a full 3-frame window. Every Decode_Attempt in the run returns the right ID. The numbers are the least possible; misses add frames. The successful-read target is under 500 ms.
+Assumptions: each processed frame costs up to 100 ms (locate, flatten, reader inference; the message decode itself measured 0.003 ms), which is the per-attempt target in `.kiro/steering/tech.md`. Every Decode_Attempt in the run returns the right ID. The numbers are the least possible; misses add frames. The successful-read target is under 500 ms.
 
 | Schedule | Decode_Attempts at frame | Least frames for N = 2 | Time at 100 ms per frame | Least frames for N = 3 | Time at 100 ms per frame |
 |---|---|---|---|---|---|
-| Sliding window: decode after every frame | 3, 4, 5, … | 4 (= N + 2) | 400 ms, meets 500 ms | 5 | 500 ms, misses "under 500 ms" |
-| Separate windows: decode once per 3 new frames | 3, 6, 9, … | 6 (= 3N) | 600 ms, misses 500 ms | 9 | 900 ms, misses 500 ms |
+| Sliding window from the first frame (chosen): decode after every frame, window of 1, 2, then 3 frames | 1, 2, 3, … | 2 (= N) | 200 ms, meets 500 ms | 3 | 300 ms, meets 500 ms |
+| Separate windows (not chosen): decode once per 3 new frames | 3, 6, 9, … | 6 (= 3N) | 600 ms, misses 500 ms | 9 | 900 ms, misses 500 ms |
 
-Per-frame time needed to stay under 500 ms: sliding N = 2 below 125 ms, sliding N = 3 below 100 ms, separate N = 2 below 83 ms, separate N = 3 below 56 ms. If processing is faster than the camera (33 ms per frame at 30 fps), the camera rate sets the time: separate N = 2 then takes 6 × 33 ms ≈ 200 ms.
+With the chosen schedule and N = 2, the least successful read is 2 frames: Decode_Attempt 1 on frame 1 alone, Decode_Attempt 2 on the average of frames 1 and 2. That is 200 ms at 100 ms per frame. It stays under 500 ms while a frame takes less than 250 ms. If processing is faster than the camera (33 ms per frame at 30 fps), the camera rate sets the time: about 67 ms.
 
-The 100 ms target is per frame here, because the reader runs once per frame in both schedules. If 100 ms were read as covering all 3 frames of a separate window, separate N = 2 would take 200 ms; that reading does not match the per-frame reader cost.
+The 2-frame minimum uses windows of 1 and 2 frames. `docs/model-contract.md` ("How to read a scan") says one frame alone reads worse than the 3-frame average the pass line was measured on. When the early windows return `null` or disagree, the read goes on with full 3-frame windows, and every extra frame adds 100 ms. At 100 ms per frame a read can use at most 4 frames (400 ms); 5 frames take 500 ms and miss "under 500 ms".
 
-### Recommendation
+### Effect on this spec
 
-Sliding window, with N = 2. It is the only schedule that meets the 500 ms successful-read target at the 100 ms per-frame target with the chosen Confirmation_Count. Its weaker independence is acceptable for the demo because the catalog check alone brings the per-attempt chance of a wrong catalog ID to about 2 × 10⁻¹³ (under the even-spread assumption above). Separate windows give a stronger confirmation argument and become the better choice if per-frame time is measured below 83 ms.
-
-**Question for Tony (blocks task 6):**
-
-1. Sliding window or separate windows?
-2. If sliding: the reason sentences in requirements.md (introduction, "N independent false accepts", and Requirement 4, "2 independent false accepts") overstate the protection, because consecutive Decode_Attempts share 2 of 3 frames. Do you want that wording changed? The acceptance criteria themselves are not affected. Kiro has not edited requirements.md.
-
-The Scanner code, its tests and the app configuration (tasks 1–5) do not depend on the answer. The answer is recorded in D8 and in the Scanner's comment block in task 6, and it becomes an input to the tile-reader spec.
+The Scanner code is the same for both schedules: it counts Decode_Attempts and has no frame input (Requirement 2.8). The decision changed the reason wording in the requirements introduction and in Requirement 4 (no acceptance criterion changed), design D8, and one paragraph of the comment block in `scanner.ts`. The schedule itself is built in the tile-reader spec.
 
 ## Correctness Properties
 
@@ -201,4 +196,4 @@ Reflection on redundancy: 1.4 and 4.1(a) are the same statement; 2.10 and 4.1(b)
 
 ## Open Items
 
-- D8: sliding or separate frame windows, and whether the reason wording in requirements.md should change. Waits for Tony.
+None. D8 was decided on 2026-11-28 (sliding window, Confirmation_Count 2), and the reason wording in requirements.md was changed as Tony asked.

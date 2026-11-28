@@ -210,3 +210,17 @@ Nothing recorded.
 Nothing recorded.
 **Went wrong or had to redo:**
 Nothing recorded.
+
+**Feature:** spec (scanner task 6: record the frame-window choice)
+**Output:**
+- Tony chose D8: sliding window, Confirmation_Count 2. The tile reader gives one Decode_Result after every processed frame, from the first frame, averaging 1, then 2, then 3 frames.
+- `.kiro/specs/scanner/design.md`: D8, overview, window section and "Open Items" updated. Timing table: the chosen schedule needs at least 2 frames for N = 2 (200 ms at 100 ms per frame) and 3 for N = 3 (300 ms); separate windows (not chosen) stay at 6 frames (600 ms) and 9 frames (900 ms).
+- `.kiro/specs/scanner/requirements.md`, at Tony's request: reason wording in the introduction (consecutive-match bullet, line 10) and Requirement 4 (Reason paragraph, line 90). They now say that consecutive Decode_Attempts share frames and are not independent, that confirmation removes a wrong read lasting one Decode_Attempt, and that the catalog check is the main protection. 2.9 × 10⁻⁴ and 0.031% are kept and called single-decode rates. The diff has 2 changed lines and changes no acceptance criterion.
+- `web/src/scanner/scanner.ts`: the comment block's 2.12 and 2.13 paragraphs state the schedule, the lack of independence, and the 2-frame, 200 ms minimum. `scanner.docs.test.ts` has 1 new test for them.
+- `.kiro/specs/scanner/tasks.md`: task 6 checked, overview text updated.
+- `npm test` in `web`: 18 files, 175 tests pass. `npm run build` exits 0.
+**Caught, corrected, or changed my mind about:**
+- The earlier timing table assumed a full 3-frame window before the first Decode_Attempt (4 frames, 400 ms for N = 2). Tony's schedule starts at frame 1, so the minimum is 2 frames, 200 ms.
+- The design now notes that the 2-frame minimum uses windows of 1 and 2 frames, which `docs/model-contract.md` says read worse than 3. At 100 ms per frame a read can use at most 4 frames (400 ms) and still meet the target.
+**Went wrong or had to redo:**
+- The first draft of the timing text said up to 5 frames fit under 500 ms. At 100 ms per frame, 5 frames take exactly 500 ms and miss "under 500 ms". Corrected to 4 frames before the commit.

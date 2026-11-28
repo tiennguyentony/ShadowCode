@@ -18,15 +18,20 @@
  *
  * Why consecutive-match confirmation (Requirement 2.12). A false accept at the
  * 2.9 × 10⁻⁴ rate comes from one bad read. Requiring the same Catalog_ID on N
- * consecutive Decode_Attempts means that bad read must repeat with the same
- * wrong catalog ID N times in a row. How independent those N reads are depends
- * on how the tile reader schedules its 3-frame logit averages; see design.md,
+ * consecutive Decode_Attempts removes a wrong read that lasts one Decode_Attempt.
+ * The tile reader gives one Decode_Result after every processed frame, from the
+ * first frame of a scan, decoding the average of the reader's logits over a
+ * sliding window of 1, then 2, then 3 frames (design D8). Consecutive
+ * Decode_Attempts share frames and are not independent, so a wrong read caused
+ * by shared frames can repeat, and the single-decode rates cannot be multiplied
+ * over N attempts. The catalog check is the main protection. See design.md,
  * "Frame windows and the independence argument".
  *
  * Timing (Requirement 2.13). Every successful read takes at least N
  * Decode_Attempts, where N is the Confirmation_Count. All of them count against
  * the successful-read target of under 500 ms in .kiro/steering/tech.md. This
- * relation is the input for choosing N.
+ * relation is the input for choosing N. With the sliding window and N = 2 the
+ * least successful read is 2 frames: 200 ms at 100 ms per frame.
  *
  * Range of N (Requirement 3.5). Only 2 and 3 are accepted: [2, 3]. N = 1 would
  * remove the consecutive-match confirmation that message-codec Requirement 12
