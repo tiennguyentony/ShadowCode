@@ -8,16 +8,16 @@ Files are written only in `/web`, `/print` and `.kiro/specs/race/`, plus one `do
 
 ## Tasks
 
-- [ ] 1. Race_Logic
-  - [ ] 1.1 Implement `web/src/race/race.ts`
+- [x] 1. Race_Logic
+  - [x] 1.1 Implement `web/src/race/race.ts`
     - `Mode`, `MODES`, `Find`, `Run`, `RaceState`, `createRace`, `start`, `productFound`, `reset`, `isRunning`, `runningMode`, `elapsedMs`, `results`, `formatSeconds` as in the design
     - Ignored events return the same state object; `createRace` rejects 0, duplicates and non-integers
     - No imports; time only from `now` arguments
     - _Requirements: 3.1–3.9, 3.12, 6.1–6.5_
-  - [ ] 1.2 Write unit tests `web/src/race/__tests__/race.unit.test.ts` with a fake clock
+  - [x] 1.2 Write unit tests `web/src/race/__tests__/race.unit.test.ts` with a fake clock
     - start, product found, duplicate ignored, any order, non-catalog ignored, found before start ignored, finish after three, found after finish ignored, replace a Run, other Mode blocked, reset, `results`, `formatSeconds`
     - _Requirements: 3.1–3.9, 3.12, 6.1–6.5_
-  - [ ] 1.3 Write property tests `web/src/race/__tests__/race.properties.test.ts`
+  - [x] 1.3 Write property tests `web/src/race/__tests__/race.properties.test.ts`
     - **Property 1: Finds equal the reference model** (Validates: Requirements 3.1, 3.2, 3.4, 3.5, 3.6)
     - **Property 2: Ignored events change nothing** (Validates: Requirements 3.3, 3.5, 3.7, 3.8)
     - **Property 3: A Run finishes exactly when all Catalog_IDs are found** (Validates: Requirements 3.9, 6.1, 6.3)

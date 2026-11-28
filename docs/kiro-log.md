@@ -224,3 +224,23 @@ Nothing recorded.
 - The design now notes that the 2-frame minimum uses windows of 1 and 2 frames, which `docs/model-contract.md` says read worse than 3. At 100 ms per frame a read can use at most 4 frames (400 ms) and still meet the target.
 **Went wrong or had to redo:**
 - The first draft of the timing text said up to 5 frames fit under 500 ms. At 100 ms per frame, 5 frames take exactly 500 ms and miss "under 500 ms". Corrected to 4 frames before the commit.
+
+**Feature:** spec (race: requirements, design and task list, branch `web/race`, worktree `D:\Coding\ShadowCode-wt\race`)
+**Output:**
+- Added `.kiro/specs/race/requirements.md` (11 requirements, EARS criteria), `.kiro/specs/race/design.md` (decisions D1-D14, interfaces, print layout in mm, Properties 1-5, test plan) and `.kiro/specs/race/tasks.md` (tasks 1-9), plus `.kiro/specs/race/.config.kiro`.
+**Caught, corrected, or changed my mind about:**
+- `web/src/config.ts` and the Scanner exist only on `web/scanner`, which is not merged into `master`. Branch `web/race` was made from `web/scanner` (D1), in a new worktree, because the main checkout is on `training/demo-pipeline`.
+- The `tile-reader` spec is not built (no `web/src/reader/`, no `.kiro/specs/tile-reader/`). The race calls a `ReadFrame` function through `web/src/race/tileReader.ts` with a stand-in that returns `result: null`; task 8 (wire the real reader) stays open.
+- jsQR 1.4.0 is Apache-2.0. Listed in the design as a permissive dependency under the "MIT-compatible" rule, with its license text shipped in the build. Not asked of Tony.
+- The interface is asynchronous (`Promise<TileReadout>`), because ONNX Runtime Web's `session.run` is.
+**Went wrong or had to redo:**
+- `jsqr`, `qrcode` and `@types/qrcode` were installed in `web/` before the requirements were written. The installs were kept and are recorded under tasks 4.2 and 5.1.
+
+**Feature:** spec (race task 1: Race_Logic)
+**Output:**
+- `web/src/race/race.ts`: `createRace`, `start`, `productFound`, `reset`, `isRunning`, `runningMode`, `elapsedMs`, `results`, `formatSeconds`. No imports; every time comes from a `now` argument. Ignored events return the same state object.
+- `web/src/race/__tests__/fakeClock.ts`, `race.unit.test.ts` (18 tests: start, product found, duplicate ignored, any order, non-catalog ignored, finish after three, reset, results, formatting) and `race.properties.test.ts` (Properties 1-3, seed 0x7ace2026, 1,000 runs each). 21 tests pass.
+**Caught, corrected, or changed my mind about:**
+- The Property 1 reference is a separate mutable simulation written from the requirements, so it does not reuse `race.ts` code.
+**Went wrong or had to redo:**
+Nothing recorded.
